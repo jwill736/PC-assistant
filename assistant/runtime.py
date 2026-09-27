@@ -6,7 +6,6 @@ import logging
 import threading
 import time
 from datetime import datetime
-from typing import Callable
 
 from . import discovery
 from .brain.assistant import Assistant
@@ -16,8 +15,11 @@ from .integrations.activity import Categorizer
 from .integrations.jobs import JobRunner
 from .services import Services, build_services
 from .voice.hotkey import register_hotkey
+from .voice import calibrate as calib
 from .voice.listener import VoiceListener
+from .voice.speaker_id import SpeakerVerifier, delete_profile
 from .voice.tts import Speaker
+from .watchdog import Supervisor
 
 log = logging.getLogger(__name__)
 
@@ -37,14 +39,16 @@ class Runtime:
             announce=self.announce,
         )
         self.listener: VoiceListener | None = None
+        self.verifier: SpeakerVerifier | None = None
+        self.calibrator = None
         if cfg["voice"].get("enabled", True):
+            self.verifier = SpeakerVerifier(cfg.data_dir, cfg["voice"].get("speaker_check", "strict"))
             self.listener = VoiceListener(
                 self.bus, self.speaker, cfg["assistant"]["wake_words"],
                 on_command=lambda text: self.assistant.handle(text, "voice"),
-                cfg=cfg["voice"], hint_words=self._hint_words,
+                cfg=cfg["voice"], hint_words=self._hint_words, verifier=self.verifier,
             )
-        self._stop = threading.Event()
-        self._threads: list[threading.Thread] = []
+        self.supervisor = Supervisor(self.bus)
         self.started = time.time()
 
     def _hint_words(self) -> list[str]:
@@ -59,45 +63,39 @@ class Runtime:
 
     # ------------------------------------------------------------------
     def start(self) -> None:
+        sup = self.supervisor
+        # Long-lived services: restarted if their thread dies or they stop beating.
         if self.cfg["tracking"].get("enabled", True):
-            self.svc.activity.start()
-        self.speaker.start()
+            self.svc.activity.heartbeat = lambda: sup.beat("activity tracker")
+            sup.service("activity tracker", self.svc.activity.restart,
+                        heartbeat_s=max(self.svc.activity.sample, 5) * 2)
+        sup.service("speech output", self.speaker.restart, is_disabled=lambda: self.speaker.engine_name == "none")
         if self.listener:
-            self.listener.start()
-            register_hotkey(self.cfg["voice"].get("push_to_talk_hotkey"), self.listener.arm)
-        self._every(2, self._poll_system, "system")
-        self._every(3, self._poll_obs, "obs")
-        self._every(60, self._poll_activity, "activity")
-        self._every(90, self._poll_twitch, "twitch")
-        self._every(120, self._poll_projects, "projects")
-        self._every(300, self._poll_calendar, "calendar")
-        self._every(900, self._poll_news, "news")
-        self._every(60, self._morning_check, "morning")
-        self._every(6 * 3600, self._rescan_if_stale, "discovery", delay=6 * 3600)  # startup already scanned
+            listener = self.listener
+            listener.heartbeat = lambda: sup.beat("voice listener")
+            sup.service("voice listener", listener.restart, heartbeat_s=30,
+                        is_disabled=lambda: listener.state == "unavailable")
+            register_hotkey(self.cfg["voice"].get("push_to_talk_hotkey"), listener.arm)
+        # Pollers: the supervisor owns their loops.
+        sup.poller("system stats", 2, self._poll_system, stall_after=60)
+        sup.poller("obs", 3, self._poll_obs, stall_after=60)
+        sup.poller("activity summary", 60, self._poll_activity)
+        sup.poller("twitch", 90, self._poll_twitch)
+        sup.poller("projects", 120, self._poll_projects)
+        sup.poller("calendars", 300, self._poll_calendar)
+        sup.poller("news", 900, self._poll_news)
+        sup.poller("morning briefing", 60, self._morning_check)
+        sup.poller("pc scan", 6 * 3600, self._rescan_if_stale, delay=6 * 3600)  # startup already scanned
+        sup.start()
 
     def stop(self) -> None:
-        self._stop.set()
+        self.supervisor.stop()
         self.svc.activity.stop()
         if self.listener:
             self.listener.stop()
         self.speaker.stop()
         if self.svc.jobs:
             self.svc.jobs.shutdown()
-
-    def _every(self, seconds: float, fn: Callable[[], None], name: str, delay: float = 0) -> None:
-        def loop():
-            if delay and self._stop.wait(delay):
-                return
-            while not self._stop.is_set():
-                try:
-                    fn()
-                except Exception:
-                    log.exception("poller %s failed", name)
-                self._stop.wait(seconds)
-
-        t = threading.Thread(target=loop, name=f"poll-{name}", daemon=True)
-        t.start()
-        self._threads.append(t)
 
     # ---- pollers -----------------------------------------------------
     _sys_ticks = 0
@@ -149,6 +147,87 @@ class Runtime:
         if cur and cur["category"] != "idle":
             self._briefed_on = today
             threading.Thread(target=self.assistant.briefing, args=("morning",), daemon=True).start()
+
+    # ---- voice calibration ----------------------------------------------
+    def start_calibration(self, calibrator=None) -> dict:
+        """Run the calibration wizard in the background; progress arrives as 'calibration' events."""
+        if self.listener is None:
+            return {"ok": False, "error": "Voice is turned off (voice.enabled: false)."}
+        if self.calibrator is not None:
+            return {"ok": False, "error": "Calibration is already running."}
+        listener = self.listener
+        cal = calibrator or calib.Calibrator(
+            self.cfg, self.bus, record=calib.mic_recorder(self.cfg["voice"].get("input_device")),
+            transcribe=calib.whisper_transcriber(self.cfg, listener._model),
+        )
+        self.calibrator = cal
+
+        def run():
+            listener.paused = True  # the wizard owns the mic; nothing it hears is a command
+            result: dict = {"error": "calibration crashed"}
+            try:
+                if calibrator is None and self.verifier:
+                    cal.emit(step="prepare", prompt="Getting the voice model ready (first run downloads ~26 MB)…")
+                    cal.embedder = self.verifier.embedder()
+                result = cal.run()
+            finally:
+                listener.paused = False
+                self.calibrator = None
+            if not result.get("cancelled") and not result.get("error"):
+                self.apply_voice_calibration()
+            else:
+                self.bus.publish("voice_profile", self.voice_status(), sticky=True)
+
+        threading.Thread(target=run, name="calibration", daemon=True).start()
+        return {"ok": True}
+
+    def cancel_calibration(self) -> dict:
+        if self.calibrator is not None:
+            self.calibrator.cancelled.set()
+        return {"ok": True}
+
+    def apply_voice_calibration(self) -> None:
+        new = load_config(self.cfg.path)
+        self.cfg["assistant"]["wake_words"] = new["assistant"]["wake_words"]
+        for key in ("min_rms", "speaker_check"):
+            self.cfg["voice"][key] = new["voice"][key]
+        if self.listener:
+            self.listener.wake_words = new["assistant"]["wake_words"]
+            self.listener.cfg = self.cfg["voice"]
+            self.listener.restart()  # new segmenter threshold takes effect in the fresh loop
+        if self.verifier:
+            self.verifier.mode = new["voice"]["speaker_check"]
+            self.verifier.reload()
+        self.bus.publish("voice_profile", self.voice_status(), sticky=True)
+
+    def set_speaker_check(self, mode: str) -> dict:
+        if self.verifier is None or mode not in self.verifier.MODES:
+            return {"ok": False, "error": "unknown mode or voice disabled"}
+        self.verifier.mode = mode
+        self.cfg["voice"]["speaker_check"] = mode
+        self.bus.publish("voice_profile", self.voice_status(), sticky=True)
+        return {"ok": True, "mode": mode}
+
+    def delete_voice_profile(self) -> dict:
+        existed = delete_profile(self.cfg.data_dir)
+        if self.verifier:
+            self.verifier.reload()
+        self.bus.publish("voice_profile", self.voice_status(), sticky=True)
+        return {"ok": True, "deleted": existed}
+
+    def voice_status(self) -> dict:
+        latest = self.bus.latest.get("calibration")
+        return {
+            "enabled": self.listener is not None,
+            "profile": self.verifier.status() if self.verifier else {"enrolled": False, "mode": "off"},
+            "wake_words": self.cfg["assistant"]["wake_words"],
+            "min_rms": self.cfg["voice"].get("min_rms"),
+            "calibrating": self.calibrator is not None,
+            "last_calibration": latest["data"] if latest else None,
+            "macros": [{"name": m.name, "triggers": m.triggers, "steps": len(m.steps),
+                        "needs_yes": bool(self.assistant.macro_risks(m.name))}
+                       for m in self.assistant.macros.values()],
+        }
 
     # ---- PC scan -------------------------------------------------------
     def _rescan_if_stale(self) -> None:
@@ -205,5 +284,7 @@ class Runtime:
             "briefing": self.assistant.last_briefing,
             "discovery": self.discovery_report(),
             "doctor": latest.get("doctor"),
+            "health": self.supervisor.snapshot(),
+            "voice_profile": self.voice_status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},
         }

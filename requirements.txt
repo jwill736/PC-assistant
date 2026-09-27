@@ -10,3 +10,6 @@ icalendar>=5.0
 recurring-ical-events>=3.0
 obsws-python>=1.7
 tzdata>=2024.1  # Windows ships no IANA timezone database
+# System tray icon (Windows)
+pystray>=0.19; sys_platform == "win32"
+Pillow>=10; sys_platform == "win32"

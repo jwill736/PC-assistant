@@ -71,3 +71,14 @@ def test_runtime_boots_pollers_and_tracks_activity(cfg, svc):
     assert state["system"]["cpu"]["threads"] >= 1
     assert "by_category" in state["activity"]
     assert rt.svc.activity.current is None  # stop() flushed the open segment
+
+
+@windows_only
+def test_tray_icon_renders_and_pystray_imports():
+    import pystray  # noqa: F401  (installed from requirements on Windows)
+
+    from assistant.tray import COLORS, Tray
+
+    for state in COLORS:
+        img = Tray.image(state)
+        assert img.size == (64, 64) and img.getpixel((32, 32))[3] == 255  # solid core

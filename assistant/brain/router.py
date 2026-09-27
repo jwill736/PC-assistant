@@ -25,6 +25,7 @@ class RouterContext:
     scene_match: Callable[[str], str | None] = lambda t: None
     profiles: list[str] = field(default_factory=lambda: ["work", "stream"])
     profile_aliases: dict[str, str] = field(default_factory=dict)
+    macro_match: Callable[[str], str | None] = lambda t: None
 
 
 FILLER = re.compile(r"^(?:(?:hey|ok|okay|yo|please|can you|could you|would you|will you|i need you to|go ahead and|and)\s+)+")
@@ -59,6 +60,11 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("cancel")
     if re.search(r"\b(new conversation|start over|reset (the )?(chat|conversation))\b", t):
         return Intent("reset")
+
+    # --- user-defined trigger phrases win over built-ins ------------------
+    macro = ctx.macro_match(t)
+    if macro:
+        return Intent("macro", args={"name": macro})
 
     # --- briefings -------------------------------------------------------
     if re.search(r"\bgood morning\b|\bmorning (brief|briefing|report|rundown)\b|\bbrief me\b|\bwhat'?s (on )?(my|the) (day|agenda|plan)( today| look like)?\b|\bgive me (the|my) rundown\b", t):

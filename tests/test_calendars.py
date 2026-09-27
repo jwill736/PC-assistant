@@ -77,3 +77,10 @@ def test_free_blocks_between_meetings():
     blocks = free_blocks([ev("10:00", "11:00"), ev("11:15", "12:00"), ev("16:30", "18:30")], date(2026, 9, 28), TZ)
     spans = [(b["start"][11:16], b["end"][11:16], b["minutes"]) for b in blocks]
     assert spans == [("09:00", "10:00", 60), ("12:00", "16:30", 270)]  # 15-min gap dropped, day ends at 18:00
+
+
+def test_calendar_link_not_set_yet(monkeypatch):
+    monkeypatch.delenv("CAL_TEST_ICS", raising=False)
+    h = CalendarHub([{"name": "Work", "url_env": "CAL_TEST_ICS", "profile": "work"}], "America/New_York")
+    h.refresh(force=True)
+    assert h.status()[0]["error"] == "CAL_TEST_ICS is not set"

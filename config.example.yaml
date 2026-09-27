@@ -3,7 +3,8 @@
 
 assistant:
   name: Jarvis                  # what you call it; also the wake word
-  wake_words: [jarvis, hey jarvis]   # add near-misses Whisper hears, e.g. "travis"
+  wake_words: []                # the name and "hey <name>" always count; calibration adds
+                                # the spellings Whisper hears for YOUR voice ("travis"…)
   user_name: J                  # how it addresses you
   # timezone: America/New_York  # only if the PC clock zone is wrong; the dashboard uses the PC zone
   work_hours: {start: "09:00", end: "18:00"}
@@ -27,6 +28,9 @@ voice:
   stt_device: auto              # cuda if you have an NVIDIA GPU and CUDA libs
   push_to_talk_hotkey: ctrl+alt+j
   follow_up_seconds: 8          # after a reply, talk again without the name
+  # min_rms: 900                # speech loudness threshold; calibration measures your room
+  speaker_check: strict         # after calibrating: strict = ignore other voices,
+                                # log = score but never block, off = answer anyone
   tts:
     engine: pyttsx3             # pyttsx3 (offline) | browser (natural voices) | none
     rate: 190
@@ -134,3 +138,36 @@ jobs:
   permission_mode: acceptEdits  # what background Claude Code may do without asking
   max_concurrent: 2
   timeout_minutes: 30
+
+tray:
+  enabled: true                 # system tray icon (mute, push-to-talk, pause tracking, quit)
+
+# Trigger phrases: say one phrase, run several actions in order.
+# Steps: any tool (same names Claude uses), say: text, wait: seconds (max 30),
+# command: "anything you'd say out loud". A macro with a risky step
+# (closing apps, stopping the stream…) asks for one "yes" before it starts.
+macros:
+  brb:
+    say: ["brb", "be right back", "taking a break"]
+    steps:
+      - obs_switch_scene: {scene: BRB}
+      - obs_set_mute: {source: mic, muted: true}
+      - say: "Be right back is up. Mic's muted."
+  back:
+    say: ["i'm back", "back from break"]
+    steps:
+      - obs_set_mute: {source: mic, muted: false}
+      - obs_switch_scene: {scene: Gameplay}
+      - say: "Welcome back. You're live on gameplay."
+  wrap up stream:
+    say: ["wrap it up", "end of stream", "wrap up the stream"]
+    steps:
+      - obs_switch_scene: {scene: Ending}
+      - wait: 20
+      - obs_control: {action: stop_stream} # risky → asks "yes?" before starting
+  focus:
+    say: ["focus mode", "lock in", "time to grind"]
+    steps:
+      - command: "start work mode"
+      - set_power_plan: {plan: high}
+      - say: "Locked in. Work apps are up and the PC is on high performance."

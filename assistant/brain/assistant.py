@@ -18,7 +18,7 @@ import anthropic
 
 from ..integrations import desktop
 from ..services import Services
-from . import briefing
+from . import briefing, macros as macro_mod
 from .router import Intent, RouterContext, route
 from .speech import clock, summarize
 from .tools import ToolBox, compact
@@ -56,6 +56,9 @@ class Assistant:
         self.svc = svc
         self.cfg = svc.cfg["claude"]
         self.tools = toolbox or ToolBox(svc)
+        self.macros = macro_mod.load_macros(svc.cfg)
+        for problem in macro_mod.validate(self.macros, set(self.tools.tools)):
+            log.warning(problem)
         self.client = client if client is not None else self._make_client()
         self.history: list[dict] = []
         self.user_turns = 0
@@ -106,6 +109,7 @@ class Assistant:
             profiles=list(self.svc.cfg["profiles"].keys()),
             profile_aliases={k.lower(): k for k in self.svc.cfg["profiles"]}
             | {str(v.get("label", "")).lower(): k for k, v in self.svc.cfg["profiles"].items() if v.get("label")},
+            macro_match=lambda t: macro_mod.match(t, self.macros),
         )
 
     # ------------------------------------------------------------------
@@ -175,11 +179,66 @@ class Assistant:
             tasks = self.svc.storage.list_tasks()
             return {"reply": f"Next: {tasks[0]['title']}." if tasks else "No open tasks. Add one and I'll line it up.",
                     "kind": "next"}
+        if kind == "macro":
+            return self.run_macro(intent.args["name"])
         args = dict(intent.args)
         hints = {k: args.pop(k) for k in ROUTER_HINT_KEYS if k in args}
         return self.run_tool(intent.tool or "", args, hints=hints)
 
+    # ---- macros (trigger phrases) --------------------------------------
+    def macro_risks(self, name: str) -> list[str]:
+        macro = self.macros.get(name.lower())
+        risks = []
+        for tool_name, args in macro.tool_steps() if macro else []:
+            tool = self.tools.tools.get(tool_name)
+            if tool and tool.needs_confirmation(args):
+                risks.append(tool.describe(args))
+        return risks
+
+    def run_macro(self, name: str, *, confirmed: bool = False) -> dict:
+        macro = self.macros.get(name.lower())
+        if macro is None:
+            return {"reply": f"I don't have a macro called {name}.", "kind": "error"}
+        risks = self.macro_risks(name)
+        if risks and not confirmed:
+            self._set_pending([("run_macro", {"name": macro.name})], f"run {macro.name} ({'; '.join(risks)})")
+            return {"reply": f"{macro.name} will {', '.join(risks)}. Say yes to run it.", "kind": "pending"}
+        spoken, results = [], []
+        for step in macro.steps:
+            (kind, value), = step.items()
+            if kind == "say":
+                spoken.append(str(value))
+            elif kind == "wait":
+                time.sleep(max(0.0, min(float(value or 0), 30.0)))
+            elif kind == "command":
+                intent = route(str(value), self.router_context())
+                out = self._run_intent(intent) if intent and intent.kind not in ("macro",) else {
+                    "reply": self._ask_claude(str(value)) if self.claude_ready else ""}
+                results.append({"command": value, "reply": out.get("reply")})
+            else:
+                result = self.tools.run(kind, value or {})
+                self.svc.bus.publish("tool", {"name": kind, "args": value, "result": result, "macro": macro.name})
+                results.append({"tool": kind, "ok": result.get("ok", True), "error": result.get("error")})
+                if result.get("ok") is False and result.get("error"):
+                    spoken.append(result["error"])
+        failed = sum(1 for r in results if r.get("ok") is False)
+        reply = " ".join(spoken) or macro.reply or (f"{macro.name} done." if not failed else "")
+        if failed and not spoken:
+            reply = f"{macro.name}: {failed} step{'s' if failed != 1 else ''} failed."
+        self.svc.bus.publish("macro", {"name": macro.name, "results": results})
+        return {"reply": reply, "kind": "macro", "data": results}
+
+    def macro_definition(self) -> dict | None:
+        if not self.macros:
+            return None
+        listing = "; ".join(f"{m.name} ({', '.join(m.triggers[:3])})" for m in self.macros.values())
+        return {"name": "run_macro", "description": f"Run one of the user's saved macros (trigger phrases): {listing}.",
+                "input_schema": {"type": "object", "properties": {"name": {"type": "string", "enum": [m.name for m in self.macros.values()]}},
+                                 "required": ["name"]}}
+
     def run_tool(self, name: str, args: dict, *, confirmed: bool = False, hints: dict | None = None) -> dict:
+        if name == "run_macro":
+            return self.run_macro(args.get("name", ""), confirmed=confirmed)
         tool = self.tools.tools.get(name)
         if tool is None:
             return {"reply": f"I don't have a {name} tool.", "kind": "error"}
@@ -263,6 +322,8 @@ class Assistant:
         self.user_turns += 1
         self.last_turn = time.time()
         definitions = self.tools.definitions()
+        if self.macro_definition():
+            definitions = definitions + [self.macro_definition()]
         try:
             resp = None
             for _ in range(8):
@@ -299,6 +360,17 @@ class Assistant:
             if getattr(block, "type", "") != "tool_use":
                 continue
             args = block.input if isinstance(block.input, dict) else {}
+            if block.name == "run_macro":
+                if self.macro_risks(args.get("name", "")):
+                    pending_calls.append(("run_macro", args))
+                    pending_text.append(f"run {args.get('name')}")
+                    payload = {"status": "awaiting_confirmation", "ask_user": f"run {args.get('name')}"}
+                else:
+                    out = self.run_macro(args.get("name", ""))
+                    payload = {"ok": out["kind"] != "error", "reply": out["reply"], "steps": out.get("data")}
+                results.append({"type": "tool_result", "tool_use_id": block.id, "content": compact(payload),
+                                **({"is_error": True} if payload.get("ok") is False else {})})
+                continue
             tool = self.tools.tools.get(block.name)
             if tool and tool.needs_confirmation(args):
                 pending_calls.append((block.name, args))

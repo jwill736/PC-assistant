@@ -17,3 +17,13 @@ def test_no_top_level_names_that_clash_with_browser_globals():
                           APP_JS.read_text(encoding="utf-8"), flags=re.M)
     assert declared, "parser found no declarations — did app.js move?"
     assert sorted(set(declared) & RESERVED) == []
+
+
+def test_stylesheet_assets_are_bundled():
+    """The HUD must work offline: every url() in the stylesheet is a file in the repo."""
+    css = (APP_JS.parent / "styles.css").read_text(encoding="utf-8")
+    urls = re.findall(r'url\("?([^")]+)"?\)', css)
+    assert urls, "expected bundled fonts"
+    for url in urls:
+        assert not url.startswith(("http:", "https:", "//")), url
+        assert (APP_JS.parent / url).is_file(), url

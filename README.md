@@ -221,7 +221,7 @@ watchdog: restarts any poller or service that crashes or stops reporting in ─�
 - `assistant/integrations/`: `desktop`, `browser`, `system`, `obs`, `twitch`, `calendars`, `news`, `projects`, `activity`, `jobs`
 - `assistant/voice/`: `listener.py` (mic, VAD, Whisper, wake word, echo guard), `speaker_id.py` (voice profile + check), `calibrate.py` (the wizard), `tts.py`, `hotkey.py`
 - `assistant/watchdog.py` (supervisor + log file), `assistant/tray.py` (tray icon), `assistant/discovery.py` + `doctor.py` (PC scan and health check)
-- `assistant/web/`: the HUD (plain HTML, CSS and JS; no build step)
+- `assistant/web/`: the HUD (plain HTML, CSS and JS; no build step). Light and dark themes (follows Windows, or the ◐ button). Jost and Inter are bundled under the SIL Open Font License, so it looks the same offline
 - Data lives in `data/assistant.db` (SQLite): activity, tasks, notes, conversation, jobs
 
 **Security:** the server listens on `127.0.0.1` only. Every API and WebSocket call

@@ -48,6 +48,12 @@ const post = (path, body) => api(path, { method: 'POST', body: body || {} });
 
 function fmtClock(d) { return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
 function fmtTime(iso) { return fmtClock(new Date(iso)); }
+/* "9:30–9:45 AM" when both ends share AM/PM, else "11:30 AM–12:15 PM". */
+function fmtRange(a, b) {
+  const x = fmtTime(a), y = fmtTime(b);
+  const [xt, xm] = x.split(' '), [, ym] = y.split(' ');
+  return xm && xm === ym ? `${xt}–${y}` : `${x}–${y}`;
+}
 function fmtDur(sec) {
   sec = Math.max(0, Math.round(sec || 0));
   const h_ = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
@@ -128,8 +134,8 @@ function sparkline(container, points, { max, color = 'var(--series-1)', fmt = v 
   svgEl.append(
     s('line', { x1: 0, x2: w, y1: ht - 3, y2: ht - 3, stroke: 'var(--baseline)', 'stroke-width': 1 }),
     s('path', { d: `${d}L${x(n - 1)},${ht - 3}L${x(0)},${ht - 3}Z`, fill: color, opacity: 0.1 }),
-    s('path', { d, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }),
-    s('circle', { cx: x(n - 1), cy: y(vals[n - 1]), r: 4, fill: color, stroke: 'var(--panel)', 'stroke-width': 2 }));
+    s('path', { d, fill: 'none', stroke: color, 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }),
+    s('circle', { cx: x(n - 1), cy: y(vals[n - 1]), r: 3.5, fill: color, stroke: 'var(--panel)', 'stroke-width': 2 }));
   const cross = s('line', { y1: 2, y2: ht - 3, stroke: 'var(--muted)', 'stroke-width': 1, visibility: 'hidden' });
   const hit = s('rect', { x: 0, y: 0, width: w, height: ht, fill: 'transparent' });
   svgEl.append(cross, hit);
@@ -151,11 +157,11 @@ function dayStrip(timeline, dayStart, width) {
   const t0 = dayStart + startH * 3600, t1 = dayStart + endH * 3600;
   const X = t => ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * w;
   const svgEl = s('svg', { class: 'strip', viewBox: `0 0 ${w} ${ht}`, role: 'img', 'aria-label': 'Activity timeline' });
-  svgEl.append(s('rect', { x: 0, y: top, width: w, height: bh, fill: 'rgba(255,255,255,0.03)', rx: 4 }));
+  svgEl.append(s('rect', { x: 0, y: top, width: w, height: bh, fill: 'var(--grid)' }));
   for (const b of timeline || []) {
     const x0 = X(b.start), x1 = X(b.end);
     if (x1 - x0 < 0.5) continue;
-    const r = s('rect', { x: x0 + 1, y: top, width: Math.max(x1 - x0 - 2, 1), height: bh, fill: catColor(b.category), rx: 2, tabindex: 0 });
+    const r = s('rect', { x: x0 + 1, y: top, width: Math.max(x1 - x0 - 2, 1), height: bh, fill: catColor(b.category), tabindex: 0 });
     const tipFn = e => showTip(e, [{ value: fmtDur(b.end - b.start), label: catLabel(b.category), color: catColor(b.category) }],
       `${fmtClock(new Date(b.start * 1000))} – ${fmtClock(new Date(b.end * 1000))}`);
     r.addEventListener('pointermove', tipFn); r.addEventListener('pointerleave', hideTip);
@@ -334,7 +340,9 @@ const render = {
       const items = [];
       if (next) {
         const mins = Math.round((new Date(next.start) - now) / 60000);
-        items.push(h('div', { class: 'countdown' }, 'Next: ', h('b', {}, next.title), ` in ${mins < 90 ? `${mins} min` : fmtDur(mins * 60)}`));
+        const when = mins < 90 ? `in ${mins} min` : mins < 12 * 60 ? `in ${fmtDur(mins * 60)}`
+          : `${sameDay(new Date(next.start), now) ? 'at' : new Date(next.start).toLocaleDateString([], { weekday: 'short' })} ${fmtTime(next.start)}`;
+        items.push(h('div', { class: 'countdown' }, 'Next: ', h('b', {}, next.title), ` ${when}`));
       }
       let lastDay = '';
       for (const e of events) {
@@ -346,7 +354,7 @@ const render = {
         }
         const cls = e.all_day ? '' : en < now ? 'past' : st <= now ? 'now' : '';
         items.push(h('div', { class: `ev ${cls}` },
-          h('div', { class: 'when' }, e.all_day ? 'All day' : `${fmtTime(e.start)}–${fmtTime(e.end)}`),
+          h('div', { class: 'when' }, e.all_day ? 'All day' : fmtRange(e.start, e.end)),
           h('span', { class: 'cd', style: { background: e.color } }),
           h('div', {}, h('div', { class: 'title' }, e.title), h('div', { class: 'sub' }, [e.calendar, e.location].filter(Boolean).join(' · ')))));
       }
@@ -517,7 +525,7 @@ const render = {
     for (const p of panels('log')) {
       const b = body(p);
       const box = h('div', { class: 'log' }, S.log.slice(-60).map(m => h('div', { class: `msg ${m.role}` }, m.text,
-        h('span', { class: 'meta' }, [m.source === 'voice' ? '🎙 voice' : m.source === 'heard' ? 'heard (no wake word)' : null,
+        h('span', { class: 'meta' }, [m.source === 'voice' ? 'voice' : m.source === 'heard' ? 'heard (no wake word)' : null,
           m.ms != null ? `${m.ms} ms` : null, m.ts ? fmtClock(new Date(m.ts * 1000)) : null].filter(Boolean).join(' · ')))));
       if (!S.log.length) box.append(empty(`Try: “${S.data.assistant?.name || 'Jarvis'}, good morning” · “open discord” · “switch to BRB” · “where am I”`));
       fill(b, box);
@@ -791,7 +799,8 @@ function setView(view) {
 const orb = $('#orb');
 const orbState = { voice: 'off', thinking: false, speaking: false };
 function paintOrb() {
-  orb.className = `orb ${orbState.speaking ? 'speaking' : orbState.thinking ? 'thinking' : orbState.voice}`;
+  // The mark is an <svg>: its className is read-only, so set the attribute.
+  orb.setAttribute('class', `orb ${orbState.speaking ? 'speaking' : orbState.thinking ? 'thinking' : orbState.voice}`);
   const a = S.data.assistant || {};
   const labels = {
     listening: `Listening for “${(a.wake_words || ['jarvis'])[0]}”`, hearing: 'Hearing you…', transcribing: 'Transcribing…',
@@ -821,6 +830,15 @@ function tick() {
   $('#clock-d').textContent = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 setInterval(tick, 1000); tick();
+
+// Theme: follows Windows light/dark until you pick one here.
+$('#theme-btn').addEventListener('click', () => {
+  const current = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  const next = current === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('hud.theme', next); } catch { /* storage unavailable */ }
+  renderAll();  // charts read colours at draw time
+});
 
 // Browser speech (tts.engine: browser)
 function pickVoice(hint) {

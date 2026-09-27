@@ -47,6 +47,7 @@ class Runtime:
                 self.bus, self.speaker, cfg["assistant"]["wake_words"],
                 on_command=lambda text: self.assistant.handle(text, "voice"),
                 cfg=cfg["voice"], hint_words=self._hint_words, verifier=self.verifier,
+                models_dir=cfg.data_dir / "models",
             )
         self.supervisor = Supervisor(self.bus)
         self.started = time.time()
@@ -158,7 +159,7 @@ class Runtime:
         listener = self.listener
         cal = calibrator or calib.Calibrator(
             self.cfg, self.bus, record=calib.mic_recorder(self.cfg["voice"].get("input_device")),
-            transcribe=calib.whisper_transcriber(self.cfg, listener._model),
+            transcribe=calib.engine_transcriber(self.cfg, listener),
         )
         self.calibrator = cal
 
@@ -222,6 +223,8 @@ class Runtime:
             "profile": self.verifier.status() if self.verifier else {"enrolled": False, "mode": "off"},
             "wake_words": self.cfg["assistant"]["wake_words"],
             "min_rms": self.cfg["voice"].get("min_rms"),
+            "pipeline": ({k: v for k, v in self.listener.status().items() if k in ("engine", "vad", "latency_ms")}
+                         if self.listener else None),
             "calibrating": self.calibrator is not None,
             "last_calibration": latest["data"] if latest else None,
             "macros": [{"name": m.name, "triggers": m.triggers, "steps": len(m.steps),

@@ -83,6 +83,7 @@ def test_wake_variants_keep_near_misses_only():
     heard = ["Travis.", "Jarvis's", "Hey Jarvis", "Jervis?", "service", "the day"]
     assert calib.wake_variants(heard, "Jarvis", ["jarvis", "hey jarvis"]) == ["travis", "jervis"]
     assert calib.wake_variants(["fri day"], "Friday", []) == []  # fragments never become wake words
+    assert calib.wake_variants(["Desperate, open discord", "Fesper"], "Vesper", []) == ["fesper"]  # nor longer real words
 
 
 def test_frame_rms_and_trim():
@@ -175,6 +176,9 @@ class FakeListener:
 
     def restart(self):
         self.restarts += 1
+
+    def status(self):
+        return {"engine": "Parakeet 110M", "vad": "silero", "latency_ms": 64}
 
 
 class FakeCalibrator:

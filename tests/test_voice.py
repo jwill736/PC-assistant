@@ -1,7 +1,6 @@
 import math
 import threading
 import time
-from types import SimpleNamespace
 
 import numpy as np
 
@@ -69,12 +68,16 @@ class FakeSpeaker:
         pass
 
 
-class FakeModel:
+class FakeSTT:
+    name = "parakeet"
+
     def __init__(self, text):
         self.text = text
+        self.hints = None
 
-    def transcribe(self, *_a, **_kw):
-        return [SimpleNamespace(text=self.text)], None
+    def transcribe(self, _samples, hints=()):
+        self.hints = list(hints)
+        return self.text
 
 
 class FakeVerifier:
@@ -87,11 +90,11 @@ class FakeVerifier:
         return self.accept, (0.7 if self.accept else 0.1)
 
 
-def listener(text, speaker=None, verifier=None):
+def listener(text, speaker=None, verifier=None, cfg=None):
     commands = []
     lst = VoiceListener(ListBus(), speaker or FakeSpeaker(), list(WAKE), commands.append,
-                        {"follow_up_seconds": 8}, verifier=verifier)
-    lst._model = FakeModel(text)
+                        {"follow_up_seconds": 8, **(cfg or {})}, verifier=verifier)
+    lst.stt = FakeSTT(text)
     return lst, commands
 
 
@@ -116,7 +119,8 @@ def test_stranger_voice_is_ignored():
     lst, commands = listener("Friday, end the stream", verifier=v)
     lst._handle_audio(AUDIO)
     assert commands == [] and v.checked == 1
-    assert lst.bus.heard()[-1] == {"text": "Friday, end the stream", "ignored": "voice not recognised", "score": 0.1}
+    heard = lst.bus.heard()[-1]
+    assert (heard["text"], heard["ignored"], heard["score"]) == ("Friday, end the stream", "voice not recognised", 0.1)
 
 
 def test_owner_voice_runs():
@@ -146,3 +150,44 @@ def test_background_speech_never_reaches_the_verifier():
     lst, commands = listener("so what are we doing tonight", verifier=v)
     lst._handle_audio(AUDIO)
     assert commands == [] and v.checked == 0
+
+
+def test_fuzzy_wake_needs_nearly_the_whole_word():
+    jarvis = ["jarvis", "hey jarvis"]
+    assert split_wake("Jars, open the fridge", jarvis)[0] is False       # 4 of 6 letters: an everyday word
+    assert split_wake("Jarvis's got this", jarvis)[0] is True
+    assert split_wake("Fesper, open discord", ["vesper"]) == (True, "open discord")
+    assert split_wake("Vespa open discord", ["vesper"])[0] is False     # calibration adds "vespa" if your voice needs it
+    assert split_wake("Vespa open discord", ["vesper", "vespa"]) == (True, "open discord")
+
+
+def test_short_replies_are_not_mistaken_for_echo():
+    lst, commands = listener("Friday, yes", speaker=FakeSpeaker("Say yes to end the stream? yes", ago=1))
+    lst._handle_audio(AUDIO)
+    assert commands == ["yes"]
+    lst, commands = listener("yes", speaker=FakeSpeaker("yes", ago=1))   # exactly what it just said: still echo
+    lst._handle_audio(AUDIO)
+    assert commands == []
+
+
+def test_follow_up_window_only_after_a_question():
+    sp = FakeSpeaker("On Gameplay.", ago=2)
+    sp.expects_reply = False
+    lst, commands = listener("and mute the mic", speaker=sp)
+    lst._handle_audio(AUDIO)
+    assert commands == []                                    # a statement doesn't leave the mic open
+    sp.expects_reply = True
+    lst._handle_audio(AUDIO)
+    assert commands == ["and mute the mic"]
+
+
+def test_corrections_latency_and_hints():
+    lst, commands = listener("Friday, switch to the VRB scene", cfg={"corrections": {"vrb": "BRB"}})
+    lst.hint_words = lambda: ["Gameplay", "BRB"]
+    lst._handle_audio(AUDIO)
+    assert commands == ["switch to the BRB scene"]
+    heard = lst.bus.heard()[-1]
+    assert heard["text"] == "Friday, switch to the BRB scene" and isinstance(heard["stt_ms"], int)
+    assert lst.stt.hints[:3] == ["Friday", "Gameplay", "BRB"]
+    status = lst.status()
+    assert status["engine"] == "Parakeet 110M" and status["latency_ms"] is not None

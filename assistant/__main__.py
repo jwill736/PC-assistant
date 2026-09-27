@@ -58,7 +58,7 @@ def run_cli_calibration(cfg) -> int:
     print("Voice calibration: quiet room, normal speaking voice, about a minute.")
     embedder = calib.default_embedder(cfg.data_dir)
     cal = calib.Calibrator(cfg, ConsoleBus(), calib.mic_recorder(cfg["voice"].get("input_device")),
-                           calib.whisper_transcriber(cfg), embedder)
+                           calib.engine_transcriber(cfg), embedder)
     result = cal.run()
     if result.get("error"):
         print(f"\nCalibration failed: {result['error']}")
@@ -86,6 +86,9 @@ def main() -> None:
     parser.add_argument("--scan", action="store_true", help="scan this PC for things to connect, then exit")
     parser.add_argument("--doctor", action="store_true", help="scan + live health check of every connection, then exit")
     parser.add_argument("--calibrate", action="store_true", help="calibrate the mic and enroll your voice, then exit")
+    parser.add_argument("--bench-voice", action="store_true",
+                        help="record 10 commands and compare speech engines on your voice and PC, then exit")
+    parser.add_argument("--apply", action="store_true", help="with --bench-voice: switch to the best engine")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -113,6 +116,17 @@ def main() -> None:
 
     if args.calibrate:
         sys.exit(run_cli_calibration(cfg))
+
+    if args.bench_voice:
+        from .voice import bench
+        from .voice import calibrate as calib
+
+        try:
+            report = bench.run(cfg, calib.mic_recorder(cfg["voice"].get("input_device")), apply=args.apply)
+        except Exception as exc:
+            print(f"Voice benchmark failed: {exc}")
+            sys.exit(1)
+        sys.exit(0 if report["best"] else 1)
 
     host = cfg["server"]["host"]
     port = args.port or cfg["server"]["port"]

@@ -659,7 +659,11 @@ render.voice = function voice() {
       h('div', { class: 'kv' },
         h('span', { class: 'k' }, 'Only answer me'), h('span', {}, modes),
         h('span', { class: 'k' }, 'Match threshold'), h('span', {}, prof.threshold != null ? `${prof.threshold}${prof.last_score != null ? ` · last voice ${prof.last_score}` : ''}` : '—'),
-        h('span', { class: 'k' }, 'Speech threshold'), h('span', {}, `min_rms ${v.min_rms}`)),
+        h('span', { class: 'k' }, 'Speech engine'), h('span', {}, v.pipeline?.engine
+          ? `${v.pipeline.engine} · ${v.pipeline.vad === 'silero' ? 'Silero' : 'energy'} voice detection${v.pipeline.latency_ms != null ? ` · ${v.pipeline.latency_ms} ms median` : ''}`
+          : 'loads with the listener'),
+        v.pipeline?.vad === 'silero' ? null : h('span', { class: 'k' }, 'Speech threshold'),
+        v.pipeline?.vad === 'silero' ? null : h('span', {}, `min_rms ${v.min_rms}`)),
       last && last.step === 'done' && last.summary ? h('div', { class: 't2', style: { marginBottom: '8px' } },
         `Last run heard the name as: ${(last.summary.wake_heard || []).join(' · ') || '—'}`) : null,
       last && last.step === 'error' ? h('div', { class: 'empty' }, status('critical', `Calibration failed: ${last.error}`)) : null,
@@ -808,6 +812,7 @@ function paintOrb() {
     unavailable: 'Voice unavailable', error: 'Voice error', off: 'Voice off',
   };
   let txt = orbState.speaking ? 'Speaking…' : orbState.thinking ? 'Thinking…' : labels[orbState.voice] || orbState.voice;
+  if (orbState.voice === 'loading' && S.data.voice?.detail) txt = S.data.voice.detail;  // first-run model download
   if ((orbState.voice === 'error' || orbState.voice === 'unavailable') && S.data.voice?.error) txt = S.data.voice.error;
   txt += a.claude ? ` · Claude ${a.model}` : ' · local mode (no API key)';
   $('#voice-status').textContent = txt;

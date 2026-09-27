@@ -1,9 +1,10 @@
-"""Always-on voice input: mic -> speech segments -> Whisper -> wake word -> command.
+"""Always-on voice input: mic -> Silero VAD -> speech-to-text -> wake word -> command.
 
 The wake word is matched on the transcript, so it can be any name you choose
-(no custom model training). After the assistant answers, a short follow-up
-window accepts the next sentence without the name. Push-to-talk (hotkey or the
-dashboard mic button) skips the wake word for one utterance.
+(no custom model training). After the assistant asks something, a short
+follow-up window accepts the next sentence without the name. Push-to-talk
+(hotkey or the dashboard mic button) skips the wake word for one utterance.
+Speech-to-text is pluggable (stt.py); Parakeet 110M on CPU is the default.
 """
 
 from __future__ import annotations
@@ -17,9 +18,11 @@ import re
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Callable
 
 from ..bus import EventBus
+from . import stt as stt_mod
 from .tts import Speaker
 
 log = logging.getLogger(__name__)
@@ -44,7 +47,9 @@ def split_wake(transcript: str, wake_words: list[str], search_words: int = 4, cu
     """Find a wake word near the start of ``transcript``.
 
     Returns (matched, command_after_wake_word). Fuzzy so "Vesper," / "vesper's" /
-    "Hey, Vesper" all match, and the command keeps its original casing.
+    "Hey, Vesper" all match, and the command keeps its original casing. A fuzzy
+    match must be nearly as long as the wake word, so a short everyday word that
+    happens to share letters ("jars" for "Jarvis") never counts.
     """
     tokens = re.findall(r"\S+", transcript)
     normed = [_norm(t) for t in tokens]
@@ -56,7 +61,9 @@ def split_wake(transcript: str, wake_words: list[str], search_words: int = 4, cu
             cand = " ".join(normed[i:i + n])
             if cand.endswith("'s"):
                 cand = cand[:-2]
-            if cand == target or difflib.SequenceMatcher(None, cand, target).ratio() >= cutoff:
+            close = (len(cand) >= 0.75 * len(target)
+                     and difflib.SequenceMatcher(None, cand, target).ratio() >= cutoff)
+            if cand == target or close:
                 rest = " ".join(tokens[i + n:]).strip(" ,.!?;:-")
                 return True, rest
     return False, transcript.strip()
@@ -129,7 +136,8 @@ class EnergySegmenter:
 
 class VoiceListener:
     def __init__(self, bus: EventBus, speaker: Speaker, wake_words: list[str], on_command: Callable[[str], None],
-                 cfg: dict, hint_words: Callable[[], list[str]] | None = None, verifier=None):
+                 cfg: dict, hint_words: Callable[[], list[str]] | None = None, verifier=None,
+                 models_dir: Path | None = None):
         self.bus, self.speaker = bus, speaker
         self.wake_words = wake_words
         self.on_command = on_command
@@ -147,7 +155,11 @@ class VoiceListener:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._gen = 0
-        self._model = None
+        self.models_dir = Path(models_dir) if models_dir else Path("data/models")
+        self.stt = None                  # speech-to-text engine (stt.py), loaded by the loop
+        self.vad_kind = ""
+        self.latencies: deque = deque(maxlen=50)   # ms from end of speech to transcript
+        self._stt_lock = threading.Lock()
         self.heartbeat: Callable[[], None] = lambda: None  # set by the watchdog
 
     # ---- control ----------------------------------------------------------
@@ -200,16 +212,44 @@ class VoiceListener:
         self.bus.publish("voice_state", {"state": state, "error": self.error, **extra}, sticky=True)
 
     def status(self) -> dict:
-        return {"state": self.state, "error": self.error, "muted": self.muted, "wake_words": self.wake_words}
+        lat = sorted(self.latencies)
+        return {"state": self.state, "error": self.error, "muted": self.muted, "wake_words": self.wake_words,
+                "engine": stt_mod.LABELS.get(getattr(self.stt, "name", ""), ""), "vad": self.vad_kind,
+                "latency_ms": lat[len(lat) // 2] if lat else None}
+
+    # ---- speech-to-text ---------------------------------------------------
+    def _progress(self, what: str):
+        last = [-1]
+
+        def report(fraction: float) -> None:
+            pct = int(fraction * 100)
+            if pct >= last[0] + 5 or pct == 100:
+                last[0] = pct
+                self._set_state("loading", detail=f"Downloading {what}… {pct}%")
+                self.heartbeat()
+        return report
+
+    def ensure_stt(self):
+        """The loaded engine (downloading its model the first time)."""
+        with self._stt_lock:
+            if self.stt is None:
+                self.stt = stt_mod.load(self.cfg, self.models_dir, self._progress("speech model"))
+        return self.stt
+
+    def transcribe(self, samples) -> str:
+        """float32 16 kHz samples -> text (also used by voice calibration)."""
+        return self.ensure_stt().transcribe(samples, self._hints())
+
+    def _hints(self) -> list[str]:
+        return [self.wake_words[0].title(), *self.hint_words()][:40] if self.wake_words else list(self.hint_words())[:40]
+
+    def correct(self, text: str) -> str:
+        """Apply ``voice.corrections`` ({"vrb": "BRB"}) as whole-word, case-insensitive replacements."""
+        for wrong, right in (self.cfg.get("corrections") or {}).items():
+            text = re.sub(rf"(?<![\w']){re.escape(str(wrong))}(?![\w'])", str(right), text, flags=re.IGNORECASE)
+        return text
 
     # ---- main loop --------------------------------------------------------
-    def _load_model(self):
-        from faster_whisper import WhisperModel
-
-        device = self.cfg.get("stt_device", "auto")
-        compute = "int8" if device in ("cpu", "auto") else "float16"
-        return WhisperModel(self.cfg.get("stt_model", "base.en"), device=device, compute_type=compute)
-
     def _run(self, gen: int = 0) -> None:
         try:
             import numpy as np
@@ -218,19 +258,20 @@ class VoiceListener:
             self.error = "Voice extras not installed: pip install -r requirements-voice.txt"
             self._set_state("unavailable")
             return
+        from .vad import make_segmenter
+
         self._set_state("loading")
         try:
-            if self._model is None:
-                with self._keepalive():  # first run may download the model
-                    self._model = self._load_model()
+            with self._keepalive():  # first run downloads the models
+                self.ensure_stt()
+                segmenter = make_segmenter(self.cfg, self.models_dir, self._progress("voice detector"))
         except Exception as exc:
             self.error = f"Speech model failed to load: {exc}"
-            log.exception("whisper load failed")
+            log.exception("speech model load failed")
             self._set_state("error")
             return
-
-        segmenter = EnergySegmenter(self.cfg.get("min_rms", 350), self.cfg.get("silence_ms", 800),
-                                    self.cfg.get("max_utterance_s", 15))
+        self.vad_kind = getattr(segmenter, "kind", "energy")
+        log.info("voice: %s speech-to-text, %s voice detection", stt_mod.LABELS.get(self.stt.name, self.stt.name), self.vad_kind)
 
         def callback(indata, _frames, _time, status):
             if status:
@@ -248,6 +289,7 @@ class VoiceListener:
             self.error = ""
             self._set_state("muted" if self.muted else "listening")
             last_beat = 0.0
+            blocked = False
             while not self._stop.is_set() and self._gen == gen:
                 now = time.time()
                 if now - last_beat >= 5:
@@ -258,8 +300,11 @@ class VoiceListener:
                 except queue.Empty:
                     continue
                 if self.muted or self.paused or self.speaker.speaking.is_set():
-                    segmenter.reset()
+                    if not blocked:  # start fresh once, not on every frame
+                        segmenter.reset()
+                        blocked = True
                     continue
+                blocked = False
                 frames = segmenter.feed(frame)
                 if frames is None:
                     if segmenter.in_speech and self.state != "hearing":
@@ -289,7 +334,10 @@ class VoiceListener:
         if now < self.armed_until:
             return self.armed_by or "hotkey"
         follow = self.cfg.get("follow_up_seconds", 8)
-        if self.speaker.last_end > self.last_command and now - self.speaker.last_end < follow:
+        # Only after a question (or a "say yes" confirmation): an answer that asks nothing
+        # shouldn't leave the mic open, or a false wake turns into a conversation loop.
+        if (getattr(self.speaker, "expects_reply", True) and self.speaker.last_end > self.last_command
+                and now - self.speaker.last_end < follow):
             return "followup"
         return None
 
@@ -305,6 +353,8 @@ class VoiceListener:
         a, b = _norm_sentence(text), _norm_sentence(said)
         if not a:
             return False
+        if len(a) < 10:  # "yes", "stop", "cancel": too short to judge, and exactly what you'd say back
+            return a == b
         if a in b:
             return True
         return difflib.SequenceMatcher(None, a, b).ratio() >= 0.6
@@ -313,27 +363,27 @@ class VoiceListener:
         import numpy as np
 
         samples = audio.astype(np.float32) / 32768.0
-        hints = ", ".join([self.wake_words[0].title(), *self.hint_words()][:40])
-        segments, _info = self._model.transcribe(samples, language="en", beam_size=1, vad_filter=True,
-                                                 condition_on_previous_text=False, initial_prompt=hints)
-        text = " ".join(s.text for s in segments).strip()
+        t0 = time.perf_counter()
+        text = self.correct(self.stt.transcribe(samples, self._hints()))
+        stt_ms = round((time.perf_counter() - t0) * 1000)
+        self.latencies.append(stt_ms)
         if _norm(text.replace(" ", "")) in {h.replace(" ", "") for h in HALLUCINATIONS}:
             return
         if self.is_own_echo(text):
-            self.bus.publish("heard", {"text": text, "ignored": "own voice"})
+            self.bus.publish("heard", {"text": text, "ignored": "own voice", "stt_ms": stt_ms})
             return
         matched, command = split_wake(text, self.wake_words)
         source = self._arm_source()
         if not (matched or source):
-            self.bus.publish("heard", {"text": text, "wake": False, "armed": False})
+            self.bus.publish("heard", {"text": text, "wake": False, "armed": False, "stt_ms": stt_ms})
             return
         # Only the owner may command it — unless they physically pressed push-to-talk.
         if self.verifier is not None and source not in ("hotkey", "button"):
             accepted, score = self.verifier.check(samples)
             if not accepted:
-                self.bus.publish("heard", {"text": text, "ignored": "voice not recognised", "score": score})
+                self.bus.publish("heard", {"text": text, "ignored": "voice not recognised", "score": score, "stt_ms": stt_ms})
                 return
-        self.bus.publish("heard", {"text": text, "wake": matched, "armed": bool(source)})
+        self.bus.publish("heard", {"text": text, "wake": matched, "armed": bool(source), "stt_ms": stt_ms})
         if matched and not command:
             self.arm(source="wake")  # "Vesper?" -> listen for the actual command
             return

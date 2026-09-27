@@ -81,13 +81,14 @@ def wake_variants(transcripts: list[str], wake_word: str, known: list[str]) -> l
     """Spellings of the wake word Whisper produced for this voice that we don't already accept."""
     target = wake_word.lower()
     shortest = max(3, round(len(target) * 0.7))  # "day" is not a way of saying "Friday"
+    longest = len(target) + 2                     # nor is "desperate" a way of saying "Vesper"
     found: list[str] = []
     for text in transcripts:
         for token in re.findall(r"[a-z']+", text.lower()):
             token = token.strip("'")
             if token.endswith("'s"):
                 token = token[:-2]
-            if len(token) < shortest or token in COMMON_WORDS or token == target or token in known or token in found:
+            if not shortest <= len(token) <= longest or token in COMMON_WORDS or token == target or token in known or token in found:
                 continue
             if difflib.SequenceMatcher(None, token, target).ratio() >= 0.6:
                 found.append(token)
@@ -231,19 +232,18 @@ def mic_recorder(device=None) -> Callable:
     return record
 
 
-def whisper_transcriber(cfg, model=None) -> Callable:
-    state = {"model": model}
+def engine_transcriber(cfg, listener=None) -> Callable:
+    """Transcribe with the same speech engine the live listener uses."""
+    if listener is not None:
+        return listener.transcribe
+    from . import stt
+
+    state = {"engine": None}
 
     def transcribe(samples) -> str:
-        if state["model"] is None:
-            from faster_whisper import WhisperModel
-
-            device = cfg["voice"].get("stt_device", "auto")
-            state["model"] = WhisperModel(cfg["voice"].get("stt_model", "base.en"), device=device,
-                                          compute_type="int8" if device in ("cpu", "auto") else "float16")
-        segments, _ = state["model"].transcribe(samples, language="en", beam_size=1, vad_filter=False,
-                                                condition_on_previous_text=False)
-        return " ".join(s.text for s in segments).strip()
+        if state["engine"] is None:
+            state["engine"] = stt.load(cfg["voice"], Path(cfg.data_dir) / "models")
+        return state["engine"].transcribe(samples)
 
     return transcribe
 

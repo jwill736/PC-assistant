@@ -142,7 +142,8 @@ class Assistant:
                 "pending": self.pending_view(),
             })
             if reply and (source == "voice" or self.svc.cfg["voice"].get("speak_typed")):
-                self.svc.speak(reply)
+                # A waiting confirmation keeps the mic open for the "yes"; otherwise only a question does.
+                self.svc.speak(reply, expects_reply=True if self.pending_view() else None)
             return out
 
     def pending_view(self) -> dict | None:

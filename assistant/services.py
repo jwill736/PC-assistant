@@ -41,7 +41,7 @@ class Services:
     activity: ActivityTracker
     jobs: JobRunner | None = None
     # Voice output; replaced by the voice subsystem once it starts.
-    speak: Callable[[str], None] = field(default=lambda text: None)
+    speak: Callable[..., None] = field(default=lambda text, **kw: None)
 
     @property
     def name(self) -> str:

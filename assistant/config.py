@@ -42,17 +42,25 @@ DEFAULTS: dict[str, Any] = {
     },
     "voice": {
         "enabled": True,
-        "stt_model": "base.en",
-        "stt_device": "auto",  # auto | cpu | cuda
+        # Speech-to-text: auto | parakeet | parakeet-large | moonshine | whisper (see voice/stt.py)
+        "stt_engine": "auto",
+        "stt_threads": 2,
+        "stt_model": "base.en",  # whisper engine only
+        "stt_device": "auto",    # whisper engine only: auto | cpu | cuda
         "input_device": None,
         "push_to_talk_hotkey": "ctrl+alt+j",
         "follow_up_seconds": 8,
         "speak_typed": False,  # also speak replies to commands typed in the dashboard
         # After voice calibration: off | log (score only) | strict (ignore voices that aren't yours)
         "speaker_check": "strict",
-        "min_rms": 350,
-        "silence_ms": 800,
+        # Voice detection: auto | silero | energy. Silero ends an utterance after endpoint_ms of silence.
+        "vad": "auto",
+        "vad_threshold": 0.6,
+        "endpoint_ms": 400,
+        "min_rms": 350,          # energy gate only
+        "silence_ms": 800,       # energy gate only
         "max_utterance_s": 15,
+        "corrections": {},       # {"vrb": "BRB"}: fix words the recogniser keeps getting wrong
         "tts": {"engine": "pyttsx3", "rate": 190, "voice_hint": ""},
     },
     "goals": {"north_star": "", "this_week": []},

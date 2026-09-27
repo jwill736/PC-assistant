@@ -500,10 +500,11 @@ def scan_gpu() -> tuple[list[Finding], dict]:
     except Exception:
         pass
     if cuda:
-        return [Finding("system", "GPU", CONNECTED, f"{name}: Whisper will run on CUDA (small.en).")], \
+        return [Finding("system", "GPU", CONNECTED, f"{name} (stats + NVENC in the HUD). Speech runs on the CPU "
+                        "with Parakeet; if you switch to stt_engine: whisper it will use CUDA (small.en).")], \
             {"voice": {"stt_device": "cuda", "stt_model": "small.en"}}
-    return [Finding("system", "GPU", FOUND, f"{name} (stats + NVENC in the HUD). Whisper uses CPU — "
-                    "install CUDA 12 + cuDNN to move speech recognition to the GPU.")], {}
+    return [Finding("system", "GPU", FOUND, f"{name} (stats + NVENC in the HUD). Speech recognition runs on the "
+                    "CPU with Parakeet (~60 ms per command), so it doesn't compete with the game or NVENC.")], {}
 
 
 # ---------------------------------------------------------------------------

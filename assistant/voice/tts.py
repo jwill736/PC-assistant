@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import sys
 import threading
 import time
@@ -28,6 +29,7 @@ class Speaker:
         self.speaking = threading.Event()
         self.last_end = 0.0
         self.last_text = ""  # what we said last, so the mic can ignore hearing itself
+        self.expects_reply = False  # did the last reply ask something? (opens the follow-up window)
         self._q: queue.Queue[str | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._browser_done = threading.Event()
@@ -47,12 +49,13 @@ class Speaker:
         self._thread.start()
         return self._thread
 
-    def say(self, text: str) -> None:
-        text = (text or "").strip()
+    def say(self, text: str, expects_reply: bool | None = None) -> None:
+        text = clean_for_speech(text)
         if text and self.engine_name != "none":
             # Flag immediately so the mic ignores us before the worker even starts talking.
             self.speaking.set()
             self.last_text = text
+            self.expects_reply = asks_something(text) if expects_reply is None else expects_reply
             self._q.put(text)
 
     def browser_finished(self) -> None:
@@ -136,6 +139,28 @@ class Speaker:
             log.exception("pyttsx3 unavailable; using browser speech")
             self.engine_name = "browser"
             return None
+
+
+_MD = [(re.compile(r"\[([^\]]+)\]\([^)]+\)"), r"\1"),     # [text](url) -> text
+       (re.compile(r"https?://\S+"), "the link"),
+       (re.compile(r"[*_`#>]+"), ""),                           # markdown emphasis, code, headings, quotes
+       (re.compile(r"^\s*[-•]\s+", re.M), ""),                  # list bullets
+       (re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]"), ""),  # emoji and symbols
+       (re.compile(r"\s+"), " ")]
+
+
+def clean_for_speech(text: str) -> str:
+    """Strip what reads fine on screen but sounds wrong aloud (markdown, links, emoji)."""
+    text = text or ""
+    for pattern, repl in _MD:
+        text = pattern.sub(repl, text)
+    return text.strip()
+
+
+def asks_something(text: str) -> bool:
+    """Should the mic stay open for an answer without the wake word?"""
+    tail = text.strip()[-160:].lower()
+    return tail.endswith("?") or bool(re.search(r"\bsay yes\b|\bconfirm\b|\byes or no\b", tail))
 
 
 def _offline_tts_available() -> bool:

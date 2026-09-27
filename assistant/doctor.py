@@ -143,7 +143,7 @@ def check_voice(cfg, test_mic: bool, load_model: bool) -> list[Check]:
         import numpy as np
         import sounddevice as sd
     except ImportError:
-        return [Check("Voice packages", FAIL, "faster-whisper / sounddevice not installed",
+        return [Check("Voice packages", FAIL, "sounddevice / numpy not installed",
                       "pip install -r requirements-voice.txt")]
     out = []
     if test_mic:
@@ -163,13 +163,19 @@ def check_voice(cfg, test_mic: bool, load_model: bool) -> list[Check]:
         out.append(_guard("Microphone", mic))
     if load_model:
         def model() -> Check:
-            from faster_whisper import WhisperModel
+            from .voice import stt
 
             t0 = time.time()
-            name = cfg["voice"].get("stt_model", "base.en")
-            device = cfg["voice"].get("stt_device", "auto")
-            WhisperModel(name, device=device, compute_type="int8" if device in ("cpu", "auto") else "float16")
-            return Check("Speech model", PASS, f"{name} loaded in {time.time() - t0:.1f}s")
+            engine = stt.load(cfg["voice"], cfg.data_dir / "models")
+            load_s = time.time() - t0
+            t1 = time.perf_counter()
+            engine.transcribe(np.zeros(16000, dtype=np.float32))  # one second of silence: a warm-up + timing
+            ms = (time.perf_counter() - t1) * 1000
+            label = stt.LABELS.get(engine.name, engine.name)
+            if engine.name == "whisper" and ms > 600:
+                return Check("Speech model", WARN, f"{label} loaded in {load_s:.1f}s · {ms:.0f} ms per second of audio",
+                             "Set voice.stt_engine: parakeet (about 4x faster on CPU) or run --bench-voice.")
+            return Check("Speech model", PASS, f"{label} loaded in {load_s:.1f}s · {ms:.0f} ms per second of audio")
         out.append(_guard("Speech model", model))
     return out
 

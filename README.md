@@ -137,14 +137,33 @@ adds aliases for scenes with emoji, and `obs.scene_aliases` maps anything else
 you say to exact names ("be right back" → `BRB`).
 
 ### Voice
-`requirements-voice.txt` installs faster-whisper, sounddevice, pyttsx3, keyboard and sherpa-onnx.
+`requirements-voice.txt` installs sherpa-onnx, sounddevice, pyttsx3, keyboard and faster-whisper (fallback).
 
-- `voice.stt_model`: `tiny.en` is fastest, `base.en` is the default, `small.en`
-  is most accurate. With an NVIDIA GPU and CUDA installed, set `stt_device: cuda`.
-  The model downloads once on first launch (about 150 MB for `base.en`); after that, speech recognition runs offline.
+How it hears, in order: **Silero VAD** finds where speech starts and ends → a **speech-to-text engine** turns
+it into text → the echo guard drops its own voice → the wake word is matched → the speaker check. The first
+launch downloads the models (~100 MB, from the sherpa-onnx releases on GitHub); after that it runs offline.
+
+- **`voice.stt_engine`** (default `auto` = Parakeet). Measured on 80 commands in 3 voices, with and without a
+  second person talking underneath, on a 4-core laptop-class CPU:
+
+  | engine | word errors (clean / with chatter) | wake word caught (clean / chatter) | time to text |
+  |---|---|---|---|
+  | `parakeet` (Parakeet TDT 110M) | 8.2% / 22.5% | 16/20 / 12/20 | 64 ms |
+  | `moonshine` (Moonshine base) | 13.2% / 60.4% | 15/20 / 8/20 | 62 ms |
+  | `parakeet-large` (0.6B) | 9.3% / 72.5% | 16/20 / 5/20 | 219 ms |
+  | `whisper` (faster-whisper `base.en`, the old default) | 16.5% / 36.3% | 8/20 / 9/20 | 273 ms |
+
+  Synthetic voices, not yours. **Run `python -m assistant --bench-voice`**: it records 10 commands in your
+  voice, tests every installed engine on this PC and prints the table; add `--apply` to switch to the winner.
+  `whisper` is the only engine that uses `stt_model`/`stt_device` (set `stt_device: cuda` for an NVIDIA GPU).
+- **Speech detection:** `voice.vad: auto` (Silero). With game sound effects between commands, the old
+  loudness gate glued the effects onto the command and handed it over ~2.2 s after you stopped; Silero hands
+  it over after ~0.4 s and produced no false segments. `voice.endpoint_ms` (400) is the pause that ends a
+  command — raise it if long pauses cut you off. `voice.vad: energy` goes back to the loudness gate.
+- **`voice.corrections`** fixes words the recogniser keeps getting wrong, e.g. `{vrb: BRB, "stream labs": Streamlabs}`.
 - **Calibrate once** (Setup tab → *Calibrate my voice*, or `python -m assistant --calibrate`):
   1. 5 s of quiet measures your room and sets `voice.min_rms`.
-  2. Say the name 5 times. Every way Whisper spells it in your voice ("Travis", "Jervis") becomes an extra wake word.
+  2. Say the name 5 times. Every way the recogniser spells it in your voice ("Fesper", "Vespa") becomes an extra wake word.
   3. Read 3 short lines. Those clips become your voice profile.
 
   Results go to `data/calibration.yaml`, which sits under `config.yaml` (your own settings still win),
@@ -156,14 +175,17 @@ you say to exact names ("be right back" → `BRB`).
   is a set of voice fingerprints, encrypted with Windows DPAPI. It never leaves the PC, and *Delete voice profile*
   removes it. This is a convenience filter, not security: a recording of you can pass it, which is why risky
   actions still need a spoken "yes".
-- The name and "hey &lt;name&gt;" are always wake words; add your own under `assistant.wake_words`.
-  Your OBS scene and app names are fed to Whisper as hints.
+- The name and "hey &lt;name&gt;" are always wake words; add your own under `assistant.wake_words`. A near-miss
+  only counts if it's nearly as long as the name, so everyday words that share letters ("jars" for "Jarvis") don't.
 - The assistant ignores its own replies when your speakers feed them back into the mic (anything matching
-  what it just said, within 4 s). Headphones still work best.
+  what it just said, within 4 s). Short answers like "yes" or "stop" are never mistaken for its echo.
+  Headphones still work best.
+- **Follow-up without the name** only happens after a question or a "say yes" confirmation, so a false wake
+  can't turn into a back-and-forth. Spoken replies are stripped of markdown, links and emoji.
 - `voice.tts.engine: browser` uses Edge/Chrome's natural voices (e.g. *Microsoft
   Ryan Online (Natural)*). They sound far better than SAPI, but only speak while
   the HUD is open.
-- Noisy room? Raise `voice.min_rms`. Getting cut off mid-sentence? Raise `voice.silence_ms`.
+- Getting cut off mid-sentence? Raise `voice.endpoint_ms`. Triggering on TV or music? Raise `voice.vad_threshold` (0.6).
 
 ### Profiles: work vs stream
 `profiles.<name>.apps` and `title_keywords` decide how each minute gets
@@ -213,7 +235,7 @@ in `.env`, and set `twitch.enabled: true` and `twitch.channel`.
 ## How it's built
 
 ```
-mic ─► VAD ─► Whisper ─► echo guard ─► wake word ─► your voice? ─┐
+mic ─► Silero VAD ─► Parakeet ─► echo guard ─► wake word ─► your voice? ─┐
 HUD text box / buttons ──────────────────────────────────────────┼─► Assistant ─► macros / fast-path router ──► tools ─► Windows / Chrome / OBS / …
                                                                  │              └─► Claude (tool use) ────────┘
 pollers (system 2s, OBS 3s, calendar 5m, news 15m, projects 2m, activity 60s) ─► event bus ─► WebSocket ─► HUD
@@ -241,7 +263,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 156 tests, 5 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan and tray-icon APIs. The suite covers the router, wake-word matching, VAD, the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 175 tests, 5 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan and tray-icon APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). The suite covers the router, wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the
@@ -257,10 +279,11 @@ health check, and the API's token and Host checks.
 - **Chrome tabs are opened, not read.** Listing and switching existing tabs needs
   Chrome's remote-debugging port or a small extension.
 - **Streaming platform:** Twitch stats are built in; YouTube Live and Kick aren't yet.
-- **Wake word runs through Whisper,** so there's about a second of latency after
-  you stop talking. [docs/RESEARCH.md](docs/RESEARCH.md) lays out the upgrade path: Silero VAD, Moonshine or
-  Parakeet speech recognition, and a custom wake-word model trained with livekit-wakeword
-  (Porcupine's free tier ended June 30, 2026).
+- **The wake word is matched on the transcript,** so every utterance is transcribed (cheap now: ~60 ms) and
+  a streamer saying the name to chat still wakes it. A trained acoustic wake-word model (livekit-wakeword;
+  Porcupine's free tier ended June 30, 2026) is phase 2 in [docs/RESEARCH.md](docs/RESEARCH.md).
+- **Talking over a second voice is still hard** for every engine tested (see the table above): with someone
+  talking at -10 dB underneath, the best CPU engine still gets ~1 word in 5 wrong.
 - **No barge-in yet.** You can't talk over a reply to stop it; say "stop" after it finishes, or press the mute button.
 - **Clicking and typing inside apps** isn't there yet. It can open, close, focus and switch apps, windows, tabs,
   OBS and media, but not press a button inside Photoshop. That's the next step (UI Automation, then Claude's

@@ -24,8 +24,12 @@ claude:
 
 voice:
   enabled: true
-  stt_model: base.en            # tiny.en (fastest) | base.en | small.en (most accurate)
-  stt_device: auto              # cuda if you have an NVIDIA GPU and CUDA libs
+  stt_engine: auto              # auto (= parakeet) | parakeet | moonshine | parakeet-large | whisper
+                                # compare them on your voice: python -m assistant --bench-voice
+  # stt_model: base.en          # whisper engine only: tiny.en | base.en | small.en
+  # stt_device: auto            # whisper engine only: cuda for an NVIDIA GPU
+  endpoint_ms: 400              # pause that ends a command; raise it if you get cut off
+  corrections: {}               # words it keeps mishearing, e.g. {vrb: BRB}
   push_to_talk_hotkey: ctrl+alt+j
   follow_up_seconds: 8          # after a reply, talk again without the name
   # min_rms: 900                # speech loudness threshold; calibration measures your room

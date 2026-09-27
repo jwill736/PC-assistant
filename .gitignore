@@ -8,3 +8,4 @@ data/
 config.discovered.yaml
 research_notes/
 reports/
+tests/.models/

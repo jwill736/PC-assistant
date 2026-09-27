@@ -189,6 +189,32 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
             svc.bus.publish("obs", await run_in_threadpool(svc.obs.status), sticky=True)
         return result
 
+    @app.get("/api/discovery")
+    async def get_discovery():
+        return await run_in_threadpool(runtime.discovery_report) or {}
+
+    @app.post("/api/discovery/run")
+    async def run_discovery():
+        return await run_in_threadpool(runtime.rescan)
+
+    @app.post("/api/doctor")
+    async def doctor():
+        from .doctor import FAIL, PASS, WARN, run_doctor
+
+        def run() -> dict:
+            # Live services are reused; the mic is owned by the listener, so its state stands in for a mic test.
+            result = run_doctor(runtime.cfg, svc, test_mic=False, load_model=False, check_ports=False)
+            if runtime.listener:
+                st = runtime.listener.status()
+                bad = st["state"] in {"error", "unavailable"}
+                result["checks"].append({"name": "Voice listener", "status": FAIL if bad else PASS if st["state"] != "loading" else WARN,
+                                         "detail": st.get("error") or st["state"], "fix": "Run `python -m assistant --doctor` for a full mic + model test." if bad else ""})
+            return result
+
+        result = await run_in_threadpool(run)
+        svc.bus.publish("doctor", result, sticky=True)
+        return result
+
     @app.post("/api/voice/arm")
     async def voice_arm():
         if runtime.listener:

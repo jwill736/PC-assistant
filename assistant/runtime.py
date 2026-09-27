@@ -8,9 +8,11 @@ import time
 from datetime import datetime
 from typing import Callable
 
+from . import discovery
 from .brain.assistant import Assistant
 from .bus import EventBus
-from .config import Config
+from .config import Config, load_config
+from .integrations.activity import Categorizer
 from .integrations.jobs import JobRunner
 from .services import Services, build_services
 from .voice.hotkey import register_hotkey
@@ -71,6 +73,7 @@ class Runtime:
         self._every(300, self._poll_calendar, "calendar")
         self._every(900, self._poll_news, "news")
         self._every(60, self._morning_check, "morning")
+        self._every(6 * 3600, self._rescan_if_stale, "discovery", delay=6 * 3600)  # startup already scanned
 
     def stop(self) -> None:
         self._stop.set()
@@ -81,8 +84,10 @@ class Runtime:
         if self.svc.jobs:
             self.svc.jobs.shutdown()
 
-    def _every(self, seconds: float, fn: Callable[[], None], name: str) -> None:
+    def _every(self, seconds: float, fn: Callable[[], None], name: str, delay: float = 0) -> None:
         def loop():
+            if delay and self._stop.wait(delay):
+                return
             while not self._stop.is_set():
                 try:
                     fn()
@@ -145,6 +150,39 @@ class Runtime:
             self._briefed_on = today
             threading.Thread(target=self.assistant.briefing, args=("morning",), daemon=True).start()
 
+    # ---- PC scan -------------------------------------------------------
+    def _rescan_if_stale(self) -> None:
+        if discovery.is_stale(self.cfg.root):
+            self.rescan()
+
+    def rescan(self) -> dict:
+        """Scan the PC, rewrite config.discovered.yaml and apply it without a restart."""
+        result = discovery.discover(self.cfg)
+        discovery.write_discovered(result, self.cfg.root, self.cfg.data_dir)
+        self.apply_config(load_config(self.cfg.path))
+        report = {k: v for k, v in result.items() if k != "suggested"}
+        self.bus.publish("discovery", report, sticky=True)
+        return report
+
+    def apply_config(self, new: Config) -> None:
+        """Hot-swap the parts of config that discovery can change."""
+        for key in ("apps", "sites", "profiles", "projects"):
+            self.cfg[key] = new[key]
+        self.cfg["obs"]["scene_aliases"] = new["obs"]["scene_aliases"]
+        self.cfg["voice"]["stt_device"] = new["voice"]["stt_device"]
+        svc = self.svc
+        svc.launcher.aliases = {k.lower(): v for k, v in new["apps"].items()}
+        svc.launcher._shortcuts = None  # re-index Start Menu on next use
+        svc.browser.sites = {k.lower(): v for k, v in new["sites"].items()}
+        svc.obs.scene_aliases = {k.lower(): v for k, v in (new["obs"].get("scene_aliases") or {}).items()}
+        svc.activity.categorize = Categorizer(new["profiles"])
+        svc.projects.scan_dirs = new["projects"].get("scan_dirs") or []
+        svc.projects._repos_scanned = 0.0
+
+    def discovery_report(self) -> dict | None:
+        latest = self.bus.latest.get("discovery")
+        return latest["data"] if latest else discovery.load_report(self.cfg.data_dir)
+
     # ------------------------------------------------------------------
     def state(self) -> dict:
         latest = {k: v["data"] for k, v in self.bus.latest.items()}
@@ -165,5 +203,7 @@ class Runtime:
             "jobs": self.svc.storage.list_jobs(15),
             "log": self.svc.storage.recent_log(40),
             "briefing": self.assistant.last_briefing,
+            "discovery": self.discovery_report(),
+            "doctor": latest.get("doctor"),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},
         }

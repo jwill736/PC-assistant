@@ -21,6 +21,7 @@
     <button role="tab" data-view="command" aria-selected="true">Command</button>
     <button role="tab" data-view="work" aria-selected="false">Work</button>
     <button role="tab" data-view="stream" aria-selected="false">Stream</button>
+    <button role="tab" data-view="setup" aria-selected="false">Setup <span class="tab-badge hidden" id="setup-badge"></span></button>
   </nav>
   <div class="top-right">
     <span class="chip hidden" id="profile-chip"></span>
@@ -82,6 +83,14 @@
     <article class="panel span-4" data-panel="vitals" data-mode="stream"><div class="panel-head"><h2>Rig health</h2><span class="spacer"></span><button class="btn small" data-action="optimize" data-streaming="1">Optimize for stream</button></div><div class="body"></div></article>
     <article class="panel span-4" data-panel="agenda" data-days="7" data-profile="stream"><div class="panel-head"><h2>Stream schedule</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
     <article class="panel span-4" data-panel="tasks" data-profile="stream"><div class="panel-head"><h2>Stream tasks</h2></div><div class="body"></div></article>
+  </section>
+
+  <!-- ===================== SETUP ===================== -->
+  <section class="view" data-view="setup" hidden>
+    <article class="panel span-8" data-panel="connections"><div class="panel-head"><h2>Connections on this PC</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span>
+      <button class="btn small" data-action="rescan">Rescan PC</button></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="doctor"><div class="panel-head"><h2>Health check</h2><span class="spacer"></span>
+      <button class="btn small" data-action="doctor">Run check</button></div><div class="body"></div></article>
   </section>
 </main>
 

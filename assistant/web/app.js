@@ -562,6 +562,51 @@ const render = {
   },
 };
 
+const CONN_STATUS = { action: ['warning', 'Needs you'], missing: ['idle', 'Not found'], found: ['idle', 'Found'], connected: ['good', 'Connected'] };
+const CHECK_STATUS = { fail: ['critical', 'Fail'], warn: ['warning', 'Warn'], pass: ['good', 'Pass'], skip: ['idle', 'Skip'] };
+
+render.connections = function connections() {
+  const d = S.data.discovery;
+  const badge = $('#setup-badge');
+  const todo = d ? d.findings.filter(f => f.status === 'action').length : 0;
+  badge.textContent = todo; badge.classList.toggle('hidden', !todo);
+  for (const p of panels('connections')) {
+    const b = body(p);
+    if (!d) { fill(b, empty('No scan yet. Click Rescan PC — it looks for apps, games, OBS, bookmarks, repos, mics and GPU.')); continue; }
+    meta(p, `scanned ${ago(d.scanned_at)} · ${d.duration_s}s`);
+    const counts = d.summary || {};
+    const tiles = h('div', { class: 'stats', style: { marginBottom: '8px' } },
+      ['action', 'connected', 'found', 'missing'].map(k => h('div', { class: 'stat' },
+        h('div', { class: 'label' }, CONN_STATUS[k][1]), h('div', { class: 'value' }, counts[k] || 0))));
+    const byArea = {};
+    for (const f of d.findings) (byArea[f.area] = byArea[f.area] || []).push(f);
+    const areas = Object.keys(byArea).sort((a, b) => {
+      const rank = x => Math.min(...byArea[x].map(f => ['action', 'missing', 'found', 'connected'].indexOf(f.status)));
+      return rank(a) - rank(b) || a.localeCompare(b);
+    });
+    fill(b, tiles, areas.map(area => h('div', { class: 'conn-area' }, h('div', { class: 'sub-h' }, area),
+      byArea[area].map(f => h('div', { class: 'conn' }, status(...(CONN_STATUS[f.status] || CONN_STATUS.found)),
+        h('div', {}, h('div', { class: 'n' }, f.name), f.detail ? h('div', { class: 'd' }, f.detail) : null,
+          f.fix ? h('div', { class: 'f' }, f.fix) : null))))));
+  }
+};
+
+render.doctor = function doctor() {
+  const r = S.data.doctor;
+  for (const p of panels('doctor')) {
+    const b = body(p);
+    if (!r) { fill(b, empty('Runs live checks: Claude key, OBS connection, each calendar, news feeds, Chrome, Claude Code CLI, voice.')); continue; }
+    const counts = {};
+    for (const c of r.checks) counts[c.status] = (counts[c.status] || 0) + 1;
+    fill(b, h('div', { class: 'muted', style: { fontSize: '12px', marginBottom: '6px' } },
+      `${counts.pass || 0} pass · ${counts.warn || 0} warn · ${counts.fail || 0} fail · ${ago(r.ran_at)}`),
+      h('div', { class: 'list' }, r.checks.map(c => h('div', { class: 'item' }, h('div', { class: 'main' },
+        h('div', { class: 't1' }, status(...(CHECK_STATUS[c.status] || CHECK_STATUS.skip)), ' ', c.name),
+        c.detail ? h('div', { class: 't2' }, c.detail) : null,
+        c.fix ? h('div', { class: 't3' }, `→ ${c.fix}`) : null)))));
+  }
+};
+
 function renderFindings(res) {
   const sev = { high: ['critical', 'High'], medium: ['warning', 'Medium'], info: ['idle', 'Info'], ok: ['good', 'OK'] };
   return h('div', {}, h('div', { class: 'sub-h' }, `Optimizer · power plan ${res.power_plan || 'n/a'} · temp ${res.temp_gb} GB`),
@@ -607,6 +652,13 @@ document.addEventListener('click', async e => {
   } else if (action === 'optimize') {
     btn.disabled = true;
     try { S.optimizer = await tool('optimize_pc', { streaming: !!btn.dataset.streaming }); render.vitals(); } finally { btn.disabled = false; }
+  } else if (action === 'rescan' || action === 'doctor') {
+    btn.disabled = true; const label = btn.textContent; btn.textContent = action === 'rescan' ? 'Scanning…' : 'Checking…';
+    try {
+      const res = await post(action === 'rescan' ? '/api/discovery/run' : '/api/doctor');
+      S.data[action === 'rescan' ? 'discovery' : 'doctor'] = res;
+      render[action === 'rescan' ? 'connections' : 'doctor']();
+    } catch (err) { toast(`Failed: ${err.message}`); } finally { btn.disabled = false; btn.textContent = label; }
   } else if (action === 'new-research') {
     const prompt = window.prompt('Research topic — Claude will search the web and write a brief in the background:');
     if (prompt) { const r = await post('/api/jobs', { kind: 'research', prompt }); toast(r.ok ? `Research job ${r.job_id} started.` : r.error); }
@@ -687,13 +739,14 @@ function speak({ text, voice_hint, rate }) {
 }
 
 // ---------------------------------------------------------------- live updates
-const sticky = new Set(['system', 'obs', 'twitch', 'activity', 'projects', 'calendar', 'news', 'briefing']);
+const sticky = new Set(['system', 'obs', 'twitch', 'activity', 'projects', 'calendar', 'news', 'briefing', 'discovery', 'doctor']);
 function onEvent(ev) {
   const { type, data } = ev;
   if (sticky.has(type)) {
     S.data[type] = data;
     const fns = { system: ['vitals', 'stats'], obs: ['obs', 'stats'], twitch: ['twitch', 'stats'], activity: ['activity', 'stats'],
-      projects: ['projects', 'stats'], calendar: ['agenda', 'stats'], news: ['news'], briefing: ['briefing'] }[type];
+      projects: ['projects', 'stats'], calendar: ['agenda', 'stats'], news: ['news'], briefing: ['briefing'],
+      discovery: ['connections'], doctor: ['doctor'] }[type];
     for (const f of fns) if (!(f === 'vitals' && document.hidden)) render[f]();
     return;
   }

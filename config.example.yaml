@@ -53,16 +53,16 @@ profiles:
       obs_scene: Starting Soon
     close_apps: [slack, teams]
 
-# Spoken name -> how to launch it. Anything not listed is found automatically
-# via the Start Menu / Desktop shortcuts, so only add the awkward ones.
-apps:
-  vscode: {path: code, process: code}
-  obs:
-    path: C:\Program Files\obs-studio\bin\64bit\obs64.exe
-    cwd: C:\Program Files\obs-studio\bin\64bit   # OBS refuses to start from another folder
-    process: obs64
-  discord: {path: "%LOCALAPPDATA%\\Discord\\Update.exe", args: "--processStart Discord.exe", process: discord}
-  spotify: {path: "%APPDATA%\\Spotify\\Spotify.exe", process: spotify}
+# Spoken name -> how to launch it. The PC scan fills this in for you
+# (config.discovered.yaml): ~40 common apps, every Steam/Epic game, and anything
+# in the Start Menu opens by name. Only add entries here to fix or override one —
+# an entry here fully replaces the scanned one.
+apps: {}
+#  vscode: {path: code, process: code}
+#  obs:
+#    path: C:\Program Files\obs-studio\bin\64bit\obs64.exe
+#    cwd: C:\Program Files\obs-studio\bin\64bit   # OBS refuses to start from another folder
+#    process: obs64
 
 # "open gmail" / "open a new tab with twitch"
 sites:

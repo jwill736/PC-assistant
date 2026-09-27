@@ -184,10 +184,12 @@ class FakeListener:
 class FakeCalibrator:
     def __init__(self, data_dir, listener):
         self.cancelled = threading.Event()
+        self.release = threading.Event()  # the test decides when the "recording" ends
         self.data_dir, self.listener = data_dir, listener
 
     def run(self):
         self.listener.paused_during_run = self.listener.paused
+        assert self.release.wait(5)
         calib.write_layer({"voice": {"min_rms": 1234, "speaker_check": "log"},
                            "assistant": {"wake_words": ["freddy"]}}, self.data_dir)
         return {"min_rms": 1234}
@@ -200,8 +202,10 @@ def test_runtime_applies_calibration_live(tmp_path):
 
     rt.listener = FakeListener(list(cfg["assistant"]["wake_words"]))
     rt.verifier = speaker_id.SpeakerVerifier(cfg.data_dir, "strict")
-    assert rt.start_calibration(FakeCalibrator(cfg.data_dir, rt.listener))["ok"] is True
+    first = FakeCalibrator(cfg.data_dir, rt.listener)
+    assert rt.start_calibration(first)["ok"] is True
     assert rt.start_calibration(FakeCalibrator(cfg.data_dir, rt.listener))["ok"] is False  # one at a time
+    first.release.set()
     deadline = time.time() + 5
     while rt.calibrator is not None and time.time() < deadline:
         time.sleep(0.01)

@@ -137,6 +137,7 @@ class Config(dict):
     """The merged settings dict plus a couple of helpers."""
 
     root: Path = ROOT
+    path: Path | None = None  # the config.yaml this was loaded from (may not exist)
 
     def get_path(self, dotted: str, default: Any = None) -> Any:
         node: Any = self
@@ -158,14 +159,51 @@ class Config(dict):
         return path
 
 
+DISCOVERED_FILE = "config.discovered.yaml"
+
+
+def _read_yaml(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+
+
+def _union(*lists) -> list:
+    seen, out = set(), []
+    for items in lists:
+        for item in items or []:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+    return out
+
+
 def load_config(path: str | os.PathLike | None = None) -> Config:
     load_env_file(ROOT / ".env")
     cfg_path = Path(path) if path else Path(os.environ.get("ASSISTANT_CONFIG", ROOT / "config.yaml"))
-    user: dict = {}
-    if cfg_path.exists():
-        user = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    merged = Config(deep_merge(DEFAULTS, user))
-    merged.root = cfg_path.parent.resolve() if cfg_path.exists() else ROOT
+    root = cfg_path.parent.resolve()  # even before config.yaml exists (first run), scan output lives beside it
+    user = _read_yaml(cfg_path)
+    # What the PC scan found sits between the defaults and the user's own config.
+    discovered = _read_yaml(root / DISCOVERED_FILE)
+    merged = Config(deep_merge(deep_merge(DEFAULTS, discovered), user))
+    merged.root = root
+    merged.path = cfg_path
+    # An app/site the user defines replaces the scanned one outright; blending a
+    # scanned process name into a hand-written entry could close the wrong program.
+    for section in ("apps", "sites"):
+        for name, spec in (user.get(section) or {}).items():
+            merged[section][name] = copy.deepcopy(spec)
+    # Lists where "both" is the right answer: found repo folders plus the user's,
+    # detected work/stream apps plus the user's.
+    merged["projects"]["scan_dirs"] = _union(user.get("projects", {}).get("scan_dirs"),
+                                             discovered.get("projects", {}).get("scan_dirs"))
+    for name, prof in merged["profiles"].items():
+        prof["apps"] = _union((user.get("profiles") or {}).get(name, {}).get("apps"),
+                              (discovered.get("profiles") or {}).get(name, {}).get("apps"),
+                              DEFAULTS["profiles"].get(name, {}).get("apps"))
     # Wake words always include the assistant's own name.
     name = str(merged["assistant"]["name"]).lower()
     words = [w.lower() for w in merged["assistant"].get("wake_words") or []]

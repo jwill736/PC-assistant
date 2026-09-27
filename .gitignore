@@ -5,3 +5,4 @@ __pycache__/
 config.yaml
 data/
 .pytest_cache/
+config.discovered.yaml

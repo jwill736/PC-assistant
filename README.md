@@ -35,15 +35,37 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 1. Install **Python 3.11+** from python.org (tick *Add to PATH*).
 2. Double-click **`setup.bat`**. It creates `.venv`, installs everything, and copies
    `config.example.yaml` to `config.yaml` and `.env.example` to `.env`.
-3. Edit **`.env`**. Add `ANTHROPIC_API_KEY` for the Claude brain, `OBS_PASSWORD`, and your calendar links.
-4. Edit **`config.yaml`**. Set your name, your **goals**, your apps, and the profiles.
-5. Double-click **`start.bat`**. The HUD opens as a Chrome app window. Say
-   *"Jarvis, good morning."*
+3. Edit **`.env`**. Add `ANTHROPIC_API_KEY` for the Claude brain and your calendar links.
+4. Edit **`config.yaml`**. Set your name and your **goals**. Apps, games, OBS scenes and repos are found automatically (see below).
+5. Double-click **`start.bat`**. On first launch it scans the PC, then the HUD opens as a Chrome app window.
+   Open the **Setup** tab to see what's connected and what still needs you, then say *"Jarvis, good morning."*
 
 To start it every time you sign in, run
 `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`.
 
-Command-line flags: `python -m assistant --no-voice --no-window --port 8765 --debug --config path\to\config.yaml`.
+Command-line flags: `python -m assistant --no-voice --no-window --port 8765 --debug --config path\to\config.yaml`,
+plus `--scan` (scan the PC and exit) and `--doctor` (scan, run a live health check of every connection, and exit).
+
+## PC scan & health check
+
+The assistant searches the PC on first launch and once a day after that, or on
+demand with `--scan` or **Rescan PC** in the Setup tab. It finds:
+
+| What | Result |
+|---|---|
+| ~40 common apps (browsers, OBS, Streamlabs, Stream Deck, Discord, Slack, Spotify, VS Code, Adobe, DaVinci…) | Open and close by name with correct process names; work/stream apps sharpen activity tracking |
+| Steam and Epic games | "open baldur's gate 3" launches the game |
+| OBS: WebSocket settings, scene collection, streaming service | Scene names with emoji/symbols get spoken aliases ("🔴 Starting Soon" → "starting soon"); the platform (Twitch/YouTube/Kick) is detected. The WebSocket password is read from OBS directly, so there's nothing to copy. The stream key is never read |
+| Chrome / Edge / Brave bookmarks bar | Each bookmark opens by voice by its name |
+| Git repos under the usual folders + every repo Claude Code has worked in | Project tracking plus your GitHub username |
+| Mics, NVIDIA GPU + CUDA, Claude Code CLI, keys you've set | Setup to-dos; Whisper moves to the GPU when CUDA is available |
+
+Results go to `config.discovered.yaml`, which loads **underneath** `config.yaml`.
+Anything you set yourself wins. Nothing secret is written into it.
+
+`--doctor` (or **Run check** in the Setup tab) then tests each connection live:
+the Claude key and model, OBS, every calendar link, news feeds, Chrome, the
+Claude Code CLI, a mic level test and the speech model. Each problem prints its fix.
 
 ## Things to say
 
@@ -97,10 +119,11 @@ Tag each calendar with a `profile` (`work`, `stream`, `personal`, …) so the Wo
 and Stream views show the right ones. Calendar access is **read-only** for now.
 
 ### OBS
-OBS 28+ has WebSocket built in: **Tools → WebSocket Server Settings → Enable**,
-set a password, and put it in `.env` as `OBS_PASSWORD`. Scene names are
-fuzzy-matched, and `obs.scene_aliases` maps what you say to exact names
-("be right back" → `BRB`).
+OBS 28+ has WebSocket built in: **Tools → WebSocket Server Settings → Enable**.
+The password is read from OBS's own settings, so leave `OBS_PASSWORD` empty
+unless OBS runs on another machine. Scene names are fuzzy-matched, the scan
+adds aliases for scenes with emoji, and `obs.scene_aliases` maps anything else
+you say to exact names ("be right back" → `BRB`).
 
 ### Voice
 `requirements-voice.txt` installs faster-whisper, sounddevice, pyttsx3 and keyboard.
@@ -162,10 +185,11 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 87 tests, 4 of which only run on Windows, where they call the real window, idle-time, Start Menu and power-plan APIs. The suite covers the router, wake-word matching, VAD, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 102 tests, 4 of which only run on Windows, where they call the real window, idle-time, Start Menu and power-plan APIs. The suite covers the router, wake-word matching, VAD, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
-briefings, and the API's token and Host checks.
+briefings, the PC scan (against a simulated Windows folder layout), the
+health check, and the API's token and Host checks.
 
 ## Known limits
 

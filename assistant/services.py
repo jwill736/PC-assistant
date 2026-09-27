@@ -48,6 +48,16 @@ class Services:
         return self.cfg["assistant"]["name"]
 
 
+def obs_password(cfg: Config) -> str:
+    """.env wins; otherwise use the password OBS itself stores, so nothing has to be copied."""
+    explicit = cfg.secret(cfg["obs"].get("password_env"))
+    if explicit or cfg["obs"]["host"] not in ("localhost", "127.0.0.1"):
+        return explicit
+    from .discovery import read_obs_websocket
+
+    return read_obs_websocket().get("password", "")
+
+
 def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | None = None) -> Services:
     bus = bus or EventBus()
     storage = storage or Storage(cfg.data_dir / "assistant.db")
@@ -62,7 +72,7 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
                              protected=cfg["optimizer"]["protected_processes"]),
         launcher=AppLauncher(cfg["apps"]),
         browser=Browser(cfg["sites"]),
-        obs=OBSController(obs_cfg["host"], obs_cfg["port"], cfg.secret(obs_cfg.get("password_env")),
+        obs=OBSController(obs_cfg["host"], obs_cfg["port"], obs_password(cfg),
                           obs_cfg.get("scene_aliases"), enabled=obs_cfg.get("enabled", True)),
         twitch=TwitchClient(tw_cfg.get("channel", ""), cfg.secret(tw_cfg.get("client_id_env")),
                             cfg.secret(tw_cfg.get("client_secret_env")), enabled=tw_cfg.get("enabled", False)),

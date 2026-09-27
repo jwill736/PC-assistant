@@ -43,8 +43,8 @@ def _norm_sentence(text: str) -> str:
 def split_wake(transcript: str, wake_words: list[str], search_words: int = 4, cutoff: float = 0.8) -> tuple[bool, str]:
     """Find a wake word near the start of ``transcript``.
 
-    Returns (matched, command_after_wake_word). Fuzzy so "Jarvis," / "jarvis's" /
-    "Hey, Jarvis" all match, and the command keeps its original casing.
+    Returns (matched, command_after_wake_word). Fuzzy so "Vesper," / "vesper's" /
+    "Hey, Vesper" all match, and the command keeps its original casing.
     """
     tokens = re.findall(r"\S+", transcript)
     normed = [_norm(t) for t in tokens]
@@ -185,7 +185,7 @@ class VoiceListener:
         """Accept the next utterance without the wake word.
 
         ``source`` hotkey/button = a physical push-to-talk (trusted: skips the
-        voice check); wake = the name said alone ("Jarvis?") — still checked."""
+        voice check); wake = the name said alone ("Vesper?") — still checked."""
         self.armed_until = time.time() + seconds
         self.armed_by = source
         self.speaker.chime()
@@ -335,7 +335,7 @@ class VoiceListener:
                 return
         self.bus.publish("heard", {"text": text, "wake": matched, "armed": bool(source)})
         if matched and not command:
-            self.arm(source="wake")  # "Jarvis?" -> listen for the actual command
+            self.arm(source="wake")  # "Vesper?" -> listen for the actual command
             return
         self.armed_until = 0.0
         self.last_command = time.time()

@@ -5,7 +5,7 @@ Three steps, ~1 minute, run from the HUD Setup tab or ``--calibrate``:
 
 1. **Room noise** — 5 s of quiet sets ``voice.min_rms`` to ~3x the noise floor.
 2. **Wake word** — say the name 5 times; every way Whisper spells it becomes an
-   extra wake word ("Jarvis" → "travis", "jarvis's"…).
+   extra wake word ("Vesper" → "vespa", "vesper's"…).
 3. **Your voice** — read three short lines (~30 s). Those takes plus the wake
    words become the speaker profile used to ignore other voices.
 

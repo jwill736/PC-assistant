@@ -527,7 +527,7 @@ const render = {
       const box = h('div', { class: 'log' }, S.log.slice(-60).map(m => h('div', { class: `msg ${m.role}` }, m.text,
         h('span', { class: 'meta' }, [m.source === 'voice' ? 'voice' : m.source === 'heard' ? 'heard (no wake word)' : null,
           m.ms != null ? `${m.ms} ms` : null, m.ts ? fmtClock(new Date(m.ts * 1000)) : null].filter(Boolean).join(' · ')))));
-      if (!S.log.length) box.append(empty(`Try: “${S.data.assistant?.name || 'Jarvis'}, good morning” · “open discord” · “switch to BRB” · “where am I”`));
+      if (!S.log.length) box.append(empty(`Try: “${S.data.assistant?.name || 'Vesper'}, good morning” · “open discord” · “switch to BRB” · “where am I”`));
       fill(b, box);
       box.scrollTop = box.scrollHeight;
     }
@@ -555,7 +555,7 @@ const render = {
     const br = S.data.briefing;
     for (const p of panels('briefing')) {
       const b = body(p);
-      if (!br) { fill(b, empty(`Say “${S.data.assistant?.name || 'Jarvis'}, good morning” or click Good morning. It pulls calendars, yesterday's activity, projects, tasks and news.`)); continue; }
+      if (!br) { fill(b, empty(`Say “${S.data.assistant?.name || 'Vesper'}, good morning” or click Good morning. It pulls calendars, yesterday's activity, projects, tasks and news.`)); continue; }
       fill(b, 
         h('div', { class: 'brief-head' }, br.headline || ''),
         h('div', { class: 'muted', style: { fontSize: '12px', marginTop: '-6px', marginBottom: '10px' } },
@@ -803,7 +803,7 @@ function paintOrb() {
   orb.setAttribute('class', `orb ${orbState.speaking ? 'speaking' : orbState.thinking ? 'thinking' : orbState.voice}`);
   const a = S.data.assistant || {};
   const labels = {
-    listening: `Listening for “${(a.wake_words || ['jarvis'])[0]}”`, hearing: 'Hearing you…', transcribing: 'Transcribing…',
+    listening: `Listening for “${(a.wake_words || ['vesper'])[0]}”`, hearing: 'Hearing you…', transcribing: 'Transcribing…',
     armed: 'Go ahead — listening', muted: 'Mic muted', loading: 'Loading speech model…', disabled: 'Voice disabled',
     unavailable: 'Voice unavailable', error: 'Voice error', off: 'Voice off',
   };

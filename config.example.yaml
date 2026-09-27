@@ -2,7 +2,7 @@
 # go in .env — see .env.example. Anything you leave out uses a sensible default.
 
 assistant:
-  name: Jarvis                  # what you call it; also the wake word
+  name: Vesper                  # what you call it; also the wake word (pick one people rarely say)
   wake_words: []                # the name and "hey <name>" always count; calibration adds
                                 # the spellings Whisper hears for YOUR voice ("travis"…)
   user_name: J                  # how it addresses you

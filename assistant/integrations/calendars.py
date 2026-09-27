@@ -21,7 +21,7 @@ import recurring_ical_events
 log = logging.getLogger(__name__)
 
 # Categorical slots in fixed order, validated for colour-blind separation on the HUD surface.
-PALETTE = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+PALETTE = ["#6f9bff", "#b48cff", "#c9b27c", "#4fc1a6", "#e7799a", "#5fb7d9", "#d9a441", "#9ea3aa"]  # HUD series colours
 
 
 def local_tz(name: str | None = None) -> tzinfo:

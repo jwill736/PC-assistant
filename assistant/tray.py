@@ -20,17 +20,22 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
+# Same mark as the HUD: graphite disc, warm-white ring, orange attention arc, core = state.
 COLORS = {
-    "listening": (76, 201, 240),
-    "hearing": (150, 225, 250),
-    "armed": (150, 225, 250),
-    "speaking": (232, 241, 248),
-    "thinking": (57, 135, 229),
-    "attention": (250, 178, 25),
-    "error": (208, 59, 59),
-    "muted": (110, 122, 135),
-    "off": (110, 122, 135),
+    "listening": (242, 240, 234),
+    "hearing": (255, 106, 43),
+    "armed": (255, 106, 43),
+    "speaking": (255, 106, 43),
+    "thinking": (255, 106, 43),
+    "attention": (242, 181, 58),
+    "error": (239, 75, 75),
+    "muted": (125, 122, 115),
+    "off": (125, 122, 115),
 }
+ACCENT = (255, 106, 43)
+GROUND = (11, 11, 12)
+RING = (242, 240, 234)
+ACTIVE = {"listening", "hearing", "armed", "speaking", "thinking"}
 
 
 def tray_state(voice_state: str, speaking: bool, thinking: bool, unhealthy: int) -> str:
@@ -163,8 +168,16 @@ class Tray:
         img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         color = COLORS.get(state, COLORS["off"])
-        d.ellipse((4, 4, size - 4, size - 4), outline=color + (255,), width=6)       # ring
-        d.ellipse((22, 22, size - 22, size - 22), fill=color + (255,))               # core
+        d.ellipse((1, 1, size - 1, size - 1), fill=GROUND + (255,))                        # readable on light or dark taskbars
+        ring = RING if state in ACTIVE or state == "attention" else COLORS["off"]
+        d.ellipse((9, 9, size - 9, size - 9), outline=ring + (255,), width=3)             # ring
+        if state in ACTIVE:
+            d.arc((7, 7, size - 7, size - 7), start=-90, end=0, fill=ACCENT + (255,), width=7)  # attention arc
+        if state == "error":
+            d.ellipse((9, 9, size - 9, size - 9), outline=color + (255,), width=3)
+        d.ellipse((24, 24, size - 24, size - 24), fill=color + (255,))                    # core
+        if state == "muted":
+            d.line((16, size - 16, size - 16, 16), fill=RING + (255,), width=4)           # slash
         return img
 
     def start(self) -> bool:

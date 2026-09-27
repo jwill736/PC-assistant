@@ -10,8 +10,11 @@ X", "have Claude add tests to my repo") runs in the background while you keep wo
 The HUD dashboard has three views: **Command** (everything at once), **Work** and
 **Stream**.
 
-> Name it whatever you want: `assistant.name` in `config.yaml` is both what it
-> calls itself and the wake word. It ships as "Jarvis".
+> It ships as **Vesper**. `assistant.name` in `config.yaml` is both what it calls itself
+> and the wake word, so choose a name nobody says by accident: Vesper scored about 3.5×
+> fewer sound-alikes in everyday English than "Jarvis" (which also matches "jars"), while
+> names like Atlas ("at last"), Nova ("know the") or Juno ("you know") fire all the time.
+> Re-run calibration after renaming.
 
 ## What works today
 
@@ -42,7 +45,7 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 4. Edit **`config.yaml`**. Set your name and your **goals**. Apps, games, OBS scenes and repos are found automatically (see below).
 5. Double-click **`start.bat`**. On first launch it scans the PC, then the HUD opens as a Chrome app window.
    Open the **Setup** tab to see what's connected and what still needs you.
-6. In the Setup tab, click **Calibrate my voice** (about a minute; see [Voice](#voice)). Then say *"Jarvis, good morning."*
+6. In the Setup tab, click **Calibrate my voice** (about a minute; see [Voice](#voice)). Then say *"Vesper, good morning."*
 
 To start it every time you sign in, run
 `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`. It launches with `pythonw`: no
@@ -79,7 +82,7 @@ Claude Code CLI, a mic level test and the speech model. Each problem prints its 
 
 | Say | Does |
 |---|---|
-| "Jarvis, good morning" / "give me the rundown" | Morning briefing: spoken summary, full plan on the HUD |
+| "Vesper, good morning" / "give me the rundown" | Morning briefing: spoken summary, full plan on the HUD |
 | "recap my day" / "what did I get done today" | End-of-day recap |
 | "what should I work on next" | One highest-leverage move (uses Claude) |
 | "where am I" | Active window and everything that's open |
@@ -190,7 +193,7 @@ macros:
 A step is any tool the assistant has (the same names Claude uses: `open_app`, `open_urls`, `obs_switch_scene`,
 `obs_control`, `media_control`, `set_power_plan`…), or `say: text`, `wait: seconds` (max 30), or
 `command: "anything you'd say out loud"`. A macro with a risky step, such as ending the stream,
-asks for one "yes" before it starts. The phrase has to be the whole sentence ("Jarvis, brb"), so
+asks for one "yes" before it starts. The phrase has to be the whole sentence ("Vesper, brb"), so
 "be right back in five minutes with the new overlay" won't fire it. You can also say "run brb",
 click **Run** in the Setup tab, or just describe what you want and let Claude choose the macro.
 Unknown step names are logged when the assistant starts. `config.example.yaml` has four to start from.
@@ -221,7 +224,7 @@ watchdog: restarts any poller or service that crashes or stops reporting in ─�
 - `assistant/integrations/`: `desktop`, `browser`, `system`, `obs`, `twitch`, `calendars`, `news`, `projects`, `activity`, `jobs`
 - `assistant/voice/`: `listener.py` (mic, VAD, Whisper, wake word, echo guard), `speaker_id.py` (voice profile + check), `calibrate.py` (the wizard), `tts.py`, `hotkey.py`
 - `assistant/watchdog.py` (supervisor + log file), `assistant/tray.py` (tray icon), `assistant/discovery.py` + `doctor.py` (PC scan and health check)
-- `assistant/web/`: the HUD (plain HTML, CSS and JS; no build step)
+- `assistant/web/`: the HUD (plain HTML, CSS and JS; no build step). Light and dark themes (follows Windows, or the ◐ button). Jost and Inter are bundled under the SIL Open Font License, so it looks the same offline
 - Data lives in `data/assistant.db` (SQLite): activity, tasks, notes, conversation, jobs
 
 **Security:** the server listens on `127.0.0.1` only. Every API and WebSocket call

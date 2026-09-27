@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULTS: dict[str, Any] = {
     "assistant": {
-        "name": "Jarvis",
+        "name": "Vesper",
         "wake_words": [],  # the name and "hey <name>" are always included
         "user_name": "boss",
         "timezone": None,  # None = system local time

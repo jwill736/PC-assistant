@@ -8,6 +8,7 @@ dashboard mic button) skips the wake word for one utterance.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import logging
 import math
@@ -33,6 +34,10 @@ HALLUCINATIONS = {"you", "thank you", "thanks for watching", "thank you for watc
 
 def _norm(token: str) -> str:
     return re.sub(r"[^\w']", "", token.lower())
+
+
+def _norm_sentence(text: str) -> str:
+    return " ".join(_norm(t) for t in text.split() if _norm(t))
 
 
 def split_wake(transcript: str, wake_words: list[str], search_words: int = 4, cutoff: float = 0.8) -> tuple[bool, str]:
@@ -124,7 +129,7 @@ class EnergySegmenter:
 
 class VoiceListener:
     def __init__(self, bus: EventBus, speaker: Speaker, wake_words: list[str], on_command: Callable[[str], None],
-                 cfg: dict, hint_words: Callable[[], list[str]] | None = None):
+                 cfg: dict, hint_words: Callable[[], list[str]] | None = None, verifier=None):
         self.bus, self.speaker = bus, speaker
         self.wake_words = wake_words
         self.on_command = on_command
@@ -133,25 +138,56 @@ class VoiceListener:
         self.state = "off"
         self.error = ""
         self.muted = False
+        self.paused = False  # calibration borrows the mic
+        self.verifier = verifier  # SpeakerVerifier or None
         self.armed_until = 0.0
+        self.armed_by = ""
         self.last_command = 0.0
         self._audio: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._gen = 0
         self._model = None
+        self.heartbeat: Callable[[], None] = lambda: None  # set by the watchdog
 
     # ---- control ----------------------------------------------------------
     def start(self) -> None:
         if self._thread is None:
-            self._thread = threading.Thread(target=self._run, name="voice", daemon=True)
-            self._thread.start()
+            self.restart()
+
+    def restart(self) -> threading.Thread:
+        """Start a fresh loop; a previous (dead or stuck) one retires when it notices."""
+        self._gen += 1
+        self._thread = threading.Thread(target=self._run, args=(self._gen,), name="voice", daemon=True)
+        self._thread.start()
+        return self._thread
+
+    @contextlib.contextmanager
+    def _keepalive(self, every: float = 10.0):
+        """Keep beating while legitimately busy (model download, a long Claude call)."""
+        done = threading.Event()
+
+        def tick():
+            while not done.wait(every):
+                self.heartbeat()
+
+        threading.Thread(target=tick, name="voice-keepalive", daemon=True).start()
+        try:
+            yield
+        finally:
+            done.set()
+            self.heartbeat()
 
     def stop(self) -> None:
         self._stop.set()
 
-    def arm(self, seconds: float = 8) -> None:
-        """Accept the next utterance without the wake word (push-to-talk)."""
+    def arm(self, seconds: float = 8, source: str = "hotkey") -> None:
+        """Accept the next utterance without the wake word.
+
+        ``source`` hotkey/button = a physical push-to-talk (trusted: skips the
+        voice check); wake = the name said alone ("Jarvis?") — still checked."""
         self.armed_until = time.time() + seconds
+        self.armed_by = source
         self.speaker.chime()
         self._set_state("armed")
 
@@ -174,7 +210,7 @@ class VoiceListener:
         compute = "int8" if device in ("cpu", "auto") else "float16"
         return WhisperModel(self.cfg.get("stt_model", "base.en"), device=device, compute_type=compute)
 
-    def _run(self) -> None:
+    def _run(self, gen: int = 0) -> None:
         try:
             import numpy as np
             import sounddevice as sd
@@ -184,7 +220,9 @@ class VoiceListener:
             return
         self._set_state("loading")
         try:
-            self._model = self._load_model()
+            if self._model is None:
+                with self._keepalive():  # first run may download the model
+                    self._model = self._load_model()
         except Exception as exc:
             self.error = f"Speech model failed to load: {exc}"
             log.exception("whisper load failed")
@@ -207,13 +245,19 @@ class VoiceListener:
             self._set_state("error")
             return
         with stream:
+            self.error = ""
             self._set_state("muted" if self.muted else "listening")
-            while not self._stop.is_set():
+            last_beat = 0.0
+            while not self._stop.is_set() and self._gen == gen:
+                now = time.time()
+                if now - last_beat >= 5:
+                    self.heartbeat()
+                    last_beat = now
                 try:
                     frame = self._audio.get(timeout=0.5)
                 except queue.Empty:
                     continue
-                if self.muted or self.speaker.speaking.is_set():
+                if self.muted or self.paused or self.speaker.speaking.is_set():
                     segmenter.reset()
                     continue
                 frames = segmenter.feed(frame)
@@ -223,7 +267,8 @@ class VoiceListener:
                     continue
                 self._set_state("transcribing")
                 try:
-                    self._handle_audio(np.concatenate(frames))
+                    with self._keepalive():
+                        self._handle_audio(np.concatenate(frames))
                 except Exception:
                     log.exception("voice pipeline error")
                 self._drain()
@@ -238,12 +283,31 @@ class VoiceListener:
             except queue.Empty:
                 return
 
-    def _armed(self) -> bool:
+    def _arm_source(self) -> str | None:
+        """Why the next utterance needs no wake word: hotkey/button/wake/followup, or None."""
         now = time.time()
         if now < self.armed_until:
-            return True
+            return self.armed_by or "hotkey"
         follow = self.cfg.get("follow_up_seconds", 8)
-        return self.speaker.last_end > self.last_command and now - self.speaker.last_end < follow
+        if self.speaker.last_end > self.last_command and now - self.speaker.last_end < follow:
+            return "followup"
+        return None
+
+    def _armed(self) -> bool:
+        return self._arm_source() is not None
+
+    def is_own_echo(self, text: str, window_s: float = 4.0) -> bool:
+        """Did the mic just pick up our own reply? (speakers, no headset, no echo cancellation)"""
+        said = getattr(self.speaker, "last_text", "")
+        recent = self.speaker.speaking.is_set() or time.time() - self.speaker.last_end < window_s
+        if not said or not recent:
+            return False
+        a, b = _norm_sentence(text), _norm_sentence(said)
+        if not a:
+            return False
+        if a in b:
+            return True
+        return difflib.SequenceMatcher(None, a, b).ratio() >= 0.6
 
     def _handle_audio(self, audio) -> None:
         import numpy as np
@@ -255,13 +319,24 @@ class VoiceListener:
         text = " ".join(s.text for s in segments).strip()
         if _norm(text.replace(" ", "")) in {h.replace(" ", "") for h in HALLUCINATIONS}:
             return
-        matched, command = split_wake(text, self.wake_words)
-        armed = self._armed()
-        self.bus.publish("heard", {"text": text, "wake": matched, "armed": armed})
-        if matched and not command:
-            self.arm()  # "Jarvis?" -> listen for the actual command
+        if self.is_own_echo(text):
+            self.bus.publish("heard", {"text": text, "ignored": "own voice"})
             return
-        if matched or armed:
-            self.armed_until = 0.0
-            self.last_command = time.time()
-            self.on_command(command if matched else text)
+        matched, command = split_wake(text, self.wake_words)
+        source = self._arm_source()
+        if not (matched or source):
+            self.bus.publish("heard", {"text": text, "wake": False, "armed": False})
+            return
+        # Only the owner may command it — unless they physically pressed push-to-talk.
+        if self.verifier is not None and source not in ("hotkey", "button"):
+            accepted, score = self.verifier.check(samples)
+            if not accepted:
+                self.bus.publish("heard", {"text": text, "ignored": "voice not recognised", "score": score})
+                return
+        self.bus.publish("heard", {"text": text, "wake": matched, "armed": bool(source)})
+        if matched and not command:
+            self.arm(source="wake")  # "Jarvis?" -> listen for the actual command
+            return
+        self.armed_until = 0.0
+        self.last_command = time.time()
+        self.on_command(command if matched else text)

@@ -27,6 +27,7 @@ class Speaker:
         self.rate, self.voice_hint = rate, voice_hint
         self.speaking = threading.Event()
         self.last_end = 0.0
+        self.last_text = ""  # what we said last, so the mic can ignore hearing itself
         self._q: queue.Queue[str | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._browser_done = threading.Event()
@@ -36,14 +37,22 @@ class Speaker:
 
     def start(self) -> None:
         if self._thread is None and self.engine_name != "none":
-            self._thread = threading.Thread(target=self._worker, name="tts", daemon=True)
-            self._thread.start()
+            self.restart()
+
+    def restart(self) -> threading.Thread | None:
+        if self.engine_name == "none":
+            return None
+        self.speaking.clear()
+        self._thread = threading.Thread(target=self._worker, name="tts", daemon=True)
+        self._thread.start()
+        return self._thread
 
     def say(self, text: str) -> None:
         text = (text or "").strip()
         if text and self.engine_name != "none":
             # Flag immediately so the mic ignores us before the worker even starts talking.
             self.speaking.set()
+            self.last_text = text
             self._q.put(text)
 
     def browser_finished(self) -> None:

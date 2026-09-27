@@ -567,9 +567,7 @@ const CHECK_STATUS = { fail: ['critical', 'Fail'], warn: ['warning', 'Warn'], pa
 
 render.connections = function connections() {
   const d = S.data.discovery;
-  const badge = $('#setup-badge');
-  const todo = d ? d.findings.filter(f => f.status === 'action').length : 0;
-  badge.textContent = todo; badge.classList.toggle('hidden', !todo);
+  paintSetupBadge();
   for (const p of panels('connections')) {
     const b = body(p);
     if (!d) { fill(b, empty('No scan yet. Click Rescan PC — it looks for apps, games, OBS, bookmarks, repos, mics and GPU.')); continue; }
@@ -590,6 +588,109 @@ render.connections = function connections() {
           f.fix ? h('div', { class: 'f' }, f.fix) : null))))));
   }
 };
+
+const PART_STATUS = { ok: ['good', 'OK'], error: ['critical', 'Error'], stalled: ['warning', 'Stalled'], restarting: ['warning', 'Restarting'],
+  starting: ['idle', 'Starting'], disabled: ['idle', 'Off'], stopped: ['idle', 'Stopped'] };
+
+function unhealthyParts() { return (S.data.health || []).filter(p => ['error', 'stalled', 'restarting'].includes(p.state)); }
+
+render.health = function health() {
+  const parts = S.data.health || [];
+  for (const p of panels('health')) {
+    const b = body(p);
+    if (!parts.length) { fill(b, empty('The watchdog starts with the app.')); continue; }
+    const bad = unhealthyParts().length;
+    meta(p, bad ? `${bad} need attention` : 'all healthy');
+    fill(b, h('table', { class: 't' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Part'), h('th', {}, 'State'), h('th', {}, 'Last OK'), h('th', { class: 'r wide-only' }, 'Runs'),
+        h('th', { class: 'r wide-only' }, 'Restarts'), h('th', {}, 'Last problem'))),
+      h('tbody', {}, parts.map(x => h('tr', {},
+        h('td', {}, x.name), h('td', {}, status(...(PART_STATUS[x.state] || PART_STATUS.starting))),
+        h('td', {}, x.last_ok ? ago(x.last_ok) : '—'), h('td', { class: 'r wide-only' }, x.kind === 'poller' ? x.runs : '·'),
+        h('td', { class: 'r wide-only' }, x.restarts || '·'), h('td', { class: 'muted', title: x.last_error || '' }, x.last_error || '—'))))));
+  }
+  paintSetupBadge();
+};
+
+function paintSetupBadge() {
+  const badge = $('#setup-badge');
+  if (!badge) return;
+  const todo = (S.data.discovery ? S.data.discovery.findings.filter(f => f.status === 'action').length : 0) + unhealthyParts().length;
+  badge.textContent = todo; badge.classList.toggle('hidden', !todo);
+}
+
+const CAL_STEP = { prepare: 'Getting ready', noise: 'Room noise', wake: 'Wake word', speech: 'Your voice', enroll: 'Voice profile' };
+
+render.voice = function voice() {
+  const v = S.data.voice_profile;
+  const cal = S.data.calibration;
+  for (const p of panels('voice')) {
+    const b = body(p);
+    if (!v) { fill(b, empty('Loading…')); continue; }
+    if (!v.enabled) { fill(b, empty('Voice is off (voice.enabled: false). Turn it on to calibrate.')); continue; }
+    const running = v.calibrating || (cal && !['done', 'error', 'cancelled'].includes(cal.step));
+    if (running && cal) {
+      meta(p, 'calibrating');
+      fill(b, h('div', { class: 'cal-step' }, `${CAL_STEP[cal.step] || cal.step}${cal.total > 1 ? ` · ${cal.index}/${cal.total}` : ''}`),
+        h('div', { class: 'cal-prompt' }, cal.recording ? h('span', { class: 'rec-dot' }) : null, cal.prompt || '…'),
+        h('div', { class: 'meter', id: 'cal-meter' }, h('i', { style: { width: `${Math.min(100, (cal.level || 0) / 30)}%` } })),
+        h('div', { class: 'controls' }, h('button', { class: 'btn danger', onclick: () => post('/api/voice/calibrate/cancel') }, 'Cancel')));
+      continue;
+    }
+    const prof = v.profile || {};
+    meta(p, prof.enrolled ? 'enrolled' : 'not calibrated');
+    const modes = h('span', { class: 'seg' }, ['off', 'log', 'strict'].map(m => h('button', {
+      'aria-pressed': String(prof.mode === m), title: { off: 'Answer anyone', log: 'Score voices but never block', strict: 'Ignore voices that are not yours' }[m],
+      onclick: () => post('/api/voice/speaker_check', { mode: m }).then(() => refreshVoice()),
+    }, m)));
+    const last = v.last_calibration;
+    fill(b,
+      prof.enrolled
+        ? h('div', {}, status('good', 'Voice enrolled'), h('span', { class: 'muted' }, ` · ${prof.clips} samples · ${ago(prof.created)}`))
+        : h('div', {}, status('warning', 'Not calibrated'), h('span', { class: 'muted' }, ' · anyone near the mic can give commands')),
+      h('div', { class: 'kv' },
+        h('span', { class: 'k' }, 'Only answer me'), h('span', {}, modes),
+        h('span', { class: 'k' }, 'Match threshold'), h('span', {}, prof.threshold != null ? `${prof.threshold}${prof.last_score != null ? ` · last voice ${prof.last_score}` : ''}` : '—'),
+        h('span', { class: 'k' }, 'Speech threshold'), h('span', {}, `min_rms ${v.min_rms}`)),
+      last && last.step === 'done' && last.summary ? h('div', { class: 't2', style: { marginBottom: '8px' } },
+        `Last run heard the name as: ${(last.summary.wake_heard || []).join(' · ') || '—'}`) : null,
+      last && last.step === 'error' ? h('div', { class: 'empty' }, status('critical', `Calibration failed: ${last.error}`)) : null,
+      prof.error ? h('div', { class: 'empty' }, status('warning', `Speaker check unavailable: ${prof.error}`)) : null,
+      h('div', { class: 'controls' },
+        h('button', { class: 'btn primary', onclick: startCalibration }, prof.enrolled ? 'Re-calibrate' : 'Calibrate my voice'),
+        prof.enrolled ? h('button', { class: 'btn', onclick: () => { if (confirm('Delete your voice profile?')) api('/api/voice/profile', { method: 'DELETE' }).then(refreshVoice); } }, 'Delete voice profile') : null),
+      h('div', { class: 't2' }, 'About a minute: stay quiet 5 s, say the name 5 times, read 3 lines. Your voice profile stays on this PC.'));
+  }
+};
+
+render.triggers = function triggers() {
+  const v = S.data.voice_profile;
+  for (const p of panels('triggers')) {
+    const b = body(p);
+    if (!v) { fill(b, empty('Loading…')); continue; }
+    fill(b, h('div', { class: 'sub-h' }, 'Wake words'),
+      h('div', { class: 'chips' }, (v.wake_words || []).map(w => h('span', { class: 'pill' }, w))),
+      h('div', { class: 'sub-h' }, 'Macros — one phrase, many actions'),
+      (v.macros || []).length ? h('table', { class: 't' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Say'), h('th', { class: 'r' }, 'Steps'), h('th', { class: 'act' }, ''))),
+        h('tbody', {}, v.macros.map(m => h('tr', {},
+          h('td', { title: m.triggers.join(', ') }, `“${m.triggers[0] || m.name}”`, m.triggers.length > 1 ? h('span', { class: 'muted' }, ` +${m.triggers.length - 1}`) : null),
+          h('td', { class: 'r' }, m.steps),
+          h('td', { class: 'r act' }, h('button', { class: 'btn small', onclick: () => {
+            if (!m.needs_yes || confirm(`Run ${m.name}? It includes actions that normally need a yes.`)) post(`/api/macros/${encodeURIComponent(m.name)}/run`);
+          } }, 'Run'))))))
+        : empty('No macros yet. Add them under macros: in config.yaml (see config.example.yaml).'));
+  }
+};
+
+async function refreshVoice() { S.data.voice_profile = await api('/api/voice'); render.voice(); render.triggers(); }
+async function startCalibration() {
+  const r = await post('/api/voice/calibrate');
+  if (r.ok === false) { toast(r.error); return; }
+  S.data.calibration = { step: 'noise', prompt: 'Starting…' };
+  S.data.voice_profile = { ...S.data.voice_profile, calibrating: true };
+  render.voice();
+}
 
 render.doctor = function doctor() {
   const r = S.data.doctor;
@@ -688,17 +789,17 @@ function setView(view) {
 
 // ---------------------------------------------------------------- voice / status chrome
 const orb = $('#orb');
-const chrome = { voice: 'off', thinking: false, speaking: false };
+const orbState = { voice: 'off', thinking: false, speaking: false };
 function paintOrb() {
-  orb.className = `orb ${chrome.speaking ? 'speaking' : chrome.thinking ? 'thinking' : chrome.voice}`;
+  orb.className = `orb ${orbState.speaking ? 'speaking' : orbState.thinking ? 'thinking' : orbState.voice}`;
   const a = S.data.assistant || {};
   const labels = {
     listening: `Listening for “${(a.wake_words || ['jarvis'])[0]}”`, hearing: 'Hearing you…', transcribing: 'Transcribing…',
     armed: 'Go ahead — listening', muted: 'Mic muted', loading: 'Loading speech model…', disabled: 'Voice disabled',
     unavailable: 'Voice unavailable', error: 'Voice error', off: 'Voice off',
   };
-  let txt = chrome.speaking ? 'Speaking…' : chrome.thinking ? 'Thinking…' : labels[chrome.voice] || chrome.voice;
-  if ((chrome.voice === 'error' || chrome.voice === 'unavailable') && S.data.voice?.error) txt = S.data.voice.error;
+  let txt = orbState.speaking ? 'Speaking…' : orbState.thinking ? 'Thinking…' : labels[orbState.voice] || orbState.voice;
+  if ((orbState.voice === 'error' || orbState.voice === 'unavailable') && S.data.voice?.error) txt = S.data.voice.error;
   txt += a.claude ? ` · Claude ${a.model}` : ' · local mode (no API key)';
   $('#voice-status').textContent = txt;
   $('#voice-status').title = txt;
@@ -739,14 +840,14 @@ function speak({ text, voice_hint, rate }) {
 }
 
 // ---------------------------------------------------------------- live updates
-const sticky = new Set(['system', 'obs', 'twitch', 'activity', 'projects', 'calendar', 'news', 'briefing', 'discovery', 'doctor']);
+const sticky = new Set(['system', 'obs', 'twitch', 'activity', 'projects', 'calendar', 'news', 'briefing', 'discovery', 'doctor', 'health', 'voice_profile']);
 function onEvent(ev) {
   const { type, data } = ev;
   if (sticky.has(type)) {
     S.data[type] = data;
     const fns = { system: ['vitals', 'stats'], obs: ['obs', 'stats'], twitch: ['twitch', 'stats'], activity: ['activity', 'stats'],
       projects: ['projects', 'stats'], calendar: ['agenda', 'stats'], news: ['news'], briefing: ['briefing'],
-      discovery: ['connections'], doctor: ['doctor'] }[type];
+      discovery: ['connections'], doctor: ['doctor'], health: ['health'], voice_profile: ['voice', 'triggers'] }[type];
     for (const f of fns) if (!(f === 'vitals' && document.hidden)) render[f]();
     return;
   }
@@ -758,12 +859,24 @@ function onEvent(ev) {
       if ('pending' in data) paintPending(data.pending);
       break;
     case 'heard': if (!data.wake && !data.armed) { $('#heard').textContent = `(ignored) “${data.text}”`; } break;
-    case 'thinking': chrome.thinking = data.active; paintOrb(); break;
-    case 'speaking': chrome.speaking = data.active; paintOrb(); break;
-    case 'voice_state': chrome.voice = data.state; S.data.voice = data; paintOrb(); break;
-    case 'wake': chrome.voice = 'armed'; paintOrb(); break;
+    case 'thinking': orbState.thinking = data.active; paintOrb(); break;
+    case 'speaking': orbState.speaking = data.active; paintOrb(); break;
+    case 'voice_state': orbState.voice = data.state; S.data.voice = data; paintOrb(); break;
+    case 'wake': orbState.voice = 'armed'; paintOrb(); break;
     case 'pending': paintPending(data); break;
     case 'speak': speak(data); break;
+    case 'calibration': {
+      const prev = S.data.calibration;
+      S.data.calibration = { ...(data.level != null && prev ? prev : {}), ...data };
+      const meterEl = $('#cal-meter i');
+      if (data.level != null && meterEl && prev && prev.prompt === data.prompt) meterEl.style.width = `${Math.min(100, data.level / 30)}%`;
+      else render.voice();
+      if (['done', 'error', 'cancelled'].includes(data.step)) {
+        refreshVoice();
+        if (data.step === 'done') toast('Voice calibrated.');
+      }
+      break;
+    }
     case 'announce': toast(data.text); break;
     case 'profile': S.data.active_profile = data?.active; paintProfile(); render.stats(); break;
     case 'tasks': S.data.tasks = data; render.tasks(); render.stats(); break;
@@ -797,7 +910,7 @@ async function load() {
     const st = await api('/api/state');
     S.data = { ...S.data, ...st };
     S.log = (st.log || []).map(l => ({ role: l.role, text: l.text, source: l.source, ts: l.ts }));
-    chrome.voice = st.voice?.state || 'off';
+    orbState.voice = st.voice?.state || 'off';
     $('#mute-btn').setAttribute('aria-pressed', String(!!st.voice?.muted));
     paintOrb(); paintPending(st.pending); paintProfile();
     renderAll();
@@ -805,6 +918,9 @@ async function load() {
 }
 
 try { const v = localStorage.getItem('hud.view'); if (v && $(`.view[data-view="${v}"]`)) setView(v); } catch { /* storage unavailable */ }
+function viewFromHash() { const v = location.hash.slice(1); if (v && $(`.view[data-view="${v}"]`)) setView(v); }
+window.addEventListener('hashchange', viewFromHash);
+viewFromHash();  // the tray's "Setup & health" opens #setup
 if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => {};
 connect();
 setInterval(() => { if (!document.hidden) { render.agenda(); render.projects(); } }, 60000);

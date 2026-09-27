@@ -5,3 +5,4 @@ numpy>=1.24
 pyttsx3>=2.98
 keyboard>=0.13
 pywin32>=306; sys_platform == "win32"
+sherpa-onnx>=1.12             # speaker verification ("only answer my voice"), onnxruntime only

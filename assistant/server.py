@@ -189,6 +189,10 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
             svc.bus.publish("obs", await run_in_threadpool(svc.obs.status), sticky=True)
         return result
 
+    @app.get("/api/health")
+    async def health():
+        return runtime.supervisor.snapshot()
+
     @app.get("/api/discovery")
     async def get_discovery():
         return await run_in_threadpool(runtime.discovery_report) or {}
@@ -218,8 +222,42 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     @app.post("/api/voice/arm")
     async def voice_arm():
         if runtime.listener:
-            runtime.listener.arm()
+            runtime.listener.arm(source="button")  # a click is as deliberate as the hotkey
         return {"ok": bool(runtime.listener)}
+
+    @app.get("/api/voice")
+    async def voice_status():
+        return runtime.voice_status()
+
+    @app.post("/api/voice/calibrate")
+    async def voice_calibrate():
+        return await run_in_threadpool(runtime.start_calibration)
+
+    @app.post("/api/voice/calibrate/cancel")
+    async def voice_calibrate_cancel():
+        return runtime.cancel_calibration()
+
+    @app.post("/api/voice/speaker_check")
+    async def voice_speaker_check(request: Request):
+        body = await request.json()
+        return runtime.set_speaker_check(str(body.get("mode", "")))
+
+    @app.delete("/api/voice/profile")
+    async def voice_profile_delete():
+        return runtime.delete_voice_profile()
+
+    @app.get("/api/macros")
+    async def list_macros():
+        return runtime.voice_status()["macros"]
+
+    @app.post("/api/macros/{name}/run")
+    async def run_macro(name: str):
+        """A click is deliberate, so risky macros run without the spoken yes (the HUD asks first)."""
+        if name.lower() not in assistant.macros:
+            raise HTTPException(404)
+        out = await run_in_threadpool(lambda: assistant.run_macro(name, confirmed=True))
+        svc.bus.publish("assistant_said", {"text": out["reply"], "kind": "macro", "source": "dashboard"})
+        return out
 
     @app.post("/api/voice/mute")
     async def voice_mute(request: Request):

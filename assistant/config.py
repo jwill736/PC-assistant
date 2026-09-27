@@ -20,12 +20,14 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULTS: dict[str, Any] = {
     "assistant": {
         "name": "Jarvis",
-        "wake_words": ["jarvis", "hey jarvis"],
+        "wake_words": [],  # the name and "hey <name>" are always included
         "user_name": "boss",
         "timezone": None,  # None = system local time
         "work_hours": {"start": "09:00", "end": "18:00"},
     },
     "server": {"host": "127.0.0.1", "port": 8765, "open_window": True},
+    "tray": {"enabled": True},
+    "macros": {},
     "data_dir": "data",
     "claude": {
         "enabled": True,
@@ -46,6 +48,8 @@ DEFAULTS: dict[str, Any] = {
         "push_to_talk_hotkey": "ctrl+alt+j",
         "follow_up_seconds": 8,
         "speak_typed": False,  # also speak replies to commands typed in the dashboard
+        # After voice calibration: off | log (score only) | strict (ignore voices that aren't yours)
+        "speaker_check": "strict",
         "min_rms": 350,
         "silence_ms": 800,
         "max_utterance_s": 15,
@@ -160,6 +164,7 @@ class Config(dict):
 
 
 DISCOVERED_FILE = "config.discovered.yaml"
+CALIBRATION_FILE = "calibration.yaml"  # in data_dir, written by voice calibration
 
 
 def _read_yaml(path: Path) -> dict:
@@ -186,9 +191,12 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     cfg_path = Path(path) if path else Path(os.environ.get("ASSISTANT_CONFIG", ROOT / "config.yaml"))
     root = cfg_path.parent.resolve()  # even before config.yaml exists (first run), scan output lives beside it
     user = _read_yaml(cfg_path)
-    # What the PC scan found sits between the defaults and the user's own config.
+    # Machine-written layers sit between the defaults and the user's own config:
+    # what the PC scan found, then what voice calibration measured.
     discovered = _read_yaml(root / DISCOVERED_FILE)
-    merged = Config(deep_merge(deep_merge(DEFAULTS, discovered), user))
+    data_dir = Path(user.get("data_dir") or DEFAULTS["data_dir"]).expanduser()
+    calibration = _read_yaml((data_dir if data_dir.is_absolute() else root / data_dir) / CALIBRATION_FILE)
+    merged = Config(deep_merge(deep_merge(deep_merge(DEFAULTS, discovered), calibration), user))
     merged.root = root
     merged.path = cfg_path
     # An app/site the user defines replaces the scanned one outright; blending a
@@ -204,10 +212,10 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         prof["apps"] = _union((user.get("profiles") or {}).get(name, {}).get("apps"),
                               (discovered.get("profiles") or {}).get(name, {}).get("apps"),
                               DEFAULTS["profiles"].get(name, {}).get("apps"))
-    # Wake words always include the assistant's own name.
+    # Wake words: the name, "hey <name>", the user's extras and every spelling
+    # calibration heard Whisper use for this voice.
     name = str(merged["assistant"]["name"]).lower()
-    words = [w.lower() for w in merged["assistant"].get("wake_words") or []]
-    if name not in words:
-        words.insert(0, name)
-    merged["assistant"]["wake_words"] = words
+    merged["assistant"]["wake_words"] = [w.lower() for w in _union(
+        [name, f"hey {name}"], user.get("assistant", {}).get("wake_words"),
+        calibration.get("assistant", {}).get("wake_words"))]
     return merged

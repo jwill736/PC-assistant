@@ -56,3 +56,40 @@ def test_websocket_needs_token(client):
 def test_unknown_tool_404(client):
     c, _ = client
     assert c.post("/api/tool/format_c_drive", json={}).status_code == 404
+
+
+def test_voice_endpoints_with_voice_off(client):
+    c, _ = client
+    v = c.get("/api/voice").json()
+    assert v["enabled"] is False and v["profile"]["enrolled"] is False
+    assert v["wake_words"] == ["friday", "hey friday"]
+    assert c.post("/api/voice/calibrate").json()["ok"] is False
+    assert c.post("/api/voice/calibrate/cancel").json() == {"ok": True}
+    assert c.post("/api/voice/speaker_check", json={"mode": "log"}).json()["ok"] is False
+    assert c.delete("/api/voice/profile").json() == {"ok": True, "deleted": False}
+    assert "voice_profile" in c.get("/api/state").json()
+
+
+@pytest.fixture
+def macro_client(cfg, svc):
+    cfg["macros"] = {"note": {"say": ["log it"], "steps": [{"command": "add task Clip the raid"}]},
+                     "end": {"say": ["end of stream"], "steps": [{"obs_control": {"action": "stop_stream"}}]}}
+    rt = Runtime(cfg, services=svc)
+    app = create_app(rt, start_background=False)
+    with TestClient(app) as c:
+        c.headers["X-Assistant-Token"] = app.state.token
+        yield c, svc
+
+
+def test_macro_endpoints(macro_client, monkeypatch):
+    c, svc = macro_client
+    listed = {m["name"]: m for m in c.get("/api/macros").json()}
+    assert listed["note"] == {"name": "note", "triggers": ["log it"], "steps": 1, "needs_yes": False}
+    assert listed["end"]["needs_yes"] is True
+    assert c.post("/api/macros/note/run").json()["kind"] == "macro"
+    assert svc.storage.list_tasks()[0]["title"] == "Clip the raid"
+    stopped = []
+    monkeypatch.setattr(svc.obs, "control", lambda action: stopped.append(action) or {"ok": True})
+    assert c.post("/api/macros/end/run").json()["kind"] == "macro"  # a click already confirmed it
+    assert stopped == ["stop_stream"]
+    assert c.post("/api/macros/nope/run").status_code == 404

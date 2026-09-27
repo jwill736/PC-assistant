@@ -57,7 +57,10 @@ class ActivityTracker:
         self.current: dict | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._gen = 0
         self._lock = threading.Lock()
+        self.paused = False
+        self.heartbeat = lambda: None  # set by the watchdog
 
     # ---- sampling -------------------------------------------------------
     def observe(self, app: str, title: str, now: float | None = None) -> None:
@@ -83,6 +86,12 @@ class ActivityTracker:
             self.storage.add_activity(seg["start"], seg["end"], seg["app"], seg["title"], seg["category"])
 
     def tick(self) -> None:
+        if self.paused:  # "pause tracking" from the tray: record nothing, close the open segment
+            with self._lock:
+                if self.current:
+                    self._flush(self.current)
+                    self.current = None
+            return
         if desktop.idle_seconds() >= self.idle_threshold:
             self.observe(IDLE, "Away from keyboard")
             return
@@ -92,17 +101,23 @@ class ActivityTracker:
             return
         self.observe(win.app, win.title)
 
-    def _run(self) -> None:
-        while not self._stop.wait(self.sample):
+    def _run(self, gen: int = 0) -> None:
+        while not self._stop.wait(self.sample) and self._gen == gen:
             try:
                 self.tick()
             except Exception:
                 log.exception("activity sample failed")
+            self.heartbeat()
 
     def start(self) -> None:
         if self._thread is None:
-            self._thread = threading.Thread(target=self._run, name="activity", daemon=True)
-            self._thread.start()
+            self.restart()
+
+    def restart(self) -> threading.Thread:
+        self._gen += 1
+        self._thread = threading.Thread(target=self._run, args=(self._gen,), name="activity", daemon=True)
+        self._thread.start()
+        return self._thread
 
     def stop(self) -> None:
         self._stop.set()

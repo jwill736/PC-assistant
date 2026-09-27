@@ -6,3 +6,5 @@ config.yaml
 data/
 .pytest_cache/
 config.discovered.yaml
+research_notes/
+reports/

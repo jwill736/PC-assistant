@@ -73,6 +73,9 @@ class CalendarHub:
                 return
             for src in self.sources:
                 url = self._source_url(src)
+                if not url:  # link not added to .env yet: say so instead of reading "." as a file
+                    self._errors[src["name"]] = f"{src.get('url_env') or 'url'} is not set"
+                    continue
                 try:
                     if url.startswith(("http://", "https://")):
                         resp = httpx.get(url, timeout=15, follow_redirects=True)

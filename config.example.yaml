@@ -1,0 +1,136 @@
+# Copy to config.yaml and edit. Secrets (API keys, passwords, calendar links)
+# go in .env — see .env.example. Anything you leave out uses a sensible default.
+
+assistant:
+  name: Jarvis                  # what you call it; also the wake word
+  wake_words: [jarvis, hey jarvis]   # add near-misses Whisper hears, e.g. "travis"
+  user_name: J                  # how it addresses you
+  # timezone: America/New_York  # only if the PC clock zone is wrong; the dashboard uses the PC zone
+  work_hours: {start: "09:00", end: "18:00"}
+
+# The whole point: everything gets ranked against this.
+goals:
+  north_star: "Grow the channel to full-time income while shipping client work on time"
+  this_week:
+    - Ship the PC assistant v1
+    - Stream 4 nights (Mon/Wed/Fri/Sat)
+    - Close out the two open client tickets
+
+claude:
+  model: claude-opus-5
+  command_effort: low           # voice commands: fast
+  briefing_effort: high         # morning plan: think harder
+
+voice:
+  enabled: true
+  stt_model: base.en            # tiny.en (fastest) | base.en | small.en (most accurate)
+  stt_device: auto              # cuda if you have an NVIDIA GPU and CUDA libs
+  push_to_talk_hotkey: ctrl+alt+j
+  follow_up_seconds: 8          # after a reply, talk again without the name
+  tts:
+    engine: pyttsx3             # pyttsx3 (offline) | browser (natural voices) | none
+    rate: 190
+    voice_hint: David           # part of a voice name, e.g. "David", "Zira", "Ryan"
+
+# Profiles drive activity tracking (which apps/sites count as what),
+# "start <profile> mode" routines, and the Work / Stream dashboard views.
+profiles:
+  work:
+    label: Work
+    apps: [code, cursor, excel, winword, outlook, teams, slack, notion, windowsterminal, pycharm64]
+    title_keywords: [github, jira, linear, docs.google, gmail, calendar, claude, stack overflow]
+    launch:
+      apps: [slack, vscode]
+      urls: [gmail, calendar, "https://github.com/jwill736"]
+    close_apps: [steam]
+  stream:
+    label: Stream
+    apps: [obs64, obs, streamlabs, streamerbot, voicemod]
+    title_keywords: [twitch.tv, dashboard.twitch, kick.com, youtube studio, streamlabs]
+    launch:
+      apps: [obs, discord, streamerbot]
+      urls: ["https://dashboard.twitch.tv"]
+      obs_scene: Starting Soon
+    close_apps: [slack, teams]
+
+# Spoken name -> how to launch it. Anything not listed is found automatically
+# via the Start Menu / Desktop shortcuts, so only add the awkward ones.
+apps:
+  vscode: {path: code, process: code}
+  obs:
+    path: C:\Program Files\obs-studio\bin\64bit\obs64.exe
+    cwd: C:\Program Files\obs-studio\bin\64bit   # OBS refuses to start from another folder
+    process: obs64
+  discord: {path: "%LOCALAPPDATA%\\Discord\\Update.exe", args: "--processStart Discord.exe", process: discord}
+  spotify: {path: "%APPDATA%\\Spotify\\Spotify.exe", process: spotify}
+
+# "open gmail" / "open a new tab with twitch"
+sites:
+  gmail: https://mail.google.com
+  calendar: https://calendar.google.com
+  youtube: https://www.youtube.com
+  twitch: https://www.twitch.tv
+  twitch dashboard: https://dashboard.twitch.tv
+  github: https://github.com
+  claude: https://claude.ai
+  chatgpt: https://chatgpt.com
+
+# Any number of calendars, any provider, merged into one agenda.
+# Put each private iCal link in .env and reference it with url_env.
+calendars:
+  - name: Work
+    url_env: CAL_WORK_ICS
+    profile: work
+  - name: Personal
+    url_env: CAL_PERSONAL_ICS
+    profile: personal
+  - name: Stream schedule
+    url_env: CAL_STREAM_ICS
+    profile: stream
+
+news:
+  refresh_minutes: 15
+  feeds:
+    - {name: Hacker News, url: "https://hnrss.org/frontpage?points=150", topic: tech}
+    - {name: The Verge, url: "https://www.theverge.com/rss/index.xml", topic: tech}
+    - {name: AI, url: "https://news.google.com/rss/search?q=Anthropic+OR+OpenAI+OR+%22AI+model%22&hl=en-US&gl=US&ceid=US:en", topic: ai}
+    - {name: Streaming, url: "https://news.google.com/rss/search?q=Twitch+OR+%22YouTube+Live%22+streamers&hl=en-US&gl=US&ceid=US:en", topic: streaming}
+
+projects:
+  scan_dirs: ["~/Projects", "~/source/repos", "~/Documents/GitHub"]
+  claude_dir: ~/.claude         # Claude Code sessions are read from here
+  github:
+    user: jwill736
+    token_env: GITHUB_TOKEN     # optional; needed for private repos + PRs
+
+obs:
+  enabled: true
+  host: localhost
+  port: 4455
+  password_env: OBS_PASSWORD
+  scene_aliases:                # what you say -> exact scene name
+    starting: Starting Soon
+    be right back: BRB
+    chatting: Just Chatting
+    game: Gameplay
+
+twitch:
+  enabled: false
+  channel: your_channel
+  client_id_env: TWITCH_CLIENT_ID
+  client_secret_env: TWITCH_CLIENT_SECRET
+
+tracking:
+  enabled: true
+  sample_seconds: 5
+  idle_seconds: 300             # no input for this long counts as idle
+
+optimizer:
+  heavy_process_mb: 1500
+  protected_processes: [obs64, discord]   # never offered for closing
+
+jobs:
+  claude_code_cmd: claude
+  permission_mode: acceptEdits  # what background Claude Code may do without asking
+  max_concurrent: 2
+  timeout_minutes: 30

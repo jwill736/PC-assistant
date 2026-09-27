@@ -1,0 +1,7 @@
+# Voice: microphone + local speech-to-text + speech output + push-to-talk hotkey
+faster-whisper>=1.0
+sounddevice>=0.4
+numpy>=1.24
+pyttsx3>=2.98
+keyboard>=0.13
+pywin32>=306; sys_platform == "win32"

@@ -33,6 +33,7 @@ class Speaker:
         self._q: queue.Queue[str | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._browser_done = threading.Event()
+        self._cancel = threading.Event()  # barge-in: stop the current reply now
         if engine == "pyttsx3" and not _offline_tts_available():
             log.warning("No offline speech engine (pyttsx3 / pywin32); falling back to browser speech")
             self.engine_name = "browser"
@@ -61,6 +62,25 @@ class Speaker:
     def browser_finished(self) -> None:
         self._browser_done.set()
 
+    def interrupt(self) -> bool:
+        """Stop talking now and drop anything queued (you talked over it / said "stop")."""
+        if not self.speaking.is_set():
+            return False
+        self._cancel.set()
+        while True:
+            try:
+                item = self._q.get_nowait()
+            except queue.Empty:
+                break
+            if item is None:  # keep a pending shutdown request
+                self._q.put(None)
+                break
+        if self.engine_name == "browser":
+            self.bus.publish("speak_stop", {})
+            self._browser_done.set()
+        self.bus.publish("interrupted", {"text": self.last_text})
+        return True
+
     def chime(self) -> None:
         """Short acknowledgement tone when the wake word is heard."""
         self.bus.publish("wake", {})
@@ -82,13 +102,17 @@ class Speaker:
             text = self._q.get()
             if text is None:
                 return
+            self._cancel.clear()
             self.speaking.set()
             self.bus.publish("speaking", {"active": True})
             try:
                 if engine is not None:
                     try:
-                        engine.say(text)
-                        engine.runAndWait()
+                        if isinstance(engine, _SapiVoice):
+                            engine.say(text, cancel=self._cancel)
+                        else:  # pyttsx3 can't be stopped mid-sentence from another thread
+                            engine.say(text)
+                            engine.runAndWait()
                     except Exception:
                         log.exception("pyttsx3 failed; re-initialising")
                         engine = self._init_pyttsx3()
@@ -101,7 +125,7 @@ class Speaker:
                     self.bus.publish("speaking", {"active": False})
 
     def _speak_in_browser(self, text: str) -> None:
-        if self.bus.client_count == 0:
+        if self.bus.client_count == 0 or self._cancel.is_set():
             return
         self._browser_done.clear()
         self.bus.publish("speak", {"text": text, "voice_hint": self.voice_hint, "rate": self.rate / 190})
@@ -199,8 +223,15 @@ class _SapiVoice:
                     break
         return cls(voice)
 
-    def say(self, text: str) -> None:
-        self.voice.Speak(text)
+    def say(self, text: str, cancel: threading.Event | None = None) -> None:
+        if cancel is None:
+            self.voice.Speak(text)
+            return
+        self.voice.Speak(text, 1)  # SVSFlagsAsync: return at once, poll so we can stop mid-sentence
+        while not self.voice.WaitUntilDone(50):
+            if cancel.is_set():
+                self.voice.Speak("", 3)  # SVSFlagsAsync | SVSFPurgeBeforeSpeak: silence now
+                break
 
     def runAndWait(self) -> None:  # matches the pyttsx3 call sequence in the worker
         pass

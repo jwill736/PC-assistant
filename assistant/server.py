@@ -246,6 +246,16 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def voice_profile_delete():
         return runtime.delete_voice_profile()
 
+    @app.post("/api/wakewords")
+    async def wakeword_upload(request: Request, name: str, threshold: float | None = None):
+        """Raw .onnx bytes in the body (no multipart needed); ?name=vesper|stop|clip_that…&threshold=0.68"""
+        data = await request.body()
+        return await run_in_threadpool(lambda: runtime.install_wake_model(name, data, threshold))
+
+    @app.delete("/api/wakewords/{name}")
+    async def wakeword_delete(name: str):
+        return await run_in_threadpool(lambda: runtime.delete_wake_model(name))
+
     @app.get("/api/macros")
     async def list_macros():
         return runtime.voice_status()["macros"]

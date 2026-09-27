@@ -31,6 +31,10 @@ voice:
   endpoint_ms: 400              # pause that ends a command; raise it if you get cut off
   corrections: {}               # words it keeps mishearing, e.g. {vrb: BRB}
   push_to_talk_hotkey: ctrl+alt+j
+  wake_mode: auto               # auto = acoustic once a trained vesper.onnx is added (Setup tab), else transcript
+  # wake_threshold: 0.5         # trained models; per-model thresholds come from the Colab notebook
+  # hard_triggers: {clip_that: "save the replay"}   # trained phrase -> command, run instantly
+  barge_in: true                # say "stop" or the name to interrupt a reply
   follow_up_seconds: 8          # after a reply, talk again without the name
   # min_rms: 900                # speech loudness threshold; calibration measures your room
   speaker_check: strict         # after calibrating: strict = ignore other voices,

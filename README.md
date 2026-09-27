@@ -137,7 +137,7 @@ adds aliases for scenes with emoji, and `obs.scene_aliases` maps anything else
 you say to exact names ("be right back" → `BRB`).
 
 ### Voice
-`requirements-voice.txt` installs sherpa-onnx, sounddevice, pyttsx3, keyboard and faster-whisper (fallback).
+`requirements-voice.txt` installs sherpa-onnx, livekit-wakeword, sounddevice, pyttsx3, pynput and faster-whisper (fallback).
 
 How it hears, in order: **Silero VAD** finds where speech starts and ends → a **speech-to-text engine** turns
 it into text → the echo guard drops its own voice → the wake word is matched → the speaker check. The first
@@ -192,6 +192,32 @@ launch downloads the models (~100 MB, from the sherpa-onnx releases on GitHub); 
 categorized. Title keywords win, so Chrome on GitHub counts as work and Chrome
 on twitch.tv counts as stream. `launch` is the routine that runs for
 "start <name> mode". `close_apps` are offered for closing when you switch modes.
+
+### Trained wake words and instant triggers (Colab, ~2 hours, once)
+Out of the box the name is matched on the transcript. That works, but every sentence gets transcribed, and
+saying "Vesper" to chat mid-sentence can wake it. A trained acoustic model fixes both:
+
+1. Open [`training/wake_words.ipynb`](training/wake_words.ipynb) in Google Colab (*File → Open notebook → GitHub*),
+   pick *Runtime → Change runtime type → T4 GPU*, then *Run all*. It trains `vesper.onnx` and `stop.onnx`
+   (and optionally a phrase like "clip that") from synthetic voices with
+   [livekit-wakeword](https://github.com/livekit/livekit-wakeword). The last cell prints each model's recall,
+   false triggers per hour and a threshold, and downloads the `.onnx` files. Nothing of yours is uploaded.
+2. In the HUD: **Setup → Trigger words → Add trained model**, pick the file, type the threshold.
+
+What each model does, by file name:
+
+| file | effect |
+|---|---|
+| `vesper.onnx` (the name) | `wake_mode` becomes `acoustic`: speech-to-text runs only after the model fires in the first ~2 s of what you say. The name mid-sentence doesn't count, and a mangled transcript ("Desperate, open Discord") still works because the model already heard the name. `voice.wake_mode: hybrid` accepts the transcript too. |
+| `stop.onnx` | stops a spoken reply immediately |
+| any other, e.g. `clip_that.onnx` | runs that phrase as a command the moment it's heard: no speech-to-text, no Claude (`voice.hard_triggers: {clip_that: "save the replay"}` to map it to something else) |
+
+The detector streams its features (≈1.3 ms of CPU per 80 ms of audio), so it costs about 2% of one core.
+
+**Talking over a reply (barge-in):** while it speaks, the mic stays on. Say "stop" / "cancel" / "never mind",
+or the name plus a new command, and it stops mid-sentence (SAPI and browser voices; pyttsx3 can't be cut off).
+With a voice profile enrolled, the speaker check ignores the assistant's own voice coming out of your
+speakers; without one, a "stop" that's part of the reply itself is ignored. `voice.barge_in: false` turns it off.
 
 ### Trigger phrases (macros)
 One phrase, several actions, in order. Put them in `config.yaml`:
@@ -263,7 +289,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 175 tests, 5 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan and tray-icon APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). The suite covers the router, wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 196 tests, 5 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan and tray-icon APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, and runs the wake-word runtime on real recordings (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). The suite covers the router, wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the
@@ -279,12 +305,13 @@ health check, and the API's token and Host checks.
 - **Chrome tabs are opened, not read.** Listing and switching existing tabs needs
   Chrome's remote-debugging port or a small extension.
 - **Streaming platform:** Twitch stats are built in; YouTube Live and Kick aren't yet.
-- **The wake word is matched on the transcript,** so every utterance is transcribed (cheap now: ~60 ms) and
-  a streamer saying the name to chat still wakes it. A trained acoustic wake-word model (livekit-wakeword;
-  Porcupine's free tier ended June 30, 2026) is phase 2 in [docs/RESEARCH.md](docs/RESEARCH.md).
+- **Until you train the name on Colab,** the wake word is matched on the transcript, so every utterance is
+  transcribed (cheap: ~60 ms) and saying the name to chat can wake it. The notebook's models are trained on
+  synthetic voices only; if one misses you, lower its threshold or retrain with `QUALITY = "best"`.
 - **Talking over a second voice is still hard** for every engine tested (see the table above): with someone
   talking at -10 dB underneath, the best CPU engine still gets ~1 word in 5 wrong.
-- **No barge-in yet.** You can't talk over a reply to stop it; say "stop" after it finishes, or press the mute button.
+- **Barge-in on speakers without a voice profile** relies on the echo guard; enroll your voice (Setup tab)
+  so the assistant's own voice can never interrupt itself.
 - **Clicking and typing inside apps** isn't there yet. It can open, close, focus and switch apps, windows, tabs,
   OBS and media, but not press a button inside Photoshop. That's the next step (UI Automation, then Claude's
   computer-use tool as the fallback).

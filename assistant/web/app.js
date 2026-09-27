@@ -680,8 +680,36 @@ render.triggers = function triggers() {
   for (const p of panels('triggers')) {
     const b = body(p);
     if (!v) { fill(b, empty('Loading…')); continue; }
+    const models = v.wake_models || [];
+    const mode = v.pipeline?.wake_mode;
+    const peaks = { ...(v.pipeline?.wake?.peak || {}), ...(S.wakeScores || {}) };
+    const KIND = { name: 'wakes it', stop: 'stops a reply', command: 'runs instantly' };
+    const upload = h('input', { type: 'file', accept: '.onnx', hidden: true, onchange: async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const name = f.name.replace(/\.onnx$/i, '');
+      const t = prompt('Detection threshold (the notebook prints one; blank = 0.5):', '');
+      const q = t && !Number.isNaN(Number(t)) ? `&threshold=${Number(t)}` : '';
+      const res = await fetch(`/api/wakewords?name=${encodeURIComponent(name)}${q}`, {
+        method: 'POST', headers: { 'X-Assistant-Token': TOKEN, 'Content-Type': 'application/octet-stream' }, body: f });
+      const r = await res.json();
+      toast(r.ok ? `${r.name}: ${KIND[r.kind] || r.kind}${r.kind === 'name' ? ` — ${r.mode} wake mode` : ''}` : r.error);
+      refreshVoice();
+    } });
     fill(b, h('div', { class: 'sub-h' }, 'Wake words'),
       h('div', { class: 'chips' }, (v.wake_words || []).map(w => h('span', { class: 'pill' }, w))),
+      h('div', { class: 't2', style: { marginBottom: '6px' } }, mode === 'acoustic'
+        ? 'Acoustic: a trained model listens for the name; speech-to-text runs only after it fires at the start of what you say.'
+        : 'Matched on the transcript. Train the name on Colab (training/wake_words.ipynb) for fewer false wakes.'),
+      h('div', { class: 'sub-h' }, 'Trained models'),
+      models.length ? h('table', { class: 't' }, h('tbody', {}, models.map(m => h('tr', {},
+        h('td', {}, h('b', {}, m.name.replace(/_/g, ' ')), h('span', { class: 'muted' }, ` · ${KIND[m.kind] || ''}`)),
+        h('td', { class: 'r' }, `${m.threshold != null ? `≥ ${m.threshold}` : '≥ 0.5'}${peaks[m.name] != null ? ` · peak ${Number(peaks[m.name]).toFixed(2)}` : ''}`),
+        h('td', { class: 'r act' }, h('button', { class: 'btn small', onclick: () => {
+          if (confirm(`Remove the ${m.name} model?`)) api(`/api/wakewords/${encodeURIComponent(m.name)}`, { method: 'DELETE' }).then(refreshVoice);
+        } }, 'Remove'))))))
+        : empty('None yet. Name the file after the phrase: vesper.onnx wakes it, stop.onnx stops a reply, clip_that.onnx runs “clip that”.'),
+      h('div', { class: 'controls' }, h('button', { class: 'btn', onclick: () => upload.click() }, 'Add trained model (.onnx)'), upload),
       h('div', { class: 'sub-h' }, 'Macros — one phrase, many actions'),
       (v.macros || []).length ? h('table', { class: 't' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Say'), h('th', { class: 'r' }, 'Steps'), h('th', { class: 'act' }, ''))),
@@ -888,6 +916,8 @@ function onEvent(ev) {
     case 'wake': orbState.voice = 'armed'; paintOrb(); break;
     case 'pending': paintPending(data); break;
     case 'speak': speak(data); break;
+    case 'speak_stop': if ('speechSynthesis' in window) speechSynthesis.cancel(); break;
+    case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;
       S.data.calibration = { ...(data.level != null && prev ? prev : {}), ...data };

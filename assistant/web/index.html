@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="token" content="{{TOKEN}}">
+  <title>{{NAME}} HUD</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%234cc9f0' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%234cc9f0'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="orb off" id="orb" aria-hidden="true"></div>
+    <div>
+      <div class="brand-name">{{NAME}}</div>
+      <div class="brand-sub" id="voice-status">connecting…</div>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" data-view="command" aria-selected="true">Command</button>
+    <button role="tab" data-view="work" aria-selected="false">Work</button>
+    <button role="tab" data-view="stream" aria-selected="false">Stream</button>
+  </nav>
+  <div class="top-right">
+    <span class="chip hidden" id="profile-chip"></span>
+    <button class="icon-btn" id="mic-btn" title="Push to talk (skip the wake word)" aria-label="Push to talk">🎙</button>
+    <button class="icon-btn" id="mute-btn" title="Mute the microphone" aria-label="Mute microphone" aria-pressed="false">🔇</button>
+    <div class="clock"><div class="t num" id="clock-t">--:--</div><div class="d" id="clock-d"></div></div>
+  </div>
+</header>
+
+<div class="commandbar">
+  <form id="cmd-form" autocomplete="off">
+    <input id="cmd" placeholder="Type a command — or just say “{{NAME}}, …”   ( / to focus )" aria-label="Command">
+    <button class="btn primary" type="submit">Send</button>
+  </form>
+  <div class="heard" id="heard"></div>
+  <div class="reply" id="reply"></div>
+</div>
+<div class="pending hidden" id="pending" role="alert">
+  <span class="status warning"><span class="dot"></span>Confirm</span>
+  <span class="msg" id="pending-text"></span>
+  <button class="btn primary" id="confirm-btn">Yes, do it</button>
+  <button class="btn" id="cancel-btn">Cancel</button>
+</div>
+
+<main>
+  <!-- ===================== COMMAND: everything at once ===================== -->
+  <section class="view" data-view="command">
+    <article class="panel span-7" data-panel="briefing"><div class="panel-head"><h2>Daily briefing</h2><span class="spacer"></span>
+      <button class="btn small" data-action="briefing" data-kind="morning">Good morning</button>
+      <button class="btn small" data-action="briefing" data-kind="recap">Recap day</button>
+      <button class="btn small" data-action="speak-briefing">🔊</button></div><div class="body"></div></article>
+    <article class="panel span-5" data-panel="agenda" data-days="1"><div class="panel-head"><h2>Today · all calendars</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-12" data-panel="stats" data-mode="all"><div class="body"></div></article>
+    <article class="panel span-4" data-panel="vitals"><div class="panel-head"><h2>System</h2><span class="spacer"></span><button class="btn small" data-action="optimize">Optimize</button></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="activity" data-mode="all"><div class="panel-head"><h2>Where today went</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="obs" data-size="mini"><div class="panel-head"><h2>Stream</h2><span class="spacer"></span><span data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-6" data-panel="projects"><div class="panel-head"><h2>Projects · Claude &amp; code</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-3" data-panel="tasks"><div class="panel-head"><h2>Goals &amp; tasks</h2></div><div class="body"></div></article>
+    <article class="panel span-3" data-panel="news"><div class="panel-head"><h2>News</h2></div><div class="body"></div></article>
+    <article class="panel span-8" data-panel="log"><div class="panel-head"><h2>Conversation</h2></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="jobs"><div class="panel-head"><h2>Background jobs</h2><span class="spacer"></span><button class="btn small" data-action="new-research">+ Research</button></div><div class="body"></div></article>
+  </section>
+
+  <!-- ===================== WORK ===================== -->
+  <section class="view" data-view="work" hidden>
+    <article class="panel span-12" data-panel="stats" data-mode="work"><div class="body"></div></article>
+    <article class="panel span-5" data-panel="agenda" data-days="7" data-profile="work"><div class="panel-head"><h2>Work calendar · 7 days</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="activity" data-mode="work"><div class="panel-head"><h2>Focus &amp; flow</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-3" data-panel="tasks" data-profile="work"><div class="panel-head"><h2>Work tasks</h2></div><div class="body"></div></article>
+    <article class="panel span-7" data-panel="projects"><div class="panel-head"><h2>Projects · Claude &amp; code</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-5" data-panel="jobs"><div class="panel-head"><h2>Background jobs</h2><span class="spacer"></span><button class="btn small" data-action="new-research">+ Research</button></div><div class="body"></div></article>
+  </section>
+
+  <!-- ===================== STREAM ===================== -->
+  <section class="view" data-view="stream" hidden>
+    <article class="panel span-12" data-panel="stats" data-mode="stream"><div class="body"></div></article>
+    <article class="panel span-8" data-panel="obs" data-size="full"><div class="panel-head"><h2>OBS control</h2><span class="spacer"></span><span data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="twitch"><div class="panel-head"><h2>Channel</h2></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="vitals" data-mode="stream"><div class="panel-head"><h2>Rig health</h2><span class="spacer"></span><button class="btn small" data-action="optimize" data-streaming="1">Optimize for stream</button></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="agenda" data-days="7" data-profile="stream"><div class="panel-head"><h2>Stream schedule</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="tasks" data-profile="stream"><div class="panel-head"><h2>Stream tasks</h2></div><div class="body"></div></article>
+  </section>
+</main>
+
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

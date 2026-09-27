@@ -58,14 +58,17 @@ def _proc_name(pid: int) -> str:
 # --------------------------------------------------------------------------
 # Windows implementation
 # --------------------------------------------------------------------------
-if IS_WINDOWS:  # pragma: no cover - exercised on the user's PC, not in CI
+if IS_WINDOWS:  # pragma: no cover - exercised by the Windows CI job
     import ctypes
     from ctypes import wintypes
 
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
+    # Private DLL handles with explicit signatures: ctypes' default int conversion
+    # can overflow 64-bit handles, and the shared ctypes.windll objects are
+    # re-typed by other libraries (e.g. `keyboard`).
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     try:
-        dwmapi = ctypes.windll.dwmapi
+        dwmapi = ctypes.WinDLL("dwmapi")
     except OSError:
         dwmapi = None
 
@@ -73,6 +76,25 @@ if IS_WINDOWS:  # pragma: no cover - exercised on the user's PC, not in CI
         _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
 
     EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def _sig(fn, restype, *argtypes):
+        fn.restype, fn.argtypes = restype, list(argtypes)
+
+    _sig(user32.GetForegroundWindow, wintypes.HWND)
+    _sig(user32.GetWindowTextLengthW, ctypes.c_int, wintypes.HWND)
+    _sig(user32.GetWindowTextW, ctypes.c_int, wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    _sig(user32.GetWindowThreadProcessId, wintypes.DWORD, wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    _sig(user32.IsWindowVisible, wintypes.BOOL, wintypes.HWND)
+    _sig(user32.IsIconic, wintypes.BOOL, wintypes.HWND)
+    _sig(user32.ShowWindow, wintypes.BOOL, wintypes.HWND, ctypes.c_int)
+    _sig(user32.SetForegroundWindow, wintypes.BOOL, wintypes.HWND)
+    _sig(user32.EnumWindows, wintypes.BOOL, EnumWindowsProc, wintypes.LPARAM)
+    _sig(user32.GetLastInputInfo, wintypes.BOOL, ctypes.POINTER(LASTINPUTINFO))
+    _sig(user32.keybd_event, None, ctypes.c_ubyte, ctypes.c_ubyte, wintypes.DWORD, ctypes.c_size_t)  # BYTE is unsigned
+    _sig(user32.LockWorkStation, wintypes.BOOL)
+    _sig(kernel32.GetTickCount, wintypes.DWORD)
+    if dwmapi is not None:
+        _sig(dwmapi.DwmGetWindowAttribute, ctypes.c_long, wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
 
     def _window_text(hwnd) -> str:
         length = user32.GetWindowTextLengthW(hwnd)
@@ -269,7 +291,7 @@ def power_action(action: str) -> dict:
         "shutdown": ["shutdown", "/s", "/t", "10"],
     }
     if action == "lock":  # pragma: no cover
-        ctypes.windll.user32.LockWorkStation()
+        user32.LockWorkStation()
         return {"ok": True, "action": "lock"}
     if action not in cmds:
         return {"ok": False, "error": f"Unknown power action '{action}'."}

@@ -162,16 +162,16 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The suite (82 tests) covers the router, wake-word matching, VAD, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 87 tests, 4 of which only run on Windows, where they call the real window, idle-time, Start Menu and power-plan APIs. The suite covers the router, wake-word matching, VAD, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, and the API's token and Host checks.
 
 ## Known limits
 
-- **Built on Linux, targets Windows.** Window control, media keys, power plans and
-  SAPI voices are Windows code paths (plain `ctypes`) that the CI environment
-  couldn't exercise; expect a first-run tweak or two.
+- **CI has no desktop.** Window listing, idle time, Start Menu discovery and
+  power plans run on the Windows CI job. Microphone capture, media keys, SAPI
+  voices and OBS can only be checked on a real PC with a signed-in user.
 - **Calendars are read-only.** Creating events by voice needs Google or Microsoft
   OAuth; that's the natural next step.
 - **Chrome tabs are opened, not read.** Listing and switching existing tabs needs

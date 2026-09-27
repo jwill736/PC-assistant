@@ -93,3 +93,32 @@ def test_macro_endpoints(macro_client, monkeypatch):
     assert c.post("/api/macros/end/run").json()["kind"] == "macro"  # a click already confirmed it
     assert stopped == ["stop_stream"]
     assert c.post("/api/macros/nope/run").status_code == 404
+
+
+def test_wake_model_upload_and_delete(client, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from assistant.voice import wakeword
+
+    c, _ = client
+    blob = b"\x08" * 5000
+    monkeypatch.setattr(wakeword, "available", lambda: False)
+    assert "Install the wake word runtime" in c.post("/api/wakewords?name=vesper", content=blob).json()["error"]
+
+    shape = [[1, 16, 96]]
+    fake_ort = SimpleNamespace(InferenceSession=lambda path, providers: SimpleNamespace(
+        get_inputs=lambda: [SimpleNamespace(shape=shape[0])]))
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+    monkeypatch.setattr(wakeword, "available", lambda: True)
+    assert "10 KB" in c.post("/api/wakewords?name=vesper", content=b"tiny").json()["error"]
+    shape[0] = [1, 1536]
+    assert "16×96" in c.post("/api/wakewords?name=vesper", content=blob).json()["error"]
+    shape[0] = ["batch", 16, 96]
+    r = c.post("/api/wakewords?name=Clip That.onnx&threshold=0.68", content=blob).json()
+    assert r["ok"] and r["name"] == "clip_that"
+    models = c.get("/api/voice").json()["wake_models"]
+    assert [(m["name"], m["threshold"]) for m in models] == [("clip_that", 0.68)]
+    assert c.delete("/api/wakewords/clip_that").json()["ok"] is True
+    assert c.get("/api/voice").json()["wake_models"] == []
+    assert c.delete("/api/wakewords/clip_that").json()["ok"] is False

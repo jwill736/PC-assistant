@@ -250,3 +250,43 @@ def test_bench_picks_the_engine_that_hears_you(cfg, monkeypatch):
     layer = yaml.safe_load((cfg.data_dir / calib.CALIBRATION_FILE).read_text())
     assert layer["voice"]["stt_engine"] == "whisper"
     assert list((cfg.data_dir / "bench").glob("voice-*.json"))
+
+
+# ---- push-to-talk hotkey -----------------------------------------------------
+
+def test_hotkey_format_conversion():
+    from assistant.voice.hotkey import to_pynput
+
+    assert to_pynput("ctrl+alt+j") == "<ctrl>+<alt>+j"
+    assert to_pynput("Ctrl + Shift + F13") == "<ctrl>+<shift>+<f13>"
+    assert to_pynput("win+space") == "<cmd>+<space>"
+    with pytest.raises(ValueError):
+        to_pynput("ctrl+banana")
+
+
+def test_hotkey_registers_with_pynput(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from assistant.voice import hotkey
+
+    started = []
+
+    class GlobalHotKeys:
+        def __init__(self, mapping):
+            self.mapping = mapping
+
+        def start(self):
+            started.append(self.mapping)
+
+        def stop(self):
+            pass
+
+    pynput = ModuleType("pynput")
+    pynput.keyboard = SimpleNamespace(GlobalHotKeys=GlobalHotKeys)
+    monkeypatch.setitem(sys.modules, "pynput", pynput)
+    monkeypatch.setattr(hotkey, "_listener", None)
+    cb = lambda: None  # noqa: E731
+    assert hotkey.register_hotkey("ctrl+alt+j", cb) is True
+    assert started == [{"<ctrl>+<alt>+j": cb}]
+    assert hotkey.register_hotkey(None, cb) is False

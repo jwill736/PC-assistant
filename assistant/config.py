@@ -61,6 +61,11 @@ DEFAULTS: dict[str, Any] = {
         "silence_ms": 800,       # energy gate only
         "max_utterance_s": 15,
         "corrections": {},       # {"vrb": "BRB"}: fix words the recogniser keeps getting wrong
+        # Trained wake words (data/models/wakewords/*.onnx, see training/wake_words.ipynb)
+        "wake_mode": "auto",     # auto | acoustic | hybrid | transcript
+        "wake_threshold": 0.5,
+        "hard_triggers": {},     # {"clip_that": "save the replay"}: trained phrase -> command
+        "barge_in": True,        # "stop" / the name interrupts a spoken reply
         "tts": {"engine": "pyttsx3", "rate": 190, "voice_hint": ""},
     },
     "goals": {"north_star": "", "this_week": []},

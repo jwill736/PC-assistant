@@ -47,3 +47,34 @@ def test_silero_segments_real_speech(models_dir):
     assert out, "no speech found"
     total = sum(len(o) for o in out) / 16000
     assert 5.0 < total < len(pcm) / 16000, total  # the 7.4 s sentence, not the silence around it
+
+
+OWW = "https://github.com/dscripka/openWakeWord"
+
+
+def fetch(url: str, dest: Path) -> Path:
+    import httpx
+
+    if not dest.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        r = httpx.get(url, follow_redirects=True, timeout=60)
+        r.raise_for_status()
+        dest.write_bytes(r.content)
+    return dest
+
+
+def test_wake_words_fire_only_on_their_own_phrase(models_dir):
+    """openWakeWord's released 'alexa' / 'hey mycroft' models and its real test recordings.
+    (Those models are CC BY-NC-SA: downloaded here as test fixtures only, never shipped.)"""
+    from assistant.voice.wakeword import WakeWords
+
+    d = models_dir / "oww-fixtures"
+    models = {name: fetch(f"{OWW}/releases/download/v0.5.1/{name}_v0.1.onnx", d / f"{name}.onnx")
+              for name in ("alexa", "hey_mycroft")}
+    ww = WakeWords(models, threshold=0.5)
+    for clip, expected in (("alexa_test.wav", "alexa"), ("hey_mycroft_test.wav", "hey_mycroft"), ("hey_jane.wav", None)):
+        wav = fetch(f"{OWW}/raw/main/tests/data/{clip}", d / clip)
+        pcm = np.concatenate([np.zeros(32000, np.int16), read_wav(wav), np.zeros(24000, np.int16)])
+        ww.reset()
+        hits = [h for i in range(0, len(pcm) - 480, 480) for h in ww.feed(pcm[i:i + 480])]
+        assert [name for name, _ in hits] == ([expected] if expected else []), (clip, hits)

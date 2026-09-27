@@ -54,7 +54,7 @@ jobs:
           path: tests/.models
           key: speech-models-${{ hashFiles('assistant/voice/models.py') }}
       - name: Install
-        run: python -m pip install -r requirements-dev.txt "sherpa-onnx>=1.12"
+        run: python -m pip install -r requirements-dev.txt "sherpa-onnx>=1.12" "livekit-wakeword>=0.2"
       - name: Test
         env:
           ASSISTANT_MODEL_TESTS: "1"

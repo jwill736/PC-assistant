@@ -161,6 +161,14 @@ def check_voice(cfg, test_mic: bool, load_model: bool) -> list[Check]:
                              f"Raise voice.min_rms to about {int(level * 3)} or use a noise gate.")
             return Check("Microphone", PASS, f"working · room noise {level:.0f} (threshold {floor})")
         out.append(_guard("Microphone", mic))
+    from .voice import wakeword
+
+    trained = wakeword.model_files(cfg.data_dir / "models")
+    if trained and not wakeword.available():
+        out.append(Check("Wake words", WARN, f"{', '.join(trained)} trained, but the runtime isn't installed",
+                         "pip install -r requirements-voice.txt (adds livekit-wakeword)."))
+    elif trained:
+        out.append(Check("Wake words", PASS, f"trained: {', '.join(trained)}"))
     if load_model:
         def model() -> Check:
             from .voice import stt

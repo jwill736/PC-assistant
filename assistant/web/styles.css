@@ -410,7 +410,7 @@ svg.strip { width: 100%; height: 46px; display: block; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
 .kv { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 6px 12px; font-size: 13px; margin: 8px 0 12px; }
 .kv .k { color: var(--muted); }
-table.t .act { width: 64px; overflow: visible; }
+table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visible; }
 @media (max-width: 600px) {
   /* Narrow screens: wrap cell text instead of truncating every name to "s…". */
   table.t td { white-space: normal; overflow-wrap: break-word; max-width: none; }

@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 from . import discovery
 from .brain.assistant import Assistant
@@ -223,14 +224,82 @@ class Runtime:
             "profile": self.verifier.status() if self.verifier else {"enrolled": False, "mode": "off"},
             "wake_words": self.cfg["assistant"]["wake_words"],
             "min_rms": self.cfg["voice"].get("min_rms"),
-            "pipeline": ({k: v for k, v in self.listener.status().items() if k in ("engine", "vad", "latency_ms")}
+            "pipeline": ({k: v for k, v in self.listener.status().items()
+                          if k in ("engine", "vad", "latency_ms", "wake_mode", "wake", "triggers")}
                          if self.listener else None),
+            "wake_models": self.wake_models(),
             "calibrating": self.calibrator is not None,
             "last_calibration": latest["data"] if latest else None,
             "macros": [{"name": m.name, "triggers": m.triggers, "steps": len(m.steps),
                         "needs_yes": bool(self.assistant.macro_risks(m.name))}
                        for m in self.assistant.macros.values()],
         }
+
+    # ---- trained wake words / hard triggers -----------------------------
+    def wake_models(self) -> list[dict]:
+        from .voice import wakeword
+
+        kinds = getattr(self.listener, "trigger_kind", None) or (lambda _n: "")
+        models_dir = self.cfg.data_dir / "models"
+        saved = wakeword.saved_thresholds(models_dir)
+        return [{"name": n, "file": p.name, "kind": kinds(n), "kb": round(p.stat().st_size / 1024),
+                 "threshold": saved.get(n)}
+                for n, p in wakeword.model_files(models_dir).items()]
+
+    def install_wake_model(self, name: str, data: bytes, threshold: float | None = None) -> dict:
+        """Save a trained .onnx (from the Colab notebook) after checking it's a wake word classifier."""
+        import re
+        import tempfile
+
+        from .voice import wakeword
+
+        name = re.sub(r"[^a-z0-9_]+", "_", name.lower().removesuffix(".onnx")).strip("_")
+        if not name or len(name) > 40:
+            return {"ok": False, "error": "Name it after the phrase, e.g. vesper, stop or clip_that."}
+        if not 1_000 < len(data) < 20_000_000:
+            return {"ok": False, "error": "That doesn't look like a wake word model (expected 10 KB–20 MB)."}
+        if not wakeword.available():
+            return {"ok": False, "error": "Install the wake word runtime first: pip install -r requirements-voice.txt"}
+        try:
+            import onnxruntime as ort
+
+            with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp:
+                tmp.write(data)
+            shape = ort.InferenceSession(tmp.name, providers=["CPUExecutionProvider"]).get_inputs()[0].shape
+            Path(tmp.name).unlink(missing_ok=True)
+        except Exception as exc:
+            return {"ok": False, "error": f"Not a valid ONNX model: {exc}"}
+        if list(shape)[-2:] != [16, 96]:
+            return {"ok": False, "error": f"Expected a livekit-wakeword/openWakeWord classifier (input …×16×96), got {shape}."}
+        folder = self.cfg.data_dir / "models" / wakeword.FOLDER
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{name}.onnx").write_bytes(data)
+        side = folder / f"{name}.json"
+        if threshold is not None and 0.05 <= threshold <= 0.99:
+            import json
+
+            side.write_text(json.dumps({"threshold": round(threshold, 3)}), encoding="utf-8")
+        else:
+            side.unlink(missing_ok=True)
+        return self._reload_wake(name)
+
+    def delete_wake_model(self, name: str) -> dict:
+        from .voice import wakeword
+
+        path = wakeword.model_files(self.cfg.data_dir / "models").get(name.lower())
+        if path is None:
+            return {"ok": False, "error": f"No wake word model called {name}."}
+        path.unlink()
+        path.with_suffix(".json").unlink(missing_ok=True)
+        return self._reload_wake(None)
+
+    def _reload_wake(self, name: str | None) -> dict:
+        if hasattr(self.listener, "load_wake_words"):
+            self.listener.load_wake_words()
+        self.bus.publish("voice_profile", self.voice_status(), sticky=True)
+        kind = self.listener.trigger_kind(name) if (hasattr(self.listener, "trigger_kind") and name) else None
+        mode = self.listener.wake_mode() if hasattr(self.listener, "wake_mode") else None
+        return {"ok": True, "name": name, "kind": kind, "mode": mode}
 
     # ---- PC scan -------------------------------------------------------
     def _rescan_if_stale(self) -> None:

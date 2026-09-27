@@ -33,6 +33,10 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
 
 # Whisper's favourite things to "hear" in silence or fan noise.
 HALLUCINATIONS = {"you", "thank you", "thanks for watching", "thank you for watching", "bye", "so", "okay", ""}
+# Said over a reply, these stop it (and are not sent on as commands, except "cancel").
+STOP_PHRASES = {"stop", "stop it", "stop talking", "ok stop", "okay stop", "cancel", "quiet", "be quiet", "shut up",
+                "enough", "that's enough", "thats enough", "never mind", "nevermind", "hold on", "wait"}
+WAKE_ANCHOR_S = 2.0  # an acoustic wake-word hit counts only this soon after the utterance starts
 
 
 def _norm(token: str) -> str:
@@ -41,6 +45,21 @@ def _norm(token: str) -> str:
 
 def _norm_sentence(text: str) -> str:
     return " ".join(_norm(t) for t in text.split() if _norm(t))
+
+
+def strip_leading_name(transcript: str, name: str) -> str:
+    """Drop a mangled name at the start ("Desperate, open Discord" -> "open Discord") once the
+    acoustic model has already confirmed the name was said there."""
+    tokens = re.findall(r"\S+", transcript)
+    i = 1 if tokens and _norm(tokens[0]) in ("hey", "hi", "ok", "okay") else 0
+    best, cut = 0.5, 0  # the name may come out as one word ("Desperate") or two ("Best per")
+    for n in (1, 2):
+        if i + n <= len(tokens):
+            joined = "".join(_norm(t) for t in tokens[i:i + n]).removesuffix("'s")
+            ratio = difflib.SequenceMatcher(None, joined, name.lower()).ratio()
+            if ratio > best:
+                best, cut = ratio, i + n
+    return " ".join(tokens[cut:]).strip(" ,.!?;:-") if cut else transcript.strip()
 
 
 def split_wake(transcript: str, wake_words: list[str], search_words: int = 4, cutoff: float = 0.8) -> tuple[bool, str]:
@@ -160,6 +179,9 @@ class VoiceListener:
         self.vad_kind = ""
         self.latencies: deque = deque(maxlen=50)   # ms from end of speech to transcript
         self._stt_lock = threading.Lock()
+        self.wake = None                 # acoustic wake words / hard triggers (wakeword.py), if trained
+        self._name_hit_at = 0.0
+        self._speech_started_at = 0.0
         self.heartbeat: Callable[[], None] = lambda: None  # set by the watchdog
 
     # ---- control ----------------------------------------------------------
@@ -215,7 +237,72 @@ class VoiceListener:
         lat = sorted(self.latencies)
         return {"state": self.state, "error": self.error, "muted": self.muted, "wake_words": self.wake_words,
                 "engine": stt_mod.LABELS.get(getattr(self.stt, "name", ""), ""), "vad": self.vad_kind,
-                "latency_ms": lat[len(lat) // 2] if lat else None}
+                "latency_ms": lat[len(lat) // 2] if lat else None, "wake_mode": self.wake_mode(),
+                "wake": self.wake.status() if self.wake else None,
+                "triggers": {n: self.trigger_kind(n) for n in (self.wake.names if self.wake else [])}}
+
+    # ---- acoustic wake words / hard triggers ------------------------------
+    def load_wake_words(self) -> None:
+        from . import wakeword
+
+        try:
+            self.wake = wakeword.load(self.cfg, self.models_dir)
+        except Exception:
+            log.exception("wake word models failed to load; using the transcript only")
+            self.wake = None
+        if self.wake:
+            log.info("wake words: %s (%s mode)", ", ".join(self.wake.names), self.wake_mode())
+
+    def trigger_kind(self, model: str) -> str:
+        """name (wakes it) | stop (interrupts a reply) | command (runs the phrase at once)."""
+        spoken = model.replace("_", " ").replace("-", " ").strip().lower()
+        names = {w.lower() for w in self.wake_words[:2]}  # the name and "hey <name>"
+        if spoken in names:
+            return "name"
+        if spoken in ("stop", "stop it", "okay stop", "ok stop"):
+            return "stop"
+        return "command"
+
+    def wake_mode(self) -> str:
+        """acoustic: speech-to-text only after the name model fires; hybrid: either wakes it;
+        transcript: the name is matched on the text (no model needed)."""
+        mode = self.cfg.get("wake_mode", "auto")
+        has_name = bool(self.wake) and any(self.trigger_kind(n) == "name" for n in self.wake.names)
+        if mode == "auto":
+            return "acoustic" if has_name else "transcript"
+        if mode in ("acoustic", "hybrid") and not has_name:
+            return "transcript"
+        return mode if mode in ("acoustic", "hybrid", "transcript") else "transcript"
+
+    def _on_hits(self, hits: list, speaking: bool) -> None:
+        for name, score in hits:
+            kind = self.trigger_kind(name)
+            self.bus.publish("wake_word", {"name": name, "score": score, "kind": kind})
+            if kind == "name":
+                self._name_hit_at = time.time()
+                if speaking:
+                    self.speaker.interrupt()  # talking over the reply to give a new command
+                else:
+                    self.bus.publish("wake", {})
+            elif kind == "stop":
+                if speaking:
+                    self.speaker.interrupt()
+            elif not speaking and not self.muted:  # "clip that": act now, no speech-to-text
+                command = (self.cfg.get("hard_triggers") or {}).get(name) or name.replace("_", " ")
+                self.last_command = time.time()
+                self.bus.publish("heard", {"text": command, "trigger": name, "score": score})
+                self.on_command(command)
+
+    def _acoustic_wake(self, started_at: float | None) -> bool:
+        """Did the name model fire at the *start* of this utterance? (Saying the name mid-sentence
+        to chat fires the model too, but not in the first couple of seconds of what you said.)"""
+        hit = self._name_hit_at
+        if not hit or started_at is None or self.wake_mode() == "transcript":
+            return False
+        if started_at - 1.0 <= hit <= started_at + WAKE_ANCHOR_S:
+            self._name_hit_at = 0.0
+            return True
+        return False
 
     # ---- speech-to-text ---------------------------------------------------
     def _progress(self, what: str):
@@ -271,6 +358,7 @@ class VoiceListener:
             self._set_state("error")
             return
         self.vad_kind = getattr(segmenter, "kind", "energy")
+        self.load_wake_words()
         log.info("voice: %s speech-to-text, %s voice detection", stt_mod.LABELS.get(self.stt.name, self.stt.name), self.vad_kind)
 
         def callback(indata, _frames, _time, status):
@@ -299,21 +387,32 @@ class VoiceListener:
                     frame = self._audio.get(timeout=0.5)
                 except queue.Empty:
                     continue
-                if self.muted or self.paused or self.speaker.speaking.is_set():
+                speaking = self.speaker.speaking.is_set()
+                barge_in = self.cfg.get("barge_in", True)
+                if self.muted or self.paused or (speaking and not barge_in):
                     if not blocked:  # start fresh once, not on every frame
                         segmenter.reset()
+                        if self.wake:
+                            self.wake.reset()
                         blocked = True
                     continue
                 blocked = False
+                if self.wake:
+                    self._on_hits(self.wake.feed(frame), speaking)
+                was_speech = segmenter.in_speech
                 frames = segmenter.feed(frame)
+                if segmenter.in_speech and not was_speech:
+                    self._speech_started_at = time.time()
                 if frames is None:
-                    if segmenter.in_speech and self.state != "hearing":
+                    if segmenter.in_speech and not speaking and self.state != "hearing":
                         self._set_state("hearing")
                     continue
-                self._set_state("transcribing")
+                during = speaking or time.time() - self.speaker.last_end < 0.3
+                if not during:
+                    self._set_state("transcribing")
                 try:
                     with self._keepalive():
-                        self._handle_audio(np.concatenate(frames))
+                        self._handle_audio(np.concatenate(frames), self._speech_started_at, during_speech=during)
                 except Exception:
                     log.exception("voice pipeline error")
                 self._drain()
@@ -359,10 +458,14 @@ class VoiceListener:
             return True
         return difflib.SequenceMatcher(None, a, b).ratio() >= 0.6
 
-    def _handle_audio(self, audio) -> None:
+    def _handle_audio(self, audio, started_at: float | None = None, during_speech: bool = False) -> None:
         import numpy as np
 
         samples = audio.astype(np.float32) / 32768.0
+        source = self._arm_source()
+        acoustic = self._acoustic_wake(started_at)
+        if self.wake_mode() == "acoustic" and not (acoustic or source or during_speech):
+            return  # the name model didn't fire: nothing addressed to us, skip speech-to-text
         t0 = time.perf_counter()
         text = self.correct(self.stt.transcribe(samples, self._hints()))
         stt_ms = round((time.perf_counter() - t0) * 1000)
@@ -373,7 +476,24 @@ class VoiceListener:
             self.bus.publish("heard", {"text": text, "ignored": "own voice", "stt_ms": stt_ms})
             return
         matched, command = split_wake(text, self.wake_words)
-        source = self._arm_source()
+        if acoustic and not matched:  # the model heard the name even if the transcript mangled it
+            matched, command = True, strip_leading_name(text, self.wake_words[0])
+        if during_speech:
+            said = _norm_sentence(command if matched else text)
+            if said in STOP_PHRASES:
+                if self._owner_ok(samples, source) and not self._stop_word_is_echo(said):
+                    self.speaker.interrupt()
+                    self.bus.publish("heard", {"text": text, "interrupted": True, "stt_ms": stt_ms})
+                    if said == "cancel":
+                        self.last_command = time.time()
+                        self.on_command("cancel")
+                return
+            if not matched:  # talking over a reply needs the name (or push-to-talk)
+                if source in ("hotkey", "button"):
+                    matched, command = True, text
+                else:
+                    self.bus.publish("heard", {"text": text, "ignored": "while speaking", "stt_ms": stt_ms})
+                    return
         if not (matched or source):
             self.bus.publish("heard", {"text": text, "wake": False, "armed": False, "stt_ms": stt_ms})
             return
@@ -383,10 +503,24 @@ class VoiceListener:
             if not accepted:
                 self.bus.publish("heard", {"text": text, "ignored": "voice not recognised", "score": score, "stt_ms": stt_ms})
                 return
-        self.bus.publish("heard", {"text": text, "wake": matched, "armed": bool(source), "stt_ms": stt_ms})
+        if during_speech:
+            self.speaker.interrupt()
+        self.bus.publish("heard", {"text": text, "wake": matched, "armed": bool(source), "stt_ms": stt_ms,
+                                   **({"acoustic": True} if acoustic else {})})
         if matched and not command:
             self.arm(source="wake")  # "Vesper?" -> listen for the actual command
             return
         self.armed_until = 0.0
         self.last_command = time.time()
         self.on_command(command if matched else text)
+
+    def _owner_ok(self, samples, source) -> bool:
+        if self.verifier is None or source in ("hotkey", "button"):
+            return True
+        return self.verifier.check(samples)[0]
+
+    def _stop_word_is_echo(self, said: str) -> bool:
+        """Without a voice profile, a lone "stop" that the reply itself contains might be the reply."""
+        if self.verifier is not None and getattr(self.verifier, "active", False):
+            return False  # the speaker check already rejected the TTS voice
+        return said in _norm_sentence(getattr(self.speaker, "last_text", "")).split() and " " not in said

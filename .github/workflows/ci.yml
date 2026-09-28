@@ -66,6 +66,7 @@ jobs:
     # a question, calls a tool, answers from memory and writes the morning plan with it.
     name: local Llama (Ollama, ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # CPU inference is slow; a stuck call must fail, not run for GitHub's 6-hour default
     env:
       OLLAMA_MODEL: llama3.2:3b
     steps:

@@ -26,7 +26,7 @@ def local(svc):
         "tools": ["add_task", "list_tasks", "remember", "recall", "calendar"]}}
     a = Assistant(svc)
     assert a.brain() == "local", "Ollama isn't answering on 127.0.0.1:11434"
-    a.local.llm.http.timeout = 600
+    a.local.llm.http.timeout = 240  # per call; CPU-only runners are slow, but not this slow
     return a
 
 

@@ -222,13 +222,15 @@ def _pyvda():
 
 
 def virtual_desktop(action: str = "status", number: int | None = None, vda=None, chord=None) -> dict:
-    """action: next | previous | go (to ``number``, 1-based) | status."""
+    """action: next | previous | go (to ``number``, 1-based) | status.
+    ``vda``: None detects pyvda, False skips it (keyboard shortcut only), or a pyvda-like module."""
     if not IS_WINDOWS and vda is None and chord is None:
         return _windows_only("Virtual desktops")
-    vda = vda if vda is not None else _pyvda()
+    if vda is None:
+        vda = _pyvda()
     chord = chord or desktop.press_chord
     try:
-        if vda is not None:
+        if vda:
             count = len(vda.get_virtual_desktops())
             current = vda.VirtualDesktop.current().number
             target = {"next": current + 1, "previous": current - 1, "go": number}.get(action)

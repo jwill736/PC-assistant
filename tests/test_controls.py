@@ -103,8 +103,27 @@ def test_virtual_desktops_with_pyvda_and_the_shortcut_fallback():
     assert controls.virtual_desktop("go", 3, vda=vda)["desktop"] == 3
     assert not controls.virtual_desktop("next", vda=vda)["ok"]  # there's no desktop 4
     chords = []
-    assert controls.virtual_desktop("previous", vda=None, chord=lambda *k: chords.append(k))["moved"] == "previous"
+    assert controls.virtual_desktop("previous", vda=False, chord=lambda *k: chords.append(k))["moved"] == "previous"
     assert chords == [(controls.VK_CONTROL, controls.VK_LWIN, controls.VK_LEFT)]
+
+
+def test_virtual_desktop_uses_pyvda_when_it_loads(monkeypatch):
+    state = {"cur": 2}
+
+    class VD:
+        def __init__(self, n):
+            self.number = n
+
+        @staticmethod
+        def current():
+            return VD(state["cur"])
+
+        def go(self):
+            state["cur"] = self.number
+    monkeypatch.setattr(controls, "_pyvda", lambda: SimpleNamespace(get_virtual_desktops=lambda: [1, 2], VirtualDesktop=VD))
+    chords = []
+    out = controls.virtual_desktop("previous", chord=lambda *k: chords.append(k))  # vda=None: detect it
+    assert out == {"ok": True, "desktop": 1, "count": 2} and chords == []
 
 
 def test_spoken_numbers_and_new_voice_commands():

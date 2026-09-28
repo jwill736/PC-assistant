@@ -28,7 +28,8 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 | System controls | Exact volume ("volume 30"), per-app volume ("Discord volume 20"), brightness, Windows Settings pages, virtual desktops |
 | Safety | Every action has a risk tier; the risky ones wait for your "yes" (voice, HUD or a Windows notification button). A kill switch (`Ctrl+Alt+K`, the tray, or "stop everything") stops it all. Every action is logged |
 | Chrome | Open sites, several tabs at once, and Google/YouTube/GitHub/Twitch searches |
-| OBS | Switch scenes (fuzzy-matched), go live or end the stream (after you confirm), record, clip the replay buffer, mute sources, live bitrate, dropped frames, FPS |
+| OBS | Switch scenes (fuzzy-matched), go live or end the stream (after you confirm), record, clip the replay buffer, mute sources, show or hide the cam and other sources, live bitrate, dropped frames, FPS |
+| Stream health | While live: dropped frames split by cause (network, encoder, render) with the fix for each, instant reconnect and offline alerts, and a warning when you're talking but your OBS mic is muted or dead. A pre-stream checklist runs by voice or 15 minutes before a stream on your calendar |
 | Calendars | Any number of Google, Outlook or iCloud calendars merged into one agenda; free blocks; next-meeting countdown |
 | Day tracking | Samples the active window every 5 s and sorts it into work, stream, other or idle. Shows hours per category, top apps, deep-work sessions and context switches. Stays on your PC |
 | Briefings | "Good morning": a plan for the day built from your calendars, yesterday's numbers, projects, tasks, news and your goals. "Recap my day": where the time went and what shipped |
@@ -139,6 +140,37 @@ The password is read from OBS's own settings, so leave `OBS_PASSWORD` empty
 unless OBS runs on another machine. Scene names are fuzzy-matched, the scan
 adds aliases for scenes with emoji, and `obs.scene_aliases` maps anything else
 you say to exact names ("be right back" → `BRB`).
+
+**Stream health.** While you're live, the OBS poll (every 3 s) feeds a watchdog that looks at the *last minute*,
+not the stream's running totals, and splits lost frames by cause, because each has a different fix:
+
+| what OBS reports | means | what it tells you |
+|---|---|---|
+| dropped frames (network) | your upload can't keep up | lower the bitrate by 200–500 kbps (Twitch's advice), with your current bitrate |
+| skipped frames (encoder) | the encoder is overloaded | GPU encoder (NVENC), a faster preset or a lower output resolution |
+| missed frames (render) | the GPU is maxed | cap the game's frame rate, close heavy browser sources |
+
+Thresholds come from the research: up to 0.1% is invisible, above 0.5% shows (a warning), above 2% degrades
+noticeably (critical). An alert repeats at most every 3 minutes while it lasts, and it tells you when it clears up.
+It also says at once when the stream starts **reconnecting**, when it **goes offline** without you ending it, and when
+it loses OBS while you're live. Alerts show in the HUD (Stream tab) and are spoken; `obs.speak_alerts: false` keeps
+them on screen only. Spoken alerts go to your default speakers, so if OBS captures desktop audio, set
+`voice.tts.output_device` to your headphones or viewers will hear them.
+
+**The mic check** listens to OBS's own level meters (the `InputVolumeMeters` event, 20 times a second) for your mic
+input (`obs.mic_source`, or "Mic/Aux", or the first input with "mic" in its name). A noise gate makes an OBS mic read
+silence between sentences, so silence alone never triggers anything. It only warns when the assistant's own
+microphone heard you speak at least twice in the last minute while OBS's mic was **muted** or stayed **below −55 dB**,
+the classic "talked for ten minutes into a muted mic" mistake. It also warns when the mic **clips** (peaks near 0 dB).
+
+**Pre-stream check:** say "am I ready to stream?" or "pre-stream check", click *Run pre-stream check* on the Stream
+tab, or let it run by itself 15 minutes before any event on your stream calendar (`obs.prestream_minutes`). It checks
+that OBS is connected, your start scene exists, the mic is live and unmuted, the replay buffer is running (so "clip
+that" works), there's recording space, the PC isn't already loaded, and (with Twitch set up) that a title is set.
+Each problem comes with its fix.
+
+**Sources:** "hide the cam", "show the webcam", "toggle chat", "hide the intro video source" show or hide a source in
+the current scene ("cam" finds Webcam, Facecam or Camera). "Clip that" now also reports where OBS saved the file.
 
 ### Voice
 `requirements-voice.txt` installs sherpa-onnx, livekit-wakeword, sounddevice, pyttsx3, pynput and faster-whisper (fallback).
@@ -357,7 +389,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 255 tests, 6 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another runs `setup.bat` exactly as a new user would and checks the result. The suite covers the router, risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 275 tests, 6 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another runs `setup.bat` exactly as a new user would and checks the result. The suite covers the router, stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the

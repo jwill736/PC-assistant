@@ -142,6 +142,10 @@ obs:
     be right back: BRB
     chatting: Just Chatting
     game: Gameplay
+  health_alerts: true           # while live: dropped frames by cause, reconnects, a muted or dead mic
+  speak_alerts: true            # say them too (set voice.tts.output_device to headphones to keep them off stream)
+  mic_source: ""                # your mic's OBS input name; empty = "Mic/Aux" or the first input with "mic" in it
+  prestream_minutes: 15         # pre-stream check this long before a stream on your calendar; 0 = off
 
 twitch:
   enabled: false

@@ -29,7 +29,10 @@ class OBSController:
         self._last_bytes: tuple[float, int] | None = None
         self._inputs_cache: tuple[float, list] = (0.0, [])
         self.scenes: list[str] = []
-
+        self.stop_requested_at = 0.0  # the assistant ended the stream itself (so "offline" isn't an alarm)
+        self._events = None           # obsws EventClient: mic meters and replay-saved events
+        self._events_next_try = 0.0
+        self.last_replay_path: str | None = None
     # ---- connection -----------------------------------------------------
     def _connect(self) -> bool:
         if not self.enabled:
@@ -192,11 +195,116 @@ class OBSController:
         request = self.ACTIONS.get(action)
         if not request:
             return {"ok": False, "error": f"Unknown OBS action '{action}'. Options: {', '.join(self.ACTIONS)}"}
+        if action == "stop_stream":
+            self.stop_requested_at = time.time()
         try:
             self._send(request)
         except Exception as exc:
             return {"ok": False, "error": _describe(exc)}
-        return {"ok": True, "action": action}
+        out = {"ok": True, "action": action}
+        if action == "save_replay":  # OBS writes the file a moment later
+            time.sleep(0.6)
+            path = self.replay_path()
+            if path:
+                out["path"] = path
+        return out
+
+    def replay_path(self) -> str | None:
+        try:
+            path = self._send("GetLastReplayBufferReplay").get("savedReplayPath")
+        except Exception:
+            return self.last_replay_path
+        self.last_replay_path = path or self.last_replay_path
+        return self.last_replay_path
+
+    # ---- sources in the current scene ("hide the cam") ----------------------
+    def scene_items(self, scene: str | None = None) -> tuple[str, list[dict]]:
+        scene = scene or self._send("GetCurrentProgramScene").get("currentProgramSceneName")
+        items = self._send("GetSceneItemList", {"sceneName": scene}).get("sceneItems", [])
+        return scene, [{"id": i.get("sceneItemId"), "name": i.get("sourceName"), "enabled": bool(i.get("sceneItemEnabled"))}
+                       for i in items]
+
+    SOURCE_WORDS = {"cam": ("cam", "webcam", "camera", "facecam", "video capture"), "chat": ("chat",),
+                    "alerts": ("alert",), "overlay": ("overlay",)}
+
+    def set_source_visible(self, source: str, visible: bool | None = None) -> dict:
+        """Show/hide a source in the current scene. visible None toggles. "the cam" finds a webcam-ish source."""
+        try:
+            scene, items = self.scene_items()
+        except Exception as exc:
+            return {"ok": False, "error": _describe(exc)}
+        key = source.lower().strip().removeprefix("the ").removeprefix("my ").strip()
+        names = {i["name"].lower(): i for i in items if i.get("name")}
+        words = next((ws for k, ws in self.SOURCE_WORDS.items() if key in (k, *ws) or key.rstrip("s") in (k, *ws)), (key,))
+        match = names.get(key) or next((i for n, i in names.items() if any(w in n for w in words)), None)
+        if match is None:
+            close = difflib.get_close_matches(key, list(names), n=1, cutoff=0.5)
+            match = names[close[0]] if close else None
+        if match is None:
+            return {"ok": False, "error": f"No source like '{source}' in {scene}.",
+                    "sources": [i["name"] for i in items]}
+        target = (not match["enabled"]) if visible is None else bool(visible)
+        try:
+            self._send("SetSceneItemEnabled", {"sceneName": scene, "sceneItemId": match["id"], "sceneItemEnabled": target})
+        except Exception as exc:
+            return {"ok": False, "error": _describe(exc)}
+        return {"ok": True, "source": match["name"], "scene": scene, "visible": target}
+
+    # ---- what the pre-stream check asks --------------------------------------
+    def replay_buffer_active(self) -> bool | None:
+        try:
+            return bool(self._send("GetReplayBufferStatus").get("outputActive"))
+        except Exception:
+            return None  # replay buffer not enabled in OBS settings, or OBS unreachable
+
+    def record_directory(self) -> str | None:
+        try:
+            return self._send("GetRecordDirectory").get("recordDirectory")
+        except Exception:
+            return None
+
+    # ---- events: mic levels every 50 ms, replay saved -------------------------
+    def ensure_events(self, on_meters=None, on_replay_saved=None) -> bool:
+        """Keep an event connection open (reconnects after OBS restarts). False if it can't right now."""
+        if not self.enabled:
+            return False
+        ev = self._events
+        if ev is not None and getattr(getattr(ev, "worker", None), "is_alive", lambda: False)():
+            return True
+        if time.time() < self._events_next_try:
+            return False
+        try:
+            import obsws_python as obs
+            from obsws_python.subs import Subs
+
+            ev = obs.EventClient(host=self.host, port=self.port, password=self.password, timeout=3,
+                                 subs=Subs.OUTPUTS | Subs.INPUTVOLUMEMETERS)
+        except Exception as exc:
+            self._events = None
+            self._events_next_try = time.time() + 15
+            log.debug("OBS events unavailable: %s", _describe(exc))
+            return False
+
+        # obsws dispatches by function name (on_<event_in_snake_case>) with snake_case fields.
+        def on_input_volume_meters(data):
+            if on_meters:
+                on_meters(getattr(data, "inputs", []) or [])
+
+        def on_replay_buffer_saved(data):
+            self.last_replay_path = getattr(data, "saved_replay_path", None) or self.last_replay_path
+            if on_replay_saved:
+                on_replay_saved(self.last_replay_path)
+        ev.callback.register([on_input_volume_meters, on_replay_buffer_saved])
+        self._events = ev
+        return True
+
+    def close_events(self) -> None:
+        ev, self._events = self._events, None
+        if ev is not None:
+            try:
+                ev.disconnect()
+            except Exception:
+                pass
 
     def set_mute(self, source: str, muted: bool | None = None) -> dict:
         names = [i["name"] for i in self.audio_inputs()] or []

@@ -146,8 +146,17 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "obs_control", {"action": f"{m.group(1)}_recording"})
     if re.search(r"^(?:clip (?:that|it)|save (?:the |a )?replay|replay that)$", t):
         return Intent("tool", "obs_control", {"action": "save_replay"})
-    if re.search(r"\b(stream|obs) (status|stats|health)\b|\bhow'?s the stream\b|\bam i live\b|\bdropp(ed|ing) frames\b", t):
+    if re.search(r"^(?:am i ready to (?:stream|go live)|(?:run (?:the |a )?)?pre-? ?stream (?:check|checklist)|stream check|ready to stream)$", t):
+        return Intent("tool", "prestream_check")
+    if re.search(r"\b(stream|obs) (status|stats|health)\b|\bhow(?:'?s| is) the stream\b|\bam i live\b|\bdropp(ed|ing) frames\b", t):
         return Intent("tool", "obs_status")
+    m = re.search(r"^(hide|show|toggle|turn off|turn on) (?:the |my )?(cam|webcam|camera|face ?cam|chat|alerts?|overlay)$", t) \
+        or re.search(r"^(hide|show|toggle) (?:the )?(.+?) (?:source|in obs)$", t)
+    if m:
+        verb = m.group(1)
+        visible = {"hide": False, "turn off": False, "show": True, "turn on": True}.get(verb)
+        return Intent("tool", "obs_source", {"source": m.group(2).replace("face cam", "facecam"),
+                                             **({} if visible is None else {"visible": visible})})
     m = re.search(r"^(?:switch|change|go|cut|flip|move|jump)(?: over)?(?: the)?(?: scene)? to (?:the )?(.+?)(?: scene)?$", t) \
         or re.search(r"^(?:scene|obs scene) (.+)$", t)
     if m:

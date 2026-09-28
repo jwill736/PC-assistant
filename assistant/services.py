@@ -42,6 +42,9 @@ class Services:
     jobs: JobRunner | None = None
     # Voice output; replaced by the voice subsystem once it starts.
     speak: Callable[..., None] = field(default=lambda text, **kw: None)
+    # Stream health and the pre-stream check live in the runtime (they need the OBS event feed).
+    stream_health: Callable[[], dict] | None = None
+    prestream: Callable[[], dict] | None = None
 
     @property
     def name(self) -> str:

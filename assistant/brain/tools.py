@@ -162,8 +162,16 @@ class ToolBox:
             Tool("set_power_plan", "Switch the Windows power plan: high, balanced, saver.",
                  obj({"plan": {"type": "string", "enum": ["high", "balanced", "saver"]}}, ["plan"]),
                  lambda plan: s.system.set_power_plan(plan), tier=1),
-            Tool("obs_status", "OBS state: current scene, scene list, live/recording status, dropped frames, bitrate, FPS.",
-                 obj(), lambda: s.obs.status()),
+            Tool("obs_status", "OBS state: current scene, scene list, live/recording status, dropped frames, bitrate, FPS, "
+                               "and stream health over the last minute (network drops, encoder skips, render lag).",
+                 obj(), self._obs_status),
+            Tool("obs_source", "Show or hide a source in the current OBS scene, e.g. the webcam, chat or alerts. "
+                               "visible omitted = toggle.",
+                 obj({"source": {"type": "string"}, "visible": {"type": "boolean"}}, ["source"]),
+                 lambda source, visible=None: s.obs.set_source_visible(source, visible), tier=1),
+            Tool("prestream_check", "Pre-stream checklist: OBS connected, start scene, mic live and unmuted, replay buffer, "
+                                    "recording space, PC load, Twitch title. Use before going live.",
+                 obj(), self._prestream),
             Tool("obs_switch_scene", "Switch the OBS program scene (fuzzy-matched by name).",
                  obj({"scene": {"type": "string"}}, ["scene"]), lambda scene: s.obs.switch_scene(scene), tier=1),
             Tool("obs_control", "Start/stop the stream, recording, replay buffer or virtual cam; save a replay clip.",
@@ -211,6 +219,19 @@ class ToolBox:
     def _close_app(self, name: str) -> dict:
         names = self.svc.launcher.process_names_for(name)
         return desktop.close_processes(names, set(self.svc.cfg["optimizer"]["protected_processes"]))
+
+    def _obs_status(self) -> dict:
+        st = self.svc.obs.status()
+        if st.get("connected") and self.svc.stream_health:
+            st["health"] = self.svc.stream_health()
+        return st
+
+    def _prestream(self) -> dict:
+        if self.svc.prestream:
+            return self.svc.prestream()
+        from ..integrations.prestream import run_checklist
+
+        return run_checklist(self.svc)
 
     def _app_volume(self, app: str, level: int | None = None, mute: bool | None = None) -> dict:
         try:

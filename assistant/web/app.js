@@ -193,6 +193,48 @@ function panels(name) { return $$(`.panel[data-panel="${name}"]`); }
 function body(p) { return $('.body', p); }
 function meta(p, text) { const m = $('[data-slot="meta"]', p); if (m) m.replaceChildren(text instanceof Node ? text : document.createTextNode(text || '')); }
 
+const HEALTH_CLASSES = [['network', 'Network drops', 'lower the bitrate 200–500 kbps'],
+  ['encoder', 'Encoder skips', 'NVENC, a faster preset, or a lower resolution'],
+  ['render', 'Render lag', 'cap the game’s FPS; the GPU is maxed']];
+const HEALTH_LABEL = { ok: 'Clean', notice: 'Minor', warning: 'Visible', critical: 'Bad', unknown: '—' };
+const HEALTH_STATUS = { ok: 'good', notice: 'good', warning: 'warning', critical: 'critical', unknown: 'idle' };
+
+function streamHealth(health, live) {
+  const out = [h('div', { class: 'sub-h' }, `Health · last ${Math.round((health.window_s || 60) / 60)} min`)];
+  if (!live) {
+    out.push(h('div', { class: 't2' }, 'Measured while you’re live: dropped frames split by cause, reconnects, and whether your mic reaches the stream.'));
+  } else {
+    out.push(h('table', { class: 't' }, h('tbody', {}, HEALTH_CLASSES.map(([key, label, fix]) => {
+      const c = (health.classes || {})[key] || {};
+      const bad = c.level === 'warning' || c.level === 'critical';
+      return h('tr', {}, h('td', { class: 'fit' }, label), h('td', { class: 'r fit num' }, c.pct != null ? `${c.pct}%` : '—'),
+        h('td', { class: 'fit' }, status(HEALTH_STATUS[c.level] || 'idle', HEALTH_LABEL[c.level] || '—')),
+        h('td', { class: 'muted' }, bad ? fix : ''));
+    }))));
+  }
+  const mic = health.mic || {};
+  if (mic.source) {
+    out.push(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Mic in OBS'),
+      h('span', {}, mic.source, mic.peak_db != null ? h('span', { class: 'muted' }, ` · loudest ${mic.peak_db} dB in the last minute`) : null,
+        mic.clipping ? h('span', {}, ' · ', status('warning', 'clipping')) : null)));
+  }
+  const alerts = (health.alerts || []).slice(0, 4);
+  if (alerts.length) {
+    out.push(h('div', { class: 'list' }, alerts.map(a => h('div', { class: 'item' },
+      h('div', { class: 'fit' }, status({ critical: 'critical', warning: 'warning', good: 'good' }[a.level] || 'idle', ago(a.ts))),
+      h('div', { class: 'main t3' }, a.text)))));
+  }
+  const pre = S.data.prestream;
+  out.push(h('div', { class: 'controls' }, h('button', { class: 'btn', onclick: () => tool('prestream_check').then(r => { if (r && r.items) { S.data.prestream = r; render.obs(); } }) }, 'Run pre-stream check'),
+    pre ? h('span', { class: 'muted', style: { alignSelf: 'center' } }, `last run ${ago(pre.ts)}`) : null));
+  if (pre && pre.items) {
+    out.push(h('table', { class: 't' }, h('tbody', {}, pre.items.map(i => h('tr', {},
+      h('td', { class: 'fit' }, status({ good: 'good', warning: 'warning', critical: 'critical' }[i.level] || 'idle', i.name)),
+      h('td', { class: 't2' }, i.detail))))));
+  }
+  return out;
+}
+
 const render = {
   stats() {
     const act = S.data.activity || {};
@@ -383,7 +425,13 @@ const render = {
       }
       const st = obs.streaming, rec = obs.recording;
       meta(p, h('span', { class: `badge-live ${st.active ? '' : 'off'}` }, st.active ? 'LIVE' : 'OFFLINE'));
-      const dropLevel = st.dropped_pct >= 2 ? ['critical', 'Dropping'] : st.dropped_pct >= 0.5 ? ['warning', 'Watch'] : ['good', 'Healthy'];
+      // Judge health on the last minute (what's happening now), not the whole stream's totals.
+      const health = obs.health || {};
+      const levels = Object.values(health.classes || {}).map(c => c.level);
+      const recent = levels.includes('critical') ? 'critical' : levels.includes('warning') ? 'warning' : levels.some(l => l === 'ok' || l === 'notice') ? 'good' : null;
+      const worst = health.reconnecting ? 'critical' : recent
+        || (st.dropped_pct >= 2 ? 'critical' : st.dropped_pct >= 0.5 ? 'warning' : 'good');
+      const dropLevel = [worst, health.reconnecting ? 'Reconnecting' : { critical: 'Dropping', warning: 'Watch', good: 'Healthy' }[worst]];
       const top = h('div', { class: 'obs-top' },
         h('div', {}, h('div', { class: 'muted', style: { fontSize: '12px' } }, 'Program scene'), h('div', { style: { fontSize: '18px', fontWeight: 600 } }, obs.current_scene || '—')),
         st.active ? h('div', { class: 'tc' }, (st.timecode || '').split('.')[0]) : null,
@@ -408,6 +456,7 @@ const render = {
             class: a.muted ? 'muted' : '', onclick: () => tool('obs_set_mute', { source: a.name }), title: a.muted ? 'Muted — click to unmute' : 'Live — click to mute',
           }, a.name))));
         }
+        parts.push(...streamHealth(health, st.active));
         const stt = obs.stats || {};
         parts.push(h('div', { class: 'sub-h' }, 'Encoder & render'), h('table', { class: 't' }, h('tbody', {},
           [['Bitrate', st.kbps ? `${compact(st.kbps)} kbps` : '—'], ['Dropped (network)', `${compact(st.dropped_frames)} / ${compact(st.total_frames)} (${st.dropped_pct}%)`],
@@ -1004,6 +1053,8 @@ function onEvent(ev) {
     case 'wake': orbState.voice = 'armed'; paintOrb(); break;
     case 'pending': paintPending(data); break;
     case 'pc_control': S.data.pc_control = data; paintHalt(); render.control(); break;
+    case 'stream_alert': toast(data.text); break;
+    case 'prestream': S.data.prestream = data; render.obs(); break;
     case 'tool': if (S.data.pc_control) refreshControl(); break;
     case 'speak': speak(data); break;
     case 'speak_stop': if ('speechSynthesis' in window) speechSynthesis.cancel(); break;

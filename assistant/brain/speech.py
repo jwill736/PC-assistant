@@ -93,10 +93,19 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
         if st["active"]:
             live_for = duration((st.get("duration_ms") or 0) / 1000)
             kbps = f", {st['kbps']} kilobits" if st.get("kbps") else ""
+            health = result.get("health") or {}
+            bad = [f"{c} {v['pct']} percent" for c, v in (health.get("classes") or {}).items()
+                   if v.get("level") in ("warning", "critical")]
+            verdict = f" Problems in the last minute: {', '.join(bad)}." if bad else (
+                " Healthy over the last minute." if health.get("classes") else "")
             return (f"Live for {live_for} on {scene}. {st['dropped_pct']} percent dropped frames{kbps}, "
-                    f"{result['stats']['fps']} FPS.")
+                    f"{result['stats']['fps']} FPS.{verdict}")
         rec = " Recording." if result["recording"]["active"] else ""
         return f"Not live. Scene is {scene}.{rec}"
+    if tool == "obs_source":
+        return f"{result.get('source')} {'showing' if result.get('visible') else 'hidden'}."
+    if tool == "prestream_check":
+        return result.get("spoken") or "Checked."
     if tool == "obs_switch_scene":
         return f"{result.get('scene')}."
     if tool == "obs_control":

@@ -112,6 +112,11 @@ DEFAULTS: dict[str, Any] = {
         "port": 4455,
         "password_env": "OBS_PASSWORD",
         "scene_aliases": {},
+        # While live: alerts for dropped frames (by cause), reconnects and a mic that isn't reaching the stream
+        "health_alerts": True,
+        "speak_alerts": True,     # say them too (route voice.tts.output_device to headphones to keep them off stream)
+        "mic_source": "",         # your mic's OBS input; empty = "Mic/Aux" or the first input with "mic" in its name
+        "prestream_minutes": 15,  # run the pre-stream check this long before a stream on your calendar; 0 = off
     },
     "twitch": {
         "enabled": False,

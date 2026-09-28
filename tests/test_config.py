@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from assistant.config import deep_merge, load_config, load_env_file
 
@@ -27,3 +28,15 @@ def test_env_file_does_not_override_real_env(tmp_path, monkeypatch):
     load_env_file(env)
     assert os.environ["FOO_TEST_KEY"] == "from-env"
     assert os.environ["BAR_TEST_KEY"] == "bar"
+
+
+def test_the_example_config_loads(tmp_path):
+    """setup.bat copies config.example.yaml to config.yaml: it must parse and load for every new install."""
+    import shutil
+
+    src = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    shutil.copy(src, tmp_path / "config.yaml")
+    cfg = load_config(tmp_path / "config.yaml")
+    assert cfg["assistant"]["name"] == "Vesper"
+    assert cfg["obs"]["scene_aliases"]["game"] == "Gameplay" and cfg["obs"]["prestream_minutes"] == 15
+    assert cfg["pc_control"]["kill_hotkey"] == "ctrl+alt+k" and cfg["voice"]["tts"]["engine"] == "auto"

@@ -14,8 +14,9 @@ from .brain.assistant import Assistant
 from .brain.router import KILL, clean
 from .bus import EventBus
 from .config import Config, load_config, save_setting
-from .integrations import toast
+from .integrations import prestream, toast
 from .integrations.activity import Categorizer
+from .integrations.stream_health import MicWatch, StreamHealth
 from .integrations.jobs import JobRunner
 from .services import Services, build_services
 from .voice.hotkey import register_hotkey
@@ -43,6 +44,13 @@ class Runtime:
         self.svc.speak = self.speaker.say
         # Voice commands run here, not on the mic thread, so "stop" is heard while Claude thinks or talks.
         self._commands = ThreadPoolExecutor(max_workers=1, thread_name_prefix="command")
+        # Stream health while live, and the pre-stream check (Phase 5).
+        obs_cfg = cfg["obs"]
+        self.stream_health = StreamHealth()
+        self.mic_watch = MicWatch(obs_cfg.get("mic_source") or "")
+        self._prestream_seen: set = set()
+        self.svc.stream_health = lambda: {**self.stream_health.snapshot(), "mic": self.mic_watch.snapshot()}
+        self.svc.prestream = self.prestream_check
         self.svc.jobs = JobRunner(
             self.svc.storage, self.bus, cfg["jobs"], repo_lookup=self.svc.projects.repos,
             research_fn=self.assistant.research if self.assistant.claude_ready else None,
@@ -144,6 +152,7 @@ class Runtime:
         sup.poller("twitch", 90, self._poll_twitch)
         sup.poller("projects", 120, self._poll_projects)
         sup.poller("calendars", 300, self._poll_calendar)
+        sup.poller("pre-stream check", 60, self._prestream_tick, delay=30)
         sup.poller("news", 900, self._poll_news)
         sup.poller("morning briefing", 60, self._morning_check)
         sup.poller("pc scan", 6 * 3600, self._rescan_if_stale, delay=6 * 3600)  # startup already scanned
@@ -155,6 +164,7 @@ class Runtime:
         if self.listener:
             self.listener.stop()
         self.speaker.stop()
+        self.svc.obs.close_events()
         self._commands.shutdown(wait=False, cancel_futures=True)
         if self.svc.jobs:
             self.svc.jobs.shutdown()
@@ -172,7 +182,48 @@ class Runtime:
         self.bus.publish("system", snap, sticky=True)
 
     def _poll_obs(self) -> None:
-        self.bus.publish("obs", self.svc.obs.status(), sticky=True)
+        obs = self.svc.obs
+        status = obs.status()
+        if self.cfg["obs"].get("health_alerts", True):
+            if status.get("connected"):
+                obs.ensure_events(on_meters=self.mic_watch.on_meters,
+                                  on_replay_saved=lambda path: self.bus.publish("replay_saved", {"path": path}))
+            self.stream_health.expected_stop_at = max(self.stream_health.expected_stop_at, obs.stop_requested_at)
+            alerts = self.stream_health.update(status)
+            live = bool(status.get("connected") and (status.get("streaming") or {}).get("active"))
+            mic = next((a for a in status.get("audio") or [] if a["name"] == self.mic_watch.name), None)
+            heard = self.listener.heard_speech(self.mic_watch.window_s) if self.listener else 0
+            alerts += self.mic_watch.check(live, mic.get("muted") if mic else None, heard)
+            for alert in alerts:
+                self._stream_alert(alert)
+            status["health"] = self.svc.stream_health()
+        self.bus.publish("obs", status, sticky=True)
+
+    def _stream_alert(self, alert) -> None:
+        """Show it in the HUD; say it out loud if it matters and speaking is on."""
+        self.bus.publish("stream_alert", alert.as_dict())
+        if alert.speak and alert.level != "info" and self.cfg["obs"].get("speak_alerts", True):
+            self.speaker.say(alert.text, expects_reply=False)
+
+    # ---- pre-stream check -------------------------------------------------
+    def prestream_check(self) -> dict:
+        snap = (self.bus.latest.get("system") or {}).get("data")
+        result = prestream.run_checklist(self.svc, self.mic_watch if self.mic_watch.name else None, snap)
+        self.bus.publish("prestream", result, sticky=True)
+        return result
+
+    def _prestream_tick(self) -> None:
+        """Run the check by itself shortly before a stream on your calendar."""
+        lead = int(self.cfg["obs"].get("prestream_minutes", 15) or 0)
+        if lead <= 0 or not self.svc.obs.enabled:
+            return
+        now = datetime.now(self.svc.tz)
+        event = prestream.next_stream_event(self.svc.calendars.agenda(2), now, lead, self._prestream_seen)
+        if event is None:
+            return
+        result = self.prestream_check()
+        self.bus.publish("announce", {"text": f"{event['title']} starts soon. {result['spoken']}"})
+        self.speaker.say(f"{event['title']} starts soon. {result['spoken']}", expects_reply=False)
 
     def _poll_twitch(self) -> None:
         if self.svc.twitch.enabled:

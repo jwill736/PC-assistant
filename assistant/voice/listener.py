@@ -174,6 +174,7 @@ class VoiceListener:
         self.armed_by = ""
         self.last_command = 0.0
         self.last_owner = "unknown"  # match | mismatch | pressed | unknown, for the last command
+        self.speech_times: deque = deque(maxlen=60)  # every utterance heard, addressed to us or not
         self._audio: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -425,6 +426,11 @@ class VoiceListener:
                 if not self.muted:
                     self._set_state("armed" if self._armed() else "listening")
 
+    def heard_speech(self, window_s: float = 60) -> int:
+        """How many times you spoke in the last ``window_s`` seconds, wake word or not."""
+        cutoff = time.time() - window_s
+        return sum(1 for t in self.speech_times if t >= cutoff)
+
     def _drain(self) -> None:
         """Drop audio captured while we were busy (it's mostly our own voice)."""
         while True:
@@ -468,6 +474,8 @@ class VoiceListener:
         import numpy as np
 
         samples = audio.astype(np.float32) / 32768.0
+        if not during_speech:  # you talking (not us): the stream's mic check cross-checks against this
+            self.speech_times.append(time.time())
         source = self._arm_source()
         acoustic = self._acoustic_wake(started_at)
         if self.wake_mode() == "acoustic" and not (acoustic or source or during_speech):

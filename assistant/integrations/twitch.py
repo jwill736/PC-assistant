@@ -14,6 +14,7 @@ class TwitchClient:
         self.client_id, self.client_secret = client_id, client_secret
         self.enabled = enabled and bool(self.channel and client_id and client_secret)
         self._token: tuple[str, float] | None = None
+        self._user_id: str | None = None
 
     def _auth(self) -> str:
         if self._token and self._token[1] > time.time() + 60:
@@ -46,3 +47,25 @@ class TwitchClient:
             "viewers": s.get("viewer_count"), "title": s.get("title"), "game": s.get("game_name"),
             "uptime_s": (datetime.now(timezone.utc) - started).total_seconds(),
         }
+
+    def _get(self, path: str, params: dict) -> list[dict]:
+        headers = {"Client-Id": self.client_id, "Authorization": f"Bearer {self._auth()}"}
+        resp = httpx.get(f"https://api.twitch.tv/helix/{path}", params=params, headers=headers, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+
+    def channel_info(self) -> dict:
+        """Title and category as they stand now (set before going live), for the pre-stream check."""
+        if not self.enabled:
+            return {"enabled": False}
+        try:
+            if self._user_id is None:
+                users = self._get("users", {"login": self.channel})
+                if not users:
+                    return {"enabled": True, "error": f"no Twitch channel called {self.channel}"}
+                self._user_id = users[0]["id"]
+            data = self._get("channels", {"broadcaster_id": self._user_id})
+        except httpx.HTTPError as exc:
+            return {"enabled": True, "error": str(exc)}
+        c = data[0] if data else {}
+        return {"enabled": True, "title": c.get("title") or "", "game": c.get("game_name") or ""}

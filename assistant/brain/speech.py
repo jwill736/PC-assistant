@@ -106,6 +106,8 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
         return f"{result.get('source')} {'showing' if result.get('visible') else 'hidden'}."
     if tool == "prestream_check":
         return result.get("spoken") or "Checked."
+    if tool.startswith("twitch_") and tool != "twitch_status":
+        return _twitch(tool, args, result)
     if tool == "obs_switch_scene":
         return f"{result.get('scene')}."
     if tool == "obs_control":
@@ -178,3 +180,76 @@ def _calendar_speech(result: dict, tz: tzinfo, hints: dict) -> str:
     listed = ", ".join(f"{clock(datetime.fromisoformat(e['start']))} {e['title']}" for e in events[:5])
     more = f", plus {len(events) - 5} more" if len(events) > 5 else ""
     return f"{len(events)} event{'s' if len(events) != 1 else ''} {when}: {listed}{more}."
+
+
+def _twitch(tool: str, args: dict, result: dict) -> str:
+    if tool == "twitch_connect":
+        code = result.get("user_code") or ""
+        return (f"Go to twitch dot tv slash activate and enter {' '.join(code)}. The code and a link are on the HUD."
+                if code else "Twitch login started. The code is on the HUD.")
+    if tool == "twitch_clip":
+        return "Clipped on Twitch" + (f": {result['title']}." if result.get("title") else ".")
+    if tool == "twitch_marker":
+        pos = result.get("position_s")
+        if pos is None:
+            return "Marker added."
+        h, rem = divmod(int(pos), 3600)
+        return f"Marker at {h}:{rem // 60:02d}:{rem % 60:02d}." if h else f"Marker at {rem // 60} minutes {rem % 60} seconds."
+    if tool == "twitch_set_channel":
+        parts = []
+        if result.get("title"):
+            parts.append("Title updated")
+        if result.get("category"):
+            parts.append(f"category is now {result['category']}")
+        return (", ".join(parts) + ".").capitalize() if parts else "Updated."
+    if tool == "twitch_ad":
+        return f"Running a {result.get('length') or args.get('length') or 60}-second ad."
+    if tool == "twitch_shoutout":
+        return f"Shouted out {result.get('user')}."
+    if tool == "twitch_poll":
+        return f"Poll's up for {result.get('seconds')} seconds."
+    if tool == "twitch_chat_send":
+        return "Sent."
+    if tool == "twitch_events":
+        return _events_summary(result.get("events") or [])
+    if tool == "twitch_highlights":
+        hs = result.get("highlights") or []
+        if not hs:
+            return "No highlights yet today."
+        top = "; ".join(f"{h.get('reason')}" + (f" at {_stamp(h['uptime_s'])}" if h.get("uptime_s") else "") for h in hs[:3])
+        return f"{len(hs)} highlight{'s' if len(hs) != 1 else ''} today. {top}."
+    return "Done."
+
+
+def _stamp(seconds: float) -> str:
+    h, rem = divmod(int(seconds), 3600)
+    return f"{h}:{rem // 60:02d}:{rem % 60:02d}"
+
+
+def _events_summary(events: list[dict]) -> str:
+    if not events:
+        return "Nothing new on Twitch yet."
+    by: dict[str, list[dict]] = {}
+    for e in events:
+        by.setdefault(e["kind"], []).append(e)
+    parts = []
+    if by.get("raid"):
+        parts += [f"raid from {e.get('user')} with {e.get('amount')}" for e in by["raid"][:2]]
+    subs = by.get("sub", []) + by.get("resub", [])
+    if subs:
+        names = ", ".join(e.get("user") or "someone" for e in subs[:3])
+        parts.append(f"{len(subs)} sub{'s' if len(subs) != 1 else ''} ({names})")
+    if by.get("gift"):
+        total = sum(int(e.get("amount") or 0) for e in by["gift"])
+        parts.append(f"{total} gifted sub{'s' if total != 1 else ''}")
+    if by.get("cheer"):
+        bits = sum(int(e.get("amount") or 0) for e in by["cheer"])
+        parts.append(f"{bits} bits")
+    if by.get("follow"):
+        names = ", ".join(e.get("user") or "" for e in by["follow"][:3])
+        n = len(by["follow"])
+        parts.append(f"{n} follow{'s' if n != 1 else ''}, latest {names}")
+    if by.get("redemption"):
+        parts.append(f"{len(by['redemption'])} redemption{'s' if len(by['redemption']) != 1 else ''}")
+    return ("Recently: " + "; ".join(parts) + ".") if parts else "Nothing new on Twitch yet."
+

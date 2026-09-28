@@ -147,11 +147,15 @@ obs:
   mic_source: ""                # your mic's OBS input name; empty = "Mic/Aux" or the first input with "mic" in it
   prestream_minutes: 15         # pre-stream check this long before a stream on your calendar; 0 = off
 
+# Twitch: register an app at dev.twitch.tv/console (Client Type: Public, redirect http://localhost),
+# put its Client ID in .env as TWITCH_CLIENT_ID, then say "connect Twitch" and enter the code it shows.
 twitch:
-  enabled: false
-  channel: your_channel
-  client_id_env: TWITCH_CLIENT_ID
-  client_secret_env: TWITCH_CLIENT_SECRET
+  enabled: true
+  channel: ""                   # empty = the account you log in with
+  events: true                  # live follows, subs, raids, cheers, chat → HUD feed + callouts
+  callouts: {raid: true, sub: true, gift: true, cheer_min: 100, follow: false, redemption: false, hype_train: true}
+                                # only names and numbers are spoken, never what a viewer typed
+  auto_markers: true            # stream markers at chat spikes, raids, hype trains and "clip that"
 
 tracking:
   enabled: true

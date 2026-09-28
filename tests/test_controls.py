@@ -45,6 +45,9 @@ def test_volume_falls_back_to_the_volume_keys(monkeypatch):
     presses.clear()
     controls.volume(change=-10)
     assert presses == [("volume_down", 5)]
+    presses.clear()
+    asked = controls.volume()  # "what's my volume": the keys can't answer, so say so instead of "adjusted"
+    assert asked["ok"] is False and "can't read the volume" in asked["error"] and presses == []
 
 
 class Session:

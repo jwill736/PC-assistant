@@ -119,10 +119,16 @@ DEFAULTS: dict[str, Any] = {
         "prestream_minutes": 15,  # run the pre-stream check this long before a stream on your calendar; 0 = off
     },
     "twitch": {
-        "enabled": False,
-        "channel": "",
+        "enabled": True,          # does nothing until TWITCH_CLIENT_ID is in .env
+        "channel": "",            # empty = the account you log in with
         "client_id_env": "TWITCH_CLIENT_ID",
-        "client_secret_env": "TWITCH_CLIENT_SECRET",
+        "client_secret_env": "TWITCH_CLIENT_SECRET",  # only for a Confidential app; a Public one needs none
+        "events": True,           # live follows, subs, raids, cheers and chat (EventSub)
+        # Said out loud. Only names and numbers are ever spoken, never what a viewer wrote.
+        "callouts": {"raid": True, "sub": True, "gift": True, "cheer_min": 100, "follow": False,
+                     "redemption": False, "hype_train": True},
+        "auto_markers": True,     # drop a stream marker at chat spikes, raids, hype trains and "clip that"
+        "spike_ratio": 3.0,       # chat this many times faster than its recent pace is a highlight
     },
     "tracking": {"enabled": True, "sample_seconds": 5, "idle_seconds": 300},
     "optimizer": {"protected_processes": [], "heavy_process_mb": 1500},

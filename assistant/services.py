@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import tzinfo
-from typing import Callable
+from typing import Any, Callable
 
 from .bus import EventBus
 from .config import Config
@@ -45,6 +45,9 @@ class Services:
     # Stream health and the pre-stream check live in the runtime (they need the OBS event feed).
     stream_health: Callable[[], dict] | None = None
     prestream: Callable[[], dict] | None = None
+    # Twitch live events (Phase 5b): the feed of follows/subs/raids/chat and today's highlight moments.
+    twitch_feed: Any = None
+    highlights: Callable[[], list] | None = None
 
     @property
     def name(self) -> str:
@@ -78,7 +81,8 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
         obs=OBSController(obs_cfg["host"], obs_cfg["port"], obs_password(cfg),
                           obs_cfg.get("scene_aliases"), enabled=obs_cfg.get("enabled", True)),
         twitch=TwitchClient(tw_cfg.get("channel", ""), cfg.secret(tw_cfg.get("client_id_env")),
-                            cfg.secret(tw_cfg.get("client_secret_env")), enabled=tw_cfg.get("enabled", False)),
+                            cfg.secret(tw_cfg.get("client_secret_env")), enabled=tw_cfg.get("enabled", True),
+                            token_path=cfg.data_dir / "twitch_token.json"),
         calendars=CalendarHub(cfg["calendars"], cfg["assistant"].get("timezone")),
         news=NewsFeed(cfg["news"].get("feeds") or None, cfg["news"]["refresh_minutes"], cfg["news"]["max_items"]),
         projects=ProjectTracker(proj_cfg.get("scan_dirs") or [], proj_cfg.get("claude_dir", "~/.claude"),

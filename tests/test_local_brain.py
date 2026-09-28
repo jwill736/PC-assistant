@@ -316,3 +316,27 @@ def test_a_repeated_context_line_is_never_said(svc):
     a._ask_local("and the other thing")
     assert said and not any("active window" in s for s in said)
 
+
+
+def test_the_local_model_is_not_a_memory_hog_to_close(monkeypatch):
+    """The first local morning plan (llama3.2:3b) flagged llama-server 2.5 GB as a heavy app to deal with."""
+    from assistant.integrations.system import SystemMonitor
+
+    mon = SystemMonitor(heavy_process_mb=1500)
+    gb = 1024
+    monkeypatch.setattr(mon, "snapshot", lambda include_processes=True: {
+        "memory": {"percent": 60}, "cpu": {"percent": 10}, "disks": [], "gpus": [], "power_plan": None,
+        "processes": {"by_mem": [{"name": "llama-server", "mem_mb": 2.5 * gb, "count": 1},
+                                 {"name": "ollama_llama_server", "mem_mb": 5 * gb, "count": 1},
+                                 {"name": "chrome", "mem_mb": 2 * gb, "count": 30}], "by_cpu": []}})
+    heavy = [f for f in mon.analyze()["findings"] if f["title"] == "Heavy apps running"]
+    assert heavy and "chrome" in heavy[0]["detail"] and "llama" not in heavy[0]["detail"]
+
+
+def test_a_rambling_local_plan_is_cut_to_about_ninety_words():
+    from assistant.brain.assistant import _clip_spoken
+
+    long = " ".join(f"Sentence number {i} has exactly seven words here." for i in range(40))
+    clipped = _clip_spoken(long)
+    assert len(clipped.split()) <= 90 and clipped.endswith(".") and clipped.startswith("Sentence number 0")
+    assert _clip_spoken("Short and sweet.") == "Short and sweet."

@@ -62,6 +62,20 @@ OFFLINE = ("I can't answer that one without a model. Start Ollama or LM Studio w
            "or add ANTHROPIC_API_KEY to the .env file.")
 
 
+def _clip_spoken(text: str, max_words: int = 90) -> str:
+    """The spoken briefing, cut at a sentence end near ``max_words``; the HUD keeps the full plan."""
+    if len(text.split()) <= max_words:
+        return text
+    out, count = [], 0
+    for sentence in neural.split_sentences(text):
+        n = len(sentence.split())
+        if out and count + n > max_words:
+            break
+        out.append(sentence)
+        count += n
+    return " ".join(out)
+
+
 def _supports(model: str, prefixes: tuple[str, ...]) -> bool:
     return model.startswith(prefixes)
 
@@ -611,6 +625,7 @@ class Assistant:
                 return None
             result["generated_by"] = "local"
             result["model"] = llm.model
+            result["spoken"] = _clip_spoken(result["spoken"])  # a 3B model wrote ~230 words: 90 seconds of talking
             return result
         except (httpx.HTTPError, ValueError, KeyError):
             log.exception("local briefing failed; using the built-in summary")

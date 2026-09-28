@@ -11,8 +11,10 @@ from pathlib import Path
 
 from . import discovery
 from .brain.assistant import Assistant
+from .brain.router import KILL, clean
 from .bus import EventBus
 from .config import Config, load_config, save_setting
+from .integrations import toast
 from .integrations.activity import Categorizer
 from .integrations.jobs import JobRunner
 from .services import Services, build_services
@@ -59,6 +61,13 @@ class Runtime:
             )
         self.supervisor = Supervisor(self.bus)
         self.started = time.time()
+        # PC control safety: the kill switch also silences speech and stops background jobs.
+        self.assistant.on_kill = self._on_kill
+        pc = cfg.get("pc_control") or {}
+        if pc.get("toast_confirm", True) and toast.available():
+            self.assistant.on_pending = toast.ToastConfirmer(
+                lambda pid: self.confirm_pending(pid, "toast"), lambda pid: self.assistant.cancel(pid),
+                cfg["assistant"]["name"])
 
     def _hint_words(self) -> list[str]:
         """Vocabulary that biases speech recognition toward your scene/app names."""
@@ -69,13 +78,44 @@ class Runtime:
     def voice_command(self, text: str) -> None:
         """A new turn: whatever's left of the previous reply is dropped, not spoken late."""
         turn = self.speaker.new_turn()
-        self._commands.submit(self._run_voice_command, text, turn)
+        if KILL.match(clean(text)):  # never queue the kill switch behind the command it has to stop
+            self.kill_switch("voice")
+            return
+        owner = getattr(self.listener, "last_owner", "unknown") if self.listener else "unknown"
+        self._commands.submit(self._run_voice_command, text, turn, owner)
 
-    def _run_voice_command(self, text: str, turn: int) -> None:
+    def _run_voice_command(self, text: str, turn: int, owner: str = "unknown") -> None:
         try:
-            self.assistant.handle(text, "voice", turn=turn)
+            self.assistant.handle(text, "voice", turn=turn, owner=owner)
         except Exception:
             log.exception("voice command failed: %s", text)
+
+    # ---- kill switch and confirmations -------------------------------------
+    def kill_switch(self, source: str = "hotkey") -> dict:
+        """Ctrl+Alt+K / tray / HUD: stop talking, drop what's waiting, cancel background jobs, and
+        refuse every action (reads still work) until you resume."""
+        self.assistant.stop_everything(source)
+        self.speaker.say("Stopped. Say resume control when you're ready.", expects_reply=False)
+        return {"ok": True, **self.assistant.control_status()}
+
+    def resume_control(self, source: str = "hud") -> dict:
+        self.assistant.resume_control(source)
+        return {"ok": True, **self.assistant.control_status()}
+
+    def _on_kill(self) -> None:
+        self.speaker.interrupt(silence_turn=False)  # stop the audio now, but let "Stopped" be said
+        if self.svc.jobs:
+            for job in self.svc.storage.list_jobs(30):
+                if job.get("status") in ("queued", "running"):
+                    self.svc.jobs.cancel(job["id"])
+
+    def confirm_pending(self, pending_id: str | None, via: str) -> str:
+        """A yes from outside a command (HUD button, toast): run it, show and say the result."""
+        reply = self.assistant.confirm(pending_id, via=via)
+        self.bus.publish("assistant_said", {"text": reply, "kind": "confirm", "source": via})
+        if via == "toast":
+            self.speaker.say(reply)
+        return reply
 
     def announce(self, text: str) -> None:
         self.bus.publish("announce", {"text": text})
@@ -96,6 +136,7 @@ class Runtime:
             sup.service("voice listener", listener.restart, heartbeat_s=30,
                         is_disabled=lambda: listener.state == "unavailable")
             register_hotkey(self.cfg["voice"].get("push_to_talk_hotkey"), listener.arm)
+        register_hotkey((self.cfg.get("pc_control") or {}).get("kill_hotkey"), self.kill_switch)
         # Pollers: the supervisor owns their loops.
         sup.poller("system stats", 2, self._poll_system, stall_after=60)
         sup.poller("obs", 3, self._poll_obs, stall_after=60)
@@ -411,5 +452,6 @@ class Runtime:
             "health": self.supervisor.snapshot(),
             "voice_profile": self.voice_status(),
             "tts": self.speaker.status(),
+            "pc_control": self.assistant.control_status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},
         }

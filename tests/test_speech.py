@@ -309,7 +309,11 @@ def test_hotkey_registers_with_pynput(monkeypatch):
     pynput.keyboard = SimpleNamespace(GlobalHotKeys=GlobalHotKeys)
     monkeypatch.setitem(sys.modules, "pynput", pynput)
     monkeypatch.setattr(hotkey, "_listener", None)
+    monkeypatch.setattr(hotkey, "_bindings", {})
     cb = lambda: None  # noqa: E731
     assert hotkey.register_hotkey("ctrl+alt+j", cb) is True
     assert started == [{"<ctrl>+<alt>+j": cb}]
+    kill = lambda: None  # noqa: E731
+    assert hotkey.register_hotkey("ctrl+alt+k", kill) is True  # push-to-talk stays registered
+    assert started[-1] == {"<ctrl>+<alt>+j": cb, "<ctrl>+<alt>+k": kill}
     assert hotkey.register_hotkey(None, cb) is False

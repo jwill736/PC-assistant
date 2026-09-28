@@ -36,6 +36,30 @@ CANCEL = re.compile(r"^(?:no|nope|nah|cancel|never ?mind|abort|don'?t|stop|forge
 
 PROFILE_WORDS = {"work": "work", "working": "work", "office": "work", "stream": "stream", "streaming": "stream"}
 
+KILL = re.compile(r"^(?:stop everything|hands off|kill switch|emergency stop|freeze(?: everything)?|stop all actions)$")
+RESUME = re.compile(r"^(?:resume control|hands on|unfreeze|you can (?:continue|carry on)|resume pc control)$")
+
+_ONES = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
+                                     "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+_TENS = {w: 10 * i for i, w in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if w != "_"}
+NUMBER = r"(\d{1,3}|(?:a |one )?hundred|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?|" \
+         + "|".join(sorted(_ONES, key=len, reverse=True)) + r")"
+
+
+def number(word: str) -> int | None:
+    """'40', 'forty', 'forty-five', 'a hundred' -> int; None if it isn't a number."""
+    w = word.strip().lower()
+    if w.isdigit():
+        return int(w)
+    if w.endswith("hundred"):
+        return 100
+    parts = re.split(r"[ -]", w)
+    if len(parts) == 1:
+        return _ONES.get(w, _TENS.get(w))
+    if len(parts) == 2 and parts[0] in _TENS and parts[1] in _ONES:
+        return _TENS[parts[0]] + _ONES[parts[1]]
+    return None
+
 
 def clean(text: str) -> str:
     t = text.lower().strip()
@@ -58,6 +82,10 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("confirm")
     if CANCEL.match(t):
         return Intent("cancel")
+    if KILL.match(t):
+        return Intent("kill")
+    if RESUME.match(t):
+        return Intent("resume")
     if re.search(r"\b(new conversation|start over|reset (the )?(chat|conversation))\b", t):
         return Intent("reset")
 
@@ -99,6 +127,15 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         if prof:
             return Intent("tool", "run_routine", {"profile": prof})
 
+    # --- virtual desktops (before "go to <window>") ------------------------
+    m = re.search(r"^(next|previous|last) desktop$|^(?:switch to |go to )?(?:the )?(next|previous) (?:virtual )?desktop$", t)
+    if m:
+        action = (m.group(1) or m.group(2)).replace("last", "previous")
+        return Intent("tool", "virtual_desktop", {"action": action})
+    m = re.search(rf"^(?:switch to |go to )?(?:virtual )?desktop {NUMBER}$", t)
+    if m and number(m.group(1)):
+        return Intent("tool", "virtual_desktop", {"action": "go", "number": number(m.group(1))})
+
     # --- OBS ---------------------------------------------------------------
     if re.search(r"^(?:go live|start (?:the )?stream(?:ing)?(?: now)?)$", t):
         return Intent("tool", "obs_control", {"action": "start_stream"})
@@ -128,6 +165,22 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "obs_set_mute", {"source": src, "muted": m.group(1) == "mute"})
 
     # --- media / volume -------------------------------------------------
+    m = re.search(rf"^(?:set |turn )?(?:the )?(?:volume|sound)(?: to| at)? {NUMBER}(?: percent| %|%)?$", t)
+    if m and number(m.group(1)) is not None:
+        return Intent("tool", "set_volume", {"level": min(100, number(m.group(1)))})
+    m = re.search(rf"^(?:set |turn )?(?!the\b|master\b|system\b)(\w+) volume(?: to| at)? {NUMBER}(?: percent| %|%)?$", t)
+    if m and number(m.group(2)) is not None:
+        return Intent("tool", "app_volume", {"app": m.group(1), "level": min(100, number(m.group(2)))})
+    m = re.search(rf"^(?:set |turn )?(?:the )?(?:screen )?brightness(?: to| at)? {NUMBER}(?: percent| %|%)?$", t)
+    if m and number(m.group(1)) is not None:
+        return Intent("tool", "set_brightness", {"level": min(100, number(m.group(1)))})
+    if re.search(r"^(?:brighter|(?:turn |bring )?(?:the )?brightness up|make (?:the screen|it) brighter)$", t):
+        return Intent("tool", "set_brightness", {"change": 20})
+    if re.search(r"^(?:dimmer|dim (?:the )?screen|(?:turn |bring )?(?:the )?brightness down|make (?:the screen|it) darker)$", t):
+        return Intent("tool", "set_brightness", {"change": -20})
+    m = re.search(r"^(?:open|show|pull up|go to) (?:the )?(?:windows )?(.+?) settings$", t)
+    if m:
+        return Intent("tool", "open_settings", {"page": m.group(1)})
     if re.search(r"^(?:volume up|turn it up|louder|turn up (?:the )?volume)$", t):
         return Intent("tool", "media_control", {"action": "volume_up", "times": 5})
     if re.search(r"^(?:volume down|turn it down|quieter|turn down (?:the )?volume)$", t):

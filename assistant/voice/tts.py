@@ -161,10 +161,12 @@ class Speaker:
     def browser_finished(self) -> None:
         self._browser_done.set()
 
-    def interrupt(self) -> bool:
+    def interrupt(self, silence_turn: bool = True) -> bool:
         """Stop talking now and drop anything queued (you talked over it / said "stop").
-        The rest of this turn stays silenced, including sentences Claude is still streaming."""
-        self._silenced = self.turn
+        The rest of this turn stays silenced, including sentences Claude is still streaming,
+        unless ``silence_turn`` is False (the kill switch still wants to say "Stopped")."""
+        if silence_turn:
+            self._silenced = self.turn
         if not self.speaking.is_set():
             return False
         self._cancel.set()

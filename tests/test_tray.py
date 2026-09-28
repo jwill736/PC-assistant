@@ -38,6 +38,7 @@ def fake_runtime(tmp_path, listener=True):
         supervisor=SimpleNamespace(snapshot=lambda: health),
         svc=SimpleNamespace(activity=SimpleNamespace(paused=False)),
         rescan=lambda: None,
+        assistant=SimpleNamespace(tools=SimpleNamespace(guard=SimpleNamespace(hands_off=False))),
     )
     return rt, health
 
@@ -54,6 +55,14 @@ def test_menu_actions_drive_runtime(tmp_path):
     assert rt.listener.muted and items["Mute microphone"].checked()
     items["Pause activity tracking"].action()
     assert rt.svc.activity.paused and rt.bus.latest["tracking"]["data"] == {"paused": True}
+    guard = rt.assistant.tools.guard
+    rt.kill_switch = lambda source: setattr(guard, "hands_off", True)
+    rt.resume_control = lambda source: setattr(guard, "hands_off", False)
+    kill = items["Stop everything (kill switch)"]
+    kill.action()
+    assert guard.hands_off and kill.checked()
+    kill.action()  # ticked means paused; clicking again resumes
+    assert not guard.hands_off
     items["Quit Friday"].action()
     assert quit_called == [1]
 

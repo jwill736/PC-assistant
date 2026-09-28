@@ -188,6 +188,12 @@ button, input, select { font: inherit; color: inherit; }
 .pending { margin: 12px 24px 0; padding: 10px 14px; border-radius: var(--radius); display: flex; gap: 12px; align-items: center;
   border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent); background: color-mix(in srgb, var(--warning) 8%, var(--panel)); }
 .pending .msg { flex: 1; }
+.pending.halt { border-color: color-mix(in srgb, var(--critical) 55%, transparent); background: color-mix(in srgb, var(--critical) 8%, var(--panel)); }
+.tier { display: inline-block; min-width: 22px; padding: 0 5px; border: 1px solid var(--line-2); border-radius: 2px; font-size: 10.5px;
+  letter-spacing: .06em; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tier.t2 { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 50%, transparent); }
+.tier.t3 { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 50%, transparent); }
+.tier-key { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); margin: 4px 0 10px; }
 
 /* ---------- grid & panels ---------- */
 main { padding: 18px 24px 48px; }

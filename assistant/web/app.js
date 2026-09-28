@@ -764,6 +764,47 @@ render.speech = function speech() {
   }
 };
 
+const TIER_LABEL = ['read-only', 'reversible', 'needs a yes', "needs a yes · can't be undone"];
+const SOURCE_LABEL = { voice: 'voice', text: 'typed', hud: 'HUD', hotkey: 'hotkey', tray: 'tray' };
+let controlTimer = null;
+function refreshControl() {  // tool events arrive in bursts: fetch the log once they settle
+  clearTimeout(controlTimer);
+  controlTimer = setTimeout(async () => { S.data.pc_control = await api('/api/control'); paintHalt(); render.control(); }, 400);
+}
+
+render.control = function control() {
+  const c = S.data.pc_control;
+  for (const p of panels('control')) {
+    const b = body(p);
+    if (!c) { fill(b, empty('Loading…')); continue; }
+    meta(p, c.hands_off ? 'paused' : `${c.max_steps} actions per request · stops after ${c.max_failures} failures`);
+    const rows = (c.recent || []).filter(e => e.tool);
+    fill(b,
+      h('div', { class: 'controls', style: { marginTop: 0 } },
+        c.hands_off
+          ? h('button', { class: 'btn primary', onclick: () => post('/api/control/resume') }, 'Resume control')
+          : h('button', { class: 'btn danger', onclick: () => post('/api/control/stop') }, 'Stop everything'),
+        h('span', { class: 'muted', style: { alignSelf: 'center' } },
+          c.hands_off ? `Paused ${ago(c.since)} from the ${c.reason}.` : 'Or press Ctrl+Alt+K, or say “stop everything”.')),
+      h('div', { class: 'tier-key' }, [0, 1, 2, 3].map(t => h('span', {}, h('span', { class: `tier t${t}` }, `T${t}`), ` ${TIER_LABEL[t]}`))),
+      rows.length ? h('table', { class: 't' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Tier'), h('th', {}, 'Action'), h('th', { class: 'wide-only' }, 'Asked'),
+          h('th', { class: 'wide-only' }, 'Yes from'), h('th', {}, 'Result'))),
+        h('tbody', {}, rows.slice(0, 25).map(e => h('tr', {},
+          h('td', { class: 'fit' }, ago(e.ts)),
+          h('td', { class: 'fit' }, h('span', { class: `tier t${e.tier || 0}` }, `T${e.tier || 0}`)),
+          h('td', { title: JSON.stringify(e.args || {}) }, (e.tool || '').replace(/_/g, ' '),
+            e.args && Object.keys(e.args).length ? h('span', { class: 'muted' }, ` ${Object.values(e.args).slice(0, 2).join(' · ')}`) : null),
+          h('td', { class: 'wide-only', title: e.utterance || '' }, SOURCE_LABEL[e.source] || e.source || '—',
+            e.utterance ? h('span', { class: 'muted' }, ` “${e.utterance}”`) : null),
+          h('td', { class: 'wide-only' }, e.confirmed_by && e.confirmed_by !== 'auto' ? e.confirmed_by : '—'),
+          h('td', { title: e.error || '' }, e.outcome === 'ok' || e.outcome === 'resumed' ? status('good', e.outcome === 'ok' ? 'done' : 'resumed')
+            : e.outcome === 'stopped' ? status('critical', 'kill switch')
+            : e.outcome === 'blocked' ? status('warning', 'refused') : status('critical', 'failed'))))))
+        : empty('Nothing yet. Every action it takes will be listed here, and in data/logs/actions-*.jsonl.'));
+  }
+};
+
 async function refreshVoice() { S.data.voice_profile = await api('/api/voice'); render.voice(); render.triggers(); }
 async function startCalibration() {
   const r = await post('/api/voice/calibrate');
@@ -851,8 +892,9 @@ $('#cmd-form').addEventListener('submit', e => { e.preventDefault(); const i = $
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') { e.preventDefault(); $('#cmd').focus(); }
 });
-$('#confirm-btn').addEventListener('click', () => post('/api/confirm'));
-$('#cancel-btn').addEventListener('click', () => post('/api/cancel'));
+$('#confirm-btn').addEventListener('click', () => post('/api/confirm', { id: S.pending?.id }));
+$('#cancel-btn').addEventListener('click', () => post('/api/cancel', { id: S.pending?.id }));
+$('#resume-btn').addEventListener('click', () => post('/api/control/resume'));
 $('#mic-btn').addEventListener('click', () => post('/api/voice/arm'));
 $('#mute-btn').addEventListener('click', e => {
   const muted = e.currentTarget.getAttribute('aria-pressed') !== 'true';
@@ -888,8 +930,13 @@ function paintOrb() {
   $('#voice-status').title = txt;
 }
 function paintPending(p) {
+  S.pending = p || null;
   $('#pending').classList.toggle('hidden', !p);
   $('#pending-text').textContent = p ? `${p.text[0].toUpperCase()}${p.text.slice(1)}?` : '';
+  $('#pending-tier').textContent = p && p.tier >= 3 ? "Confirm · can't be undone" : 'Confirm';
+}
+function paintHalt() {
+  $('#halt').classList.toggle('hidden', !S.data.pc_control?.hands_off);
 }
 function paintProfile() {
   const chip = $('#profile-chip');
@@ -956,6 +1003,8 @@ function onEvent(ev) {
     case 'voice_state': orbState.voice = data.state; S.data.voice = data; paintOrb(); break;
     case 'wake': orbState.voice = 'armed'; paintOrb(); break;
     case 'pending': paintPending(data); break;
+    case 'pc_control': S.data.pc_control = data; paintHalt(); render.control(); break;
+    case 'tool': if (S.data.pc_control) refreshControl(); break;
     case 'speak': speak(data); break;
     case 'speak_stop': if ('speechSynthesis' in window) speechSynthesis.cancel(); break;
     case 'tts': S.data.tts = data; render.speech(); break;
@@ -1007,7 +1056,7 @@ async function load() {
     S.log = (st.log || []).map(l => ({ role: l.role, text: l.text, source: l.source, ts: l.ts }));
     orbState.voice = st.voice?.state || 'off';
     $('#mute-btn').setAttribute('aria-pressed', String(!!st.voice?.muted));
-    paintOrb(); paintPending(st.pending); paintProfile();
+    paintOrb(); paintPending(st.pending); paintProfile(); paintHalt();
     renderAll();
   } catch (err) { console.error(err); }
 }

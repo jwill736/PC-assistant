@@ -36,6 +36,9 @@ HALLUCINATIONS = {"you", "thank you", "thanks for watching", "thank you for watc
 # Said over a reply, these stop it (and are not sent on as commands, except "cancel").
 STOP_PHRASES = {"stop", "stop it", "stop talking", "ok stop", "okay stop", "cancel", "quiet", "be quiet", "shut up",
                 "enough", "that's enough", "thats enough", "never mind", "nevermind", "hold on", "wait"}
+# The kill switch by voice: distinctive enough to accept without the name (a false hit only pauses
+# PC control; a missed one is the dangerous case).
+KILL_PHRASES = {"stop everything", "kill switch", "emergency stop", "stop all actions"}
 WAKE_ANCHOR_S = 2.0  # an acoustic wake-word hit counts only this soon after the utterance starts
 
 
@@ -170,6 +173,7 @@ class VoiceListener:
         self.armed_until = 0.0
         self.armed_by = ""
         self.last_command = 0.0
+        self.last_owner = "unknown"  # match | mismatch | pressed | unknown, for the last command
         self._audio: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -480,6 +484,9 @@ class VoiceListener:
         matched, command = split_wake(text, self.wake_words)
         if acoustic and not matched:  # the model heard the name even if the transcript mangled it
             matched, command = True, strip_leading_name(text, self.wake_words[0])
+        said_all = _norm_sentence(command if matched else text)
+        if said_all in KILL_PHRASES and not matched:
+            matched, command = True, said_all  # no name needed for the kill switch
         if during_speech:
             said = _norm_sentence(command if matched else text)
             if said in STOP_PHRASES:
@@ -500,11 +507,15 @@ class VoiceListener:
             self.bus.publish("heard", {"text": text, "wake": False, "armed": False, "stt_ms": stt_ms})
             return
         # Only the owner may command it — unless they physically pressed push-to-talk.
+        owner = "pressed" if source in ("hotkey", "button") else "unknown"
         if self.verifier is not None and source not in ("hotkey", "button"):
             accepted, score = self.verifier.check(samples)
             if not accepted:
                 self.bus.publish("heard", {"text": text, "ignored": "voice not recognised", "score": score, "stt_ms": stt_ms})
                 return
+            profile = getattr(self.verifier, "profile", None)
+            if score is not None and profile is not None:  # LOG mode lets a non-match through: remember it did
+                owner = "match" if score >= profile.threshold else "mismatch"
         if during_speech:
             self.speaker.interrupt()
         self.bus.publish("heard", {"text": text, "wake": matched, "armed": bool(source), "stt_ms": stt_ms,
@@ -514,6 +525,7 @@ class VoiceListener:
             return
         self.armed_until = 0.0
         self.last_command = time.time()
+        self.last_owner = owner  # read by the runtime: a T3 "yes" in someone else's voice doesn't count
         self.on_command(command if matched else text)
 
     def _owner_ok(self, samples, source) -> bool:

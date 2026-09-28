@@ -52,8 +52,13 @@
   <div class="heard" id="heard"></div>
   <div class="reply" id="reply"></div>
 </div>
+<div class="pending halt hidden" id="halt" role="alert">
+  <span class="status critical"><span class="dot"></span>Hands off</span>
+  <span class="msg">PC control is paused. It can still answer and read, but won't act until you resume.</span>
+  <button class="btn primary" id="resume-btn">Resume control</button>
+</div>
 <div class="pending hidden" id="pending" role="alert">
-  <span class="status warning"><span class="dot"></span>Confirm</span>
+  <span class="status warning"><span class="dot"></span><span id="pending-tier">Confirm</span></span>
   <span class="msg" id="pending-text"></span>
   <button class="btn primary" id="confirm-btn">Yes, do it</button>
   <button class="btn" id="cancel-btn">Cancel</button>
@@ -107,6 +112,7 @@
       <button class="btn small" data-action="doctor">Run check</button></div><div class="body"></div></article>
     <article class="panel span-6" data-panel="voice"><div class="panel-head"><h2>Your voice</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
     <article class="panel span-6" data-panel="speech"><div class="panel-head"><h2>Speaking voice</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-12" data-panel="control"><div class="panel-head"><h2>PC control · what it did</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
     <article class="panel span-6" data-panel="triggers"><div class="panel-head"><h2>Trigger words</h2></div><div class="body"></div></article>
     <article class="panel span-6" data-panel="health"><div class="panel-head"><h2>Running parts (watchdog)</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
   </section>

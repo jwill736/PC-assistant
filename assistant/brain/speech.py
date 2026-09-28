@@ -52,6 +52,27 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
         return f"Searching {args.get('engine', 'google')} for {args.get('query')}."
     if tool == "media_control":
         return ""
+    if tool == "set_volume":
+        if result.get("toggled_mute"):
+            return "Toggled mute."
+        if "volume" not in result:
+            return "Volume adjusted."
+        if result.get("muted"):
+            return f"Muted. Volume is at {result['volume']} percent underneath."
+        about = "about " if result.get("approximate") else ""
+        return f"Volume {about}{result['volume']}." if args else f"Volume is at {result['volume']} percent."
+    if tool == "app_volume":
+        parts = [a["app"].title() + (" muted" if a["muted"] else f" at {a['volume']}") for a in result.get("apps", [])]
+        return (", ".join(parts) + ".") if parts else "Done."
+    if tool == "set_brightness":
+        levels = sorted(set(result.get("brightness") or []))
+        return f"Brightness {'/'.join(str(b) for b in levels)}." if levels else "Brightness set."
+    if tool == "open_settings":
+        return f"Opening {result.get('page', args.get('page'))} settings."
+    if tool == "virtual_desktop":
+        if "desktop" in result:
+            return f"Desktop {result['desktop']} of {result['count']}."
+        return f"{str(result.get('moved', 'next')).title()} desktop."
     if tool == "power":
         return {"lock": "Locking up."}.get(args.get("action"), f"{args.get('action', '').title()} in ten seconds.")
     if tool == "optimize_pc":

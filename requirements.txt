@@ -13,3 +13,8 @@ tzdata>=2024.1  # Windows ships no IANA timezone database
 # System tray icon (Windows)
 pystray>=0.19; sys_platform == "win32"
 Pillow>=10; sys_platform == "win32"
+# PC control (Windows): exact volume and per-app volume, brightness, virtual desktops, toast Yes/No
+pycaw>=20240316; sys_platform == "win32"
+screen-brightness-control>=0.24; sys_platform == "win32"
+pyvda>=0.5; sys_platform == "win32"
+win11toast>=0.35; sys_platform == "win32"

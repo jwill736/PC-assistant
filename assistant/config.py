@@ -71,6 +71,8 @@ DEFAULTS: dict[str, Any] = {
                 "stream": True,  # speak Claude's reply sentence by sentence as it streams in
                 "rate": 190, "voice_hint": ""},  # rate / voice_hint: pyttsx3 and browser only
     },
+    # PC control safety (see brain/policy.py): kill switch, per-request budget, toast confirmations
+    "pc_control": {"kill_hotkey": "ctrl+alt+k", "max_steps": 25, "max_failures": 3, "toast_confirm": True},
     "goals": {"north_star": "", "this_week": []},
     "profiles": {
         "work": {

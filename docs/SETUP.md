@@ -50,8 +50,9 @@ You need Windows 10 or 11, a microphone and a Google account (for Part 3).
 10. **Pick its voice.** **Setup → Speaking voice**. **Supertonic** starts talking in about 0.2 s;
     **Kokoro** has British voices (George, Lewis) but starts 0.4–1 s later and downloads 320 MB the first
     time. Choose a voice, press **Preview**, adjust **Speed**. Also remembered.
-11. **Try it.** “Vesper, where am I?” · “Vesper, open Notepad.” · “Vesper, good morning.” — then say
-    “stop” while it's talking. Replies show in the **Conversation** panel on the **Command** tab; if it
+11. **Try it.** “Vesper, where am I?” · “Vesper, open Notepad.” · “Vesper, volume 30.” · “Vesper, good
+    morning.” — then say “stop” while it's talking. The emergency brake is <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>K</kbd>
+    (or say “stop everything”): it stops every action until you say “resume control”. Replies show in the **Conversation** panel on the **Command** tab; if it
     didn't wake, what it heard shows under the command box as “(ignored) …”.
 
 ## Part 3 · Train the wake words on Colab (once, ~2 hours)

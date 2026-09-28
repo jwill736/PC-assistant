@@ -106,15 +106,30 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         return await run_in_threadpool(assistant.handle, body.text, "text")
 
     @app.post("/api/confirm")
-    async def confirm():
-        reply = await run_in_threadpool(assistant.confirm)
-        svc.bus.publish("assistant_said", {"text": reply, "kind": "confirm", "source": "dashboard"})
+    async def confirm(request: Request):
+        """{"id": "<pending id>"}: confirms that action only, never one that replaced it."""
+        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        reply = await run_in_threadpool(runtime.confirm_pending, body.get("id"), "hud")
         return {"reply": reply}
 
     @app.post("/api/cancel")
-    async def cancel():
-        assistant.cancel()
+    async def cancel(request: Request):
+        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        assistant.cancel(body.get("id"))
         return {"ok": True}
+
+    @app.get("/api/control")
+    async def control_status():
+        """Kill-switch state and the recent action log (what it did, why, who asked)."""
+        return assistant.control_status()
+
+    @app.post("/api/control/stop")
+    async def control_stop():
+        return await run_in_threadpool(runtime.kill_switch, "hud")
+
+    @app.post("/api/control/resume")
+    async def control_resume():
+        return runtime.resume_control("hud")
 
     @app.post("/api/briefing/{kind}")
     async def make_briefing(kind: str):
@@ -131,7 +146,8 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
 
     @app.get("/api/calendar")
     async def calendar(days: int = 7, profile: str | None = None):
-        return await run_in_threadpool(tools.run, "calendar", {"days": days, "profile": profile})
+        return await run_in_threadpool(lambda: tools.run("calendar", {"days": days, "profile": profile},
+                                                         context={"source": "hud"}))
 
     @app.get("/api/activity")
     async def activity(day: str | None = None):
@@ -183,7 +199,8 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         if name not in tools.tools:
             raise HTTPException(404)
         args = await request.json() if int(request.headers.get("content-length") or 0) else {}
-        result = await run_in_threadpool(tools.run, name, args)
+        # The HUD asks its own "are you sure?" before risky buttons, so a click counts as the yes.
+        result = await run_in_threadpool(lambda: tools.run(name, args, confirmed_by="hud", context={"source": "hud"}))
         svc.bus.publish("tool", {"name": name, "args": args, "result": result})
         if name.startswith("obs_"):
             svc.bus.publish("obs", await run_in_threadpool(svc.obs.status), sticky=True)

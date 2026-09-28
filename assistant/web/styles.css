@@ -187,7 +187,9 @@ button, input, select { font: inherit; color: inherit; }
 
 .pending { margin: 12px 24px 0; padding: 10px 14px; border-radius: var(--radius); display: flex; gap: 12px; align-items: center;
   border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent); background: color-mix(in srgb, var(--warning) 8%, var(--panel)); }
-.pending .msg { flex: 1; }
+.pending { flex-wrap: wrap; }
+.pending .status { white-space: nowrap; }
+.pending .msg { flex: 1 1 240px; min-width: 0; }  /* on a phone the message takes its own line */
 .pending.halt { border-color: color-mix(in srgb, var(--critical) 55%, transparent); background: color-mix(in srgb, var(--critical) 8%, var(--panel)); }
 .tier { display: inline-block; min-width: 22px; padding: 0 5px; border: 1px solid var(--line-2); border-radius: 2px; font-size: 10.5px;
   letter-spacing: .06em; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }

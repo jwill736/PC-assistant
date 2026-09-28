@@ -220,6 +220,8 @@ class VoiceListener:
 
         ``source`` hotkey/button = a physical push-to-talk (trusted: skips the
         voice check); wake = the name said alone ("Vesper?") — still checked."""
+        if source in ("hotkey", "button") and self.speaker.speaking.is_set():
+            self.speaker.interrupt()  # pressing talk while it's talking means "stop, listen to me"
         self.armed_until = time.time() + seconds
         self.armed_by = source
         self.speaker.chime()

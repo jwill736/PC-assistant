@@ -18,6 +18,7 @@ import anthropic
 
 from ..integrations import desktop
 from ..services import Services
+from ..voice import neural
 from . import briefing, macros as macro_mod
 from .router import Intent, RouterContext, route
 from .speech import clock, summarize
@@ -67,6 +68,7 @@ class Assistant:
         self.active_profile: str | None = None
         self.last_briefing: dict | None = None
         self._lock = threading.RLock()
+        self._stream_on, self._speak_turn, self._streamed = False, None, False  # set per command in handle()
         a = svc.cfg["assistant"]
         self.system_prompt = SYSTEM_PROMPT.format(
             name=a["name"], user=a["user_name"],
@@ -113,7 +115,8 @@ class Assistant:
         )
 
     # ------------------------------------------------------------------
-    def handle(self, text: str, source: str = "text") -> dict:
+    def handle(self, text: str, source: str = "text", turn: int | None = None) -> dict:
+        """``turn`` (voice commands) tags the spoken reply, so a newer command drops what's left of it."""
         text = (text or "").strip()
         if not text:
             return {"reply": "", "kind": "empty"}
@@ -122,6 +125,10 @@ class Assistant:
             self.svc.bus.publish("user_said", {"text": text, "source": source})
             self.svc.bus.publish("thinking", {"active": True})
             started = time.time()
+            speak = source == "voice" or self.svc.cfg["voice"].get("speak_typed")
+            # Claude's reply is spoken sentence by sentence as it streams in, not after the last word.
+            self._stream_on = bool(speak and self.svc.cfg["voice"]["tts"].get("stream", True))
+            self._speak_turn, self._streamed = turn, False
             try:
                 intent = route(text, self.router_context())
                 if intent is not None:
@@ -132,6 +139,7 @@ class Assistant:
                 log.exception("command failed")
                 out = {"reply": f"That failed: {type(exc).__name__}.", "kind": "error"}
             finally:
+                self._stream_on = False
                 self.svc.bus.publish("thinking", {"active": False})
             out["ms"] = round((time.time() - started) * 1000)
             reply = out.get("reply") or ""
@@ -141,10 +149,16 @@ class Assistant:
                 "text": reply, "kind": out.get("kind"), "source": source, "ms": out["ms"],
                 "pending": self.pending_view(),
             })
-            if reply and (source == "voice" or self.svc.cfg["voice"].get("speak_typed")):
+            if reply and speak and not self._streamed:
                 # A waiting confirmation keeps the mic open for the "yes"; otherwise only a question does.
-                self.svc.speak(reply, expects_reply=True if self.pending_view() else None)
+                self.svc.speak(reply, expects_reply=True if self.pending_view() else None, turn=turn)
             return out
+
+    def _speak_sentence(self, sentence: str, final: bool) -> None:
+        """One streamed sentence. The last one decides whether the mic stays open for an answer."""
+        self._streamed = True
+        expects = (True if self.pending_view() else None) if final else False
+        self.svc.speak(sentence, expects_reply=expects, turn=self._speak_turn)
 
     def pending_view(self) -> dict | None:
         if self.pending and self.pending["expires"] > time.time():
@@ -288,7 +302,7 @@ class Assistant:
         return f"[{now:%A %B %d %Y, %I:%M %p} | active window: {where} | profile: {self.active_profile or 'none'}]"
 
     def _create(self, messages: list, *, tools: list | None = None, effort: str | None = None,
-                max_tokens: int = 4096, fmt: dict | None = None, system: str | None = None):
+                max_tokens: int = 4096, fmt: dict | None = None, system: str | None = None, on_text=None):
         model = self.cfg["model"]
         kwargs: dict = {
             "model": model,
@@ -310,6 +324,11 @@ class Assistant:
         if self.cfg.get("server_fallbacks", True) and _supports(model, SERVER_FALLBACK_MODELS):
             kwargs["betas"] = ["server-side-fallback-2026-07-01"]
             kwargs["fallbacks"] = "default"
+        if on_text is not None:
+            with self.client.beta.messages.stream(**kwargs) as stream:
+                for delta in stream.text_stream:
+                    on_text(delta)
+                return stream.get_final_message()
         return self.client.beta.messages.create(**kwargs)
 
     def _ask_claude(self, text: str) -> str:
@@ -325,15 +344,21 @@ class Assistant:
         definitions = self.tools.definitions()
         if self.macro_definition():
             definitions = definitions + [self.macro_definition()]
+        streaming = self._stream_on and hasattr(self.client.beta.messages, "stream")
+        sentences = neural.SentenceStream(self._speak_sentence) if streaming else None
         try:
             resp = None
             for _ in range(8):
-                resp = self._create(self.history, tools=definitions, effort=self.cfg.get("command_effort", "low"))
+                resp = self._create(self.history, tools=definitions, effort=self.cfg.get("command_effort", "low"),
+                                    on_text=sentences.feed if sentences else None)
                 if resp.stop_reason == "refusal":
                     del self.history[checkpoint:]
                     self.user_turns -= 1
+                    self._streamed = False  # say the refusal, not a half-streamed answer
                     return "I can't help with that one."
                 self.history.append({"role": "assistant", "content": resp.content})
+                if sentences:  # "Checking your calendar." before a tool call is spoken right away
+                    sentences.flush(final=resp.stop_reason != "tool_use")
                 if resp.stop_reason != "tool_use":
                     break
                 self.history.append({"role": "user", "content": self._run_tool_calls(resp.content)})
@@ -342,16 +367,20 @@ class Assistant:
             return reply or "Done."
         except anthropic.AuthenticationError:
             del self.history[checkpoint:]
+            self._streamed = False
             return "Claude rejected the API key. Check ANTHROPIC_API_KEY in .env."
         except anthropic.RateLimitError:
             del self.history[checkpoint:]
+            self._streamed = False
             return "I'm rate limited by the Claude API. Try again in a minute."
         except anthropic.APIStatusError as exc:
             del self.history[checkpoint:]
+            self._streamed = False
             log.error("Claude API error %s: %s", exc.status_code, exc.message)
             return f"Claude returned an error, status {exc.status_code}."
         except anthropic.APIConnectionError:
             del self.history[checkpoint:]
+            self._streamed = False
             return "I can't reach Claude right now. Local commands still work."
 
     def _run_tool_calls(self, content) -> list[dict]:

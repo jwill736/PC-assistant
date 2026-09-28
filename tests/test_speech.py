@@ -181,6 +181,30 @@ def test_ensure_rejects_archives_that_escape_the_models_folder(monkeypatch, tmp_
     assert not models.is_ready("moonshine", tmp_path / "models")
 
 
+def test_two_callers_share_one_download(monkeypatch, tmp_path):
+    """The health check asking for the voice while the speaker is still downloading it waits, not re-downloads."""
+    import threading
+    import time as _time
+
+    name = models.MODELS["supertonic"].name
+    payload = tarball({f"{name}/tts.json": b"{}"})
+    hits = serve(monkeypatch, payload)
+    import httpx
+    slow = httpx.stream
+
+    def stream(method, url, **kw):
+        _time.sleep(0.2)  # long enough for the second caller to arrive mid-download
+        return slow(method, url, **kw)
+    monkeypatch.setattr(httpx, "stream", stream)
+    paths = []
+    threads = [threading.Thread(target=lambda: paths.append(models.ensure("supertonic", tmp_path))) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(hits) == 1 and len(paths) == 2 and (paths[0] / "tts.json").exists()
+
+
 def test_single_file_model(monkeypatch, tmp_path):
     serve(monkeypatch, b"onnx-bytes")
     path = models.ensure("silero-vad", tmp_path)
@@ -216,7 +240,6 @@ def test_bench_picks_the_engine_that_hears_you(cfg, monkeypatch):
     import yaml
 
     from assistant.voice import bench
-    from assistant.voice import calibrate as calib
 
     monkeypatch.setattr(bench.time, "sleep", lambda _s: None)
     tone = (0.2 * np.sin(np.arange(16000) / 5)).astype(np.float32)
@@ -247,8 +270,8 @@ def test_bench_picks_the_engine_that_hears_you(cfg, monkeypatch):
     assert report["results"]["whisper"]["woke"] == 6 and report["results"]["whisper"]["wer"] == 0
     assert report["results"]["parakeet"]["woke"] == 0
     assert any("← best" in line and "Whisper" in line for line in lines)
-    layer = yaml.safe_load((cfg.data_dir / calib.CALIBRATION_FILE).read_text())
-    assert layer["voice"]["stt_engine"] == "whisper"
+    layer = yaml.safe_load((cfg.data_dir / "settings.yaml").read_text())
+    assert layer["voice"]["stt_engine"] == "whisper" and cfg["voice"]["stt_engine"] == "whisper"
     assert list((cfg.data_dir / "bench").glob("voice-*.json"))
 
 

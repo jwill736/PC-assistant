@@ -242,6 +242,21 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         body = await request.json()
         return runtime.set_speaker_check(str(body.get("mode", "")))
 
+    @app.get("/api/tts")
+    async def tts_status():
+        return runtime.speaker.status()
+
+    @app.post("/api/tts")
+    async def tts_set(request: Request):
+        """{"engine": "supertonic"|"kokoro"|"pyttsx3"|"browser"|"none"|"auto", "voice": "m1", "speed": 1.0}"""
+        body = await request.json()
+        return await run_in_threadpool(lambda: runtime.set_voice(body.get("engine"), body.get("voice"), body.get("speed")))
+
+    @app.post("/api/tts/preview")
+    async def tts_preview(request: Request):
+        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        return runtime.preview_voice((body.get("text") or "")[:300] or None)
+
     @app.delete("/api/voice/profile")
     async def voice_profile_delete():
         return runtime.delete_voice_profile()

@@ -5,5 +5,5 @@ numpy>=1.24
 pyttsx3>=2.98
 pynput>=1.7                  # push-to-talk hotkey (keyboard, the old choice, is unmaintained since 2020)
 pywin32>=306; sys_platform == "win32"
-sherpa-onnx>=1.12             # speech-to-text, voice detection, speaker check (onnxruntime inside, no PyTorch)
+sherpa-onnx>=1.13             # speech-to-text, voice detection, speaker check, speaking voices (no PyTorch)
 livekit-wakeword>=0.2         # trained wake words / hard triggers (Apache-2.0; numpy + onnxruntime)

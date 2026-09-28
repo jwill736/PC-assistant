@@ -26,6 +26,7 @@ voice:
   enabled: true
   stt_engine: auto              # auto (= parakeet) | parakeet | moonshine | parakeet-large | whisper
                                 # compare them on your voice: python -m assistant --bench-voice
+                                # (--apply saves the winner to data/settings.yaml, which overrides this)
   # stt_model: base.en          # whisper engine only: tiny.en | base.en | small.en
   # stt_device: auto            # whisper engine only: cuda for an NVIDIA GPU
   endpoint_ms: 400              # pause that ends a command; raise it if you get cut off
@@ -39,10 +40,16 @@ voice:
   # min_rms: 900                # speech loudness threshold; calibration measures your room
   speaker_check: strict         # after calibrating: strict = ignore other voices,
                                 # log = score but never block, off = answer anyone
+                                # (the Setup tab's switch overrides this)
+  # Speaking voice. Easiest: pick one in the HUD (Setup → Speaking voice); that choice is
+  # saved to data/settings.yaml and wins over this file.
   tts:
-    engine: pyttsx3             # pyttsx3 (offline) | browser (natural voices) | none
-    rate: 190
-    voice_hint: David           # part of a voice name, e.g. "David", "Zira", "Ryan"
+    engine: auto                # auto (= supertonic) | supertonic | kokoro | pyttsx3 (Windows SAPI) | browser | none
+    voice: m1                   # supertonic: m1-m5, f1-f5 · kokoro: bm_george, bm_lewis, am_adam, bf_emma, …
+    speed: 1.0
+    stream: true                # speak Claude's reply sentence by sentence as it arrives
+    # output_device: null       # speakers/headphones by index or name; default = Windows default
+    # voice_hint: David         # pyttsx3 only: part of a SAPI voice name, e.g. "David", "Zira"
 
 # Profiles drive activity tracking (which apps/sites count as what),
 # "start <profile> mode" routines, and the Work / Stream dashboard views.

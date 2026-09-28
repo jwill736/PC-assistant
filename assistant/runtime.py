@@ -5,18 +5,20 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 from . import discovery
 from .brain.assistant import Assistant
 from .bus import EventBus
-from .config import Config, load_config
+from .config import Config, load_config, save_setting
 from .integrations.activity import Categorizer
 from .integrations.jobs import JobRunner
 from .services import Services, build_services
 from .voice.hotkey import register_hotkey
 from .voice import calibrate as calib
+from .voice import neural
 from .voice.listener import VoiceListener
 from .voice.speaker_id import SpeakerVerifier, delete_profile
 from .voice.tts import Speaker
@@ -32,8 +34,13 @@ class Runtime:
         self.svc = services or build_services(cfg, self.bus)
         self.assistant = assistant or Assistant(self.svc)
         tts = cfg["voice"]["tts"]
-        self.speaker = Speaker(self.bus, tts.get("engine", "pyttsx3"), tts.get("rate", 190), tts.get("voice_hint", ""))
+        self.speaker = Speaker(self.bus, tts.get("engine", "auto"), tts.get("rate", 190), tts.get("voice_hint", ""),
+                               voice=tts.get("voice") or None, speed=float(tts.get("speed", 1.0)),
+                               threads=int(tts.get("threads", 2)), models_dir=cfg.data_dir / "models",
+                               output_device=tts.get("output_device"))
         self.svc.speak = self.speaker.say
+        # Voice commands run here, not on the mic thread, so "stop" is heard while Claude thinks or talks.
+        self._commands = ThreadPoolExecutor(max_workers=1, thread_name_prefix="command")
         self.svc.jobs = JobRunner(
             self.svc.storage, self.bus, cfg["jobs"], repo_lookup=self.svc.projects.repos,
             research_fn=self.assistant.research if self.assistant.claude_ready else None,
@@ -46,7 +53,7 @@ class Runtime:
             self.verifier = SpeakerVerifier(cfg.data_dir, cfg["voice"].get("speaker_check", "strict"))
             self.listener = VoiceListener(
                 self.bus, self.speaker, cfg["assistant"]["wake_words"],
-                on_command=lambda text: self.assistant.handle(text, "voice"),
+                on_command=self.voice_command,
                 cfg=cfg["voice"], hint_words=self._hint_words, verifier=self.verifier,
                 models_dir=cfg.data_dir / "models",
             )
@@ -58,6 +65,17 @@ class Runtime:
         words = list(self.svc.obs.scenes)
         words += list(self.cfg["apps"].keys()) + list(self.cfg["sites"].keys())
         return words
+
+    def voice_command(self, text: str) -> None:
+        """A new turn: whatever's left of the previous reply is dropped, not spoken late."""
+        turn = self.speaker.new_turn()
+        self._commands.submit(self._run_voice_command, text, turn)
+
+    def _run_voice_command(self, text: str, turn: int) -> None:
+        try:
+            self.assistant.handle(text, "voice", turn=turn)
+        except Exception:
+            log.exception("voice command failed: %s", text)
 
     def announce(self, text: str) -> None:
         self.bus.publish("announce", {"text": text})
@@ -96,6 +114,7 @@ class Runtime:
         if self.listener:
             self.listener.stop()
         self.speaker.stop()
+        self._commands.shutdown(wait=False, cancel_futures=True)
         if self.svc.jobs:
             self.svc.jobs.shutdown()
 
@@ -206,9 +225,40 @@ class Runtime:
         if self.verifier is None or mode not in self.verifier.MODES:
             return {"ok": False, "error": "unknown mode or voice disabled"}
         self.verifier.mode = mode
-        self.cfg["voice"]["speaker_check"] = mode
+        save_setting(self.cfg, "voice.speaker_check", mode)  # survives a restart, over config.yaml
         self.bus.publish("voice_profile", self.voice_status(), sticky=True)
         return {"ok": True, "mode": mode}
+
+    # ---- speech output (Setup tab) ---------------------------------------
+    TTS_ENGINES = ("auto", *neural.ENGINES, "pyttsx3", "browser", "none")
+
+    def set_voice(self, engine: str | None = None, voice: str | None = None, speed: float | None = None) -> dict:
+        """Switch the speaking voice now and remember it (data/settings.yaml)."""
+        engine = engine.lower() if engine else None
+        if engine is not None and engine not in self.TTS_ENGINES:
+            return {"ok": False, "error": f"unknown engine {engine!r}"}
+        target = engine or self.speaker.requested
+        if voice is not None:
+            ids = [v.id for v in neural.VOICES.get(target if target != "auto" else "supertonic", [])]
+            if ids and voice.lower() not in ids:
+                return {"ok": False, "error": f"unknown voice {voice!r} for {target}"}
+        if speed is not None:
+            try:
+                speed = max(0.6, min(1.6, float(speed)))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "speed must be a number"}
+        for key, value in (("engine", engine), ("voice", voice.lower() if voice else voice), ("speed", speed)):
+            if value is not None:
+                save_setting(self.cfg, f"voice.tts.{key}", value)
+        status = self.speaker.configure(engine, voice.lower() if voice else voice, speed)
+        self.bus.publish("tts", status, sticky=True)
+        return {"ok": True, **status}
+
+    def preview_voice(self, text: str | None = None) -> dict:
+        if self.speaker.engine_name == "none":
+            return {"ok": False, "error": "speech is off (engine: none)"}
+        self.speaker.preview(text)
+        return {"ok": True}
 
     def delete_voice_profile(self) -> dict:
         existed = delete_profile(self.cfg.data_dir)
@@ -253,7 +303,9 @@ class Runtime:
 
         from .voice import wakeword
 
-        name = re.sub(r"[^a-z0-9_]+", "_", name.lower().removesuffix(".onnx")).strip("_")
+        name = name.lower().removesuffix(".onnx")
+        name = re.sub(r"\s*\(\d+\)$", "", name)  # "vesper (1)": the browser's re-download name, still the wake word
+        name = re.sub(r"[^a-z0-9_]+", "_", name).strip("_")
         if not name or len(name) > 40:
             return {"ok": False, "error": "Name it after the phrase, e.g. vesper, stop or clip_that."}
         if not 1_000 < len(data) < 20_000_000:
@@ -358,5 +410,6 @@ class Runtime:
             "doctor": latest.get("doctor"),
             "health": self.supervisor.snapshot(),
             "voice_profile": self.voice_status(),
+            "tts": self.speaker.status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},
         }

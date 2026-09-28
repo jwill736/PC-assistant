@@ -85,6 +85,24 @@ def test_tray_icon_renders_and_pystray_imports():
 
 
 @windows_only
+def test_tray_menu_builds_with_real_pystray(cfg):
+    """The tray menu goes through pystray's own callback checks (a 3-parameter callback once
+    crashed the app at startup on Windows, and the fake pystray in test_tray couldn't see it)."""
+    import pystray
+
+    from assistant.runtime import Runtime
+    from assistant.tray import Tray, pystray_menu
+
+    cfg["voice"]["enabled"] = False
+    tray = Tray(Runtime(cfg), "http://127.0.0.1:1/", on_quit=lambda: None)
+    menu = pystray_menu(pystray, tray.menu_items())
+    items = [i for i in menu.items if i is not pystray.Menu.SEPARATOR]
+    assert len(items) >= 4
+    for item in items:
+        _ = item.checked  # runs our checked() callback through pystray
+
+
+@windows_only
 def test_system_controls_answer_cleanly_on_real_windows():
     """The PC-control libraries install and import, and every control returns an answer, never a crash
     (the CI runner has no speakers or adjustable screen, so a clean "can't" is a pass)."""

@@ -100,3 +100,52 @@ def test_already_running_detects_hud(monkeypatch):
 
     monkeypatch.setattr(httpx, "get", refuse)
     assert not entry.already_running("127.0.0.1", 8765)
+
+
+class StrictPystray:
+    """pystray's own rule, copied from pystray._base.MenuItem._assert_action: a callback may take
+    0-2 parameters, and default arguments count. Breaking it crashed the app at startup on Windows."""
+
+    class Menu:
+        SEPARATOR = object()
+
+        def __init__(self, *items):
+            self.items = items
+
+    class MenuItem:
+        def __init__(self, text, action, checked=None, default=False):
+            for fn, most in ((action, 2), (checked, 1)):
+                if fn is not None and fn.__code__.co_argcount > most:
+                    raise ValueError(fn)
+            self.text, self.action, self.checked_fn, self.default = text, action, checked, default
+
+
+def test_menu_callbacks_fit_pystrays_rules(tmp_path):
+    from assistant.tray import pystray_menu
+
+    rt, _ = fake_runtime(tmp_path)
+    tray = Tray(rt, "http://127.0.0.1:8765/", on_quit=lambda: None)
+    menu = pystray_menu(StrictPystray, tray.menu_items())
+    items = [i for i in menu.items if i is not StrictPystray.Menu.SEPARATOR]
+    by_label = {i.text: i for i in items}
+    by_label["Push to talk"].action("icon", "item")      # pystray calls action(icon, item)
+    assert rt.listener.armed == 1
+    by_label["Mute microphone"].action("icon", "item")
+    assert by_label["Mute microphone"].checked_fn("item") is True
+
+
+def test_tray_failure_never_stops_the_app(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    broken = types.ModuleType("pystray")
+    broken.Menu = StrictPystray.Menu
+    broken.MenuItem = StrictPystray.MenuItem
+
+    def icon(*_a, **_k):
+        raise RuntimeError("no notification area")
+    broken.Icon = icon
+    monkeypatch.setitem(sys.modules, "pystray", broken)
+    rt, _ = fake_runtime(tmp_path)
+    tray = Tray(rt, "http://127.0.0.1:8765/", on_quit=lambda: None)
+    assert tray.start() is False  # logged, not raised

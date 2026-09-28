@@ -498,6 +498,42 @@ class Runtime:
         self.bus.publish("tts", status, sticky=True)
         return {"ok": True, **status}
 
+    BRAIN_PROVIDERS = ("auto", "claude", "local")
+
+    def set_brain(self, provider: str | None = None, model: str | None = None) -> dict:
+        """Which model answers, remembered in data/settings.yaml like the voice."""
+        if provider is not None:
+            provider = provider.lower()
+            if provider not in self.BRAIN_PROVIDERS:
+                return {"ok": False, "error": f"unknown provider {provider!r}"}
+            save_setting(self.cfg, "brain.provider", provider)
+        if model is not None:
+            save_setting(self.cfg, "brain.local.model", model)
+            self.assistant.local.cfg = (self.cfg.get("brain") or {}).get("local") or {}
+            self.assistant.local.refresh(force=True)
+        status = self.assistant.brain_status()
+        self.bus.publish("brain", status, sticky=True)
+        return {"ok": True, **status}
+
+    def test_brain(self) -> dict:
+        """One tiny request to whichever model answers now: is it there, and how fast?"""
+        a = self.assistant
+        brain = a.brain()
+        t0 = time.perf_counter()
+        try:
+            if brain == "local":
+                out = a.local.llm.chat([{"role": "user", "content": "Reply with exactly one word: ready"}],
+                                       temperature=0, max_tokens=5)
+                reply = out["content"]
+            elif brain == "claude":
+                resp = a._create([{"role": "user", "content": "Reply with exactly one word: ready"}], max_tokens=16)
+                reply = " ".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+            else:
+                return {"ok": False, "error": "No model is connected.", **a.brain_status()}
+        except Exception as exc:  # the point of a test button: say what went wrong
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300], **a.brain_status()}
+        return {"ok": True, "reply": reply.strip()[:60], "ms": round((time.perf_counter() - t0) * 1000), **a.brain_status()}
+
     def preview_voice(self, text: str | None = None) -> dict:
         if self.speaker.engine_name == "none":
             return {"ok": False, "error": "speech is off (engine: none)"}

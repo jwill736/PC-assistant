@@ -20,6 +20,8 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 
 | Area | What it does |
 |---|---|
+| Brain | Claude, or a Llama (or Qwen, Mistral…) already on your PC through Ollama, LM Studio, llama.cpp or Jan: found by itself, no key needed, nothing leaves the machine. Both use the same tools and the same "yes" rules |
+| Second brain | "Remember that…" and it does: notes, tasks and every conversation are searchable. "What did I say about the overlay?", "do you remember when I stream?" answer from memory, and the model checks memory before answering questions about your own plans |
 | Voice | Local speech-to-text (Parakeet, on your PC), any wake word, follow-up window, push-to-talk hotkey (`Ctrl+Alt+J`). Replies in a natural local voice that starts about 0.2 s after the text is ready, speaks Claude's answer sentence by sentence as it arrives, and stops the instant you say "stop". Ignores its own voice coming back through your speakers |
 | Your voice only | A one-minute calibration sets the mic threshold for your room, learns how Whisper spells the name in your voice, and enrolls your voice. After that, other voices (Discord, stream audio, the TV) are ignored |
 | Trigger phrases | One phrase runs a whole sequence: "brb" switches to the BRB scene, mutes the mic and confirms. Define them in `config.yaml`, run them by voice, from the HUD, or let Claude pick one |
@@ -123,6 +125,36 @@ still works, and briefings use a local template instead of a real plan.
 **Privacy:** when Claude handles a request, it receives that request, the active
 window title, and the results of the tools it calls (for example calendar events
 or task titles). Fast-path commands and the activity log never leave your PC.
+
+### Brain: Claude or your own model
+Out of the box it answers with whatever it finds (Setup → **Brain** shows which, and **Test** times a reply):
+- **A model on this PC.** Ollama (port 11434), LM Studio (1234), llama.cpp's server (8080) and Jan (1337) are
+  found by themselves, rechecked every minute. With Ollama: install it from ollama.com, then `ollama pull llama3.1:8b`.
+  Vesper picks a model that can call tools (Ollama reports it), preferring 3-14B, which is fast enough to talk to.
+  Pick another in Setup → Brain, or pin one with `brain.local.model`.
+- **Claude**, when `ANTHROPIC_API_KEY` is in `.env`. `brain.provider: auto` prefers Claude when there's a key;
+  `local` never sends anything to the cloud.
+
+What to expect from a local model: a 3-8B model answers questions, uses one tool at a time and writes a decent
+morning plan. Multi-step requests ("check my calendar, then move the stream and tell chat") are where Claude is
+much stronger. Everyday commands ("volume 30", "switch to BRB", "clip that") never touch a model either way. A local
+model's tool calls go through the same risk tiers, "yes" confirmations and kill switch as Claude's. It gets a
+shorter tool list (`brain.local.tools`) because small models choose better from fewer options.
+
+**GPU while streaming:** the model shares the GPU with your game and OBS's encoder. An 8B model holds about 5 GB of
+video memory while loaded. If the Stream tab shows encoder or render drops, pick a smaller model (3B) in Setup →
+Brain for stream nights.
+
+### Memory (the second brain)
+Everything goes into a local full-text index: notes ("remember that…"), tasks, and every conversation.
+- "What did I say about the overlay?", "do you remember when I stream?", "what do I know about Ember?",
+  "search my notes for mic arm", "what are my notes": answered straight from memory, no model needed.
+- With a model connected, questions like "which colours did I pick?" make it look in memory before answering
+  (the `recall` tool), so the answer comes from what you said, not a guess.
+- It lives in `data/assistant.db` on your PC. Notes rank first, then tasks, then conversation; "colors" finds
+  "colours".
+
+"What's connected?" tells you which brain is answering, what's connected and the next thing that needs you.
 
 ### Calendars (plural)
 Each calendar is a private iCal link. Store the link in `.env` and reference it
@@ -423,7 +455,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 297 tests, 7 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 328 tests, 7 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another installs Ollama, pulls Llama 3.2 3B and has Vesper answer a question, use a tool, answer from memory and write the morning plan with it. Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, the local brain (model detection and choice, streamed and text-written tool calls, the tool loop behind the same tiers, briefings) and memory recall, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the

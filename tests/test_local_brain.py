@@ -270,3 +270,28 @@ def test_whats_connected_by_voice(svc):
     reply = Assistant(svc).handle("what's connected")["reply"]
     assert reply == ("I'm thinking with llama3.1:8b on Ollama. Connected: OBS, Local AI (Ollama). "
                      "Needs you: Calendars, Paste your iCal link into .env.")
+
+
+def test_brain_panel_endpoints(cfg, svc):
+    from fastapi.testclient import TestClient
+
+    from assistant.runtime import Runtime
+    from assistant.server import create_app
+
+    rt = Runtime(cfg, services=svc)
+    fake = FakeOllama(models=["llama3.2:3b", "llama3.1:8b"], tools=["llama3.2:3b", "llama3.1:8b"],
+                      script=[{"role": "assistant", "content": "ready"}])
+    cfg["brain"]["local"]["enabled"] = True
+    rt.assistant.local = local_llm.LocalBrain(cfg["brain"]["local"], http=http(fake))
+    app = create_app(rt, start_background=False)
+    with TestClient(app) as c:
+        h = {"x-assistant-token": app.state.token}
+        st = c.get("/api/brain", headers=h).json()
+        assert st["active"] == "local" and st["local"]["model"] == "llama3.1:8b" and st["local"]["models"] == ["llama3.2:3b", "llama3.1:8b"]
+        st = c.post("/api/brain", json={"provider": "local", "model": "llama3.2:3b"}, headers=h).json()
+        assert st["ok"] and st["provider"] == "local" and st["local"]["model"] == "llama3.2:3b"
+        assert "provider: local" in (cfg.data_dir / "settings.yaml").read_text()  # remembered across restarts
+        t = c.post("/api/brain/test", headers=h).json()
+        assert t["ok"] and t["reply"] == "ready" and t["ms"] >= 0
+        assert c.post("/api/brain", json={"provider": "gpt"}, headers=h).json()["ok"] is False
+    rt._commands.shutdown()

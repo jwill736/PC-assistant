@@ -854,6 +854,42 @@ render.speech = function speech() {
   }
 };
 
+render.brain = function brain() {
+  const br = S.data.brain || (S.data.assistant || {}).brain;
+  for (const p of panels('brain')) {
+    const b = body(p);
+    if (!br) { fill(b, empty('Loading…')); continue; }
+    const local = br.local || {}, claude = br.claude || {};
+    meta(p, br.active === 'claude' ? 'Claude' : br.active === 'local' ? local.model : 'no model');
+    const set = body => post('/api/brain', body).then(r => { if (r && r.ok === false) toast(r.error); else { S.data.brain = r; render.brain(); paintOrb(); } });
+    const modes = h('span', { class: 'seg' }, [['auto', 'Auto', 'Claude when there is a key, else your local model'],
+      ['claude', 'Claude', 'Always Claude (needs ANTHROPIC_API_KEY)'], ['local', 'Local only', 'Never send anything to the cloud']]
+      .map(([id, label, note]) => h('button', { 'aria-pressed': String(br.provider === id), title: note, onclick: () => set({ provider: id }) }, label)));
+    const models = local.models || [];
+    const picker = models.length ? h('select', { class: 'field', 'aria-label': 'Local model', onchange: e => set({ model: e.target.value }) },
+      models.map(m => h('option', { value: m, selected: m === local.model }, m))) : null;
+    const answering = br.active === 'claude' ? status('good', `Claude ${claude.model}`)
+      : br.active === 'local' ? status('good', `${local.model} on ${local.server}`)
+      : status('warning', 'No model: built-in commands only');
+    const result = h('span', { class: 'muted' });
+    fill(b,
+      h('div', { class: 'kv' },
+        h('span', { class: 'k' }, 'Answering with'), h('span', {}, answering),
+        h('span', { class: 'k' }, 'Use'), h('span', {}, modes),
+        h('span', { class: 'k' }, 'Local model'), picker || h('span', { class: 'muted' },
+          local.server ? `${local.server} is running with no models.` : 'None found. Install Ollama (ollama.com), then run: ollama pull llama3.1:8b'),
+        h('span', { class: 'k' }, 'Claude'), h('span', {}, claude.ready ? status('good', 'API key set') : status('idle', 'no key (optional)'))),
+      h('div', { class: 'controls' },
+        h('button', { class: 'btn primary', disabled: !br.active, onclick: async () => {
+          result.textContent = 'Asking…';
+          const r = await post('/api/brain/test').catch(e => ({ ok: false, error: e.message }));
+          result.textContent = r.ok ? `Answered “${r.reply}” in ${(r.ms / 1000).toFixed(1)} s` : r.error;
+        } }, 'Test'), result),
+      h('div', { class: 't2' }, 'Local models run on your GPU. While you stream, a big one competes with the game and OBS for it: '
+        + 'if the Stream tab shows encoder or render drops, pick a smaller model here.'));
+  }
+};
+
 const TIER_LABEL = ['read-only', 'reversible', 'needs a yes', "needs a yes · can't be undone"];
 const SOURCE_LABEL = { voice: 'voice', text: 'typed', hud: 'HUD', hotkey: 'hotkey', tray: 'tray' };
 let controlTimer = null;
@@ -908,7 +944,7 @@ render.doctor = function doctor() {
   const r = S.data.doctor;
   for (const p of panels('doctor')) {
     const b = body(p);
-    if (!r) { fill(b, empty('Runs live checks: Claude key, OBS connection, each calendar, news feeds, Chrome, Claude Code CLI, voice.')); continue; }
+    if (!r) { fill(b, empty('Runs live checks: the AI model (Claude or your local one), OBS, each calendar, news feeds, Chrome, Claude Code CLI, voice.')); continue; }
     const counts = {};
     for (const c of r.checks) counts[c.status] = (counts[c.status] || 0) + 1;
     fill(b, h('div', { class: 'muted', style: { fontSize: '12px', marginBottom: '6px' } },
@@ -1148,6 +1184,7 @@ function onEvent(ev) {
     case 'speak': speak(data); break;
     case 'speak_stop': if ('speechSynthesis' in window) speechSynthesis.cancel(); break;
     case 'tts': S.data.tts = data; render.speech(); break;
+    case 'brain': S.data.brain = data; render.brain(); paintOrb(); break;
     case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;

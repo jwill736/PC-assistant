@@ -112,6 +112,10 @@ You need Windows 10 or 11, a microphone and a Google account (for Part 3).
 - **Never hears you:** redo step 1, then **Setup → Health check → Run check** and read the Microphone row.
 - **Nothing happens on `start.bat`:** it's probably already running in the tray; a second copy opens the HUD.
 - **Answers other people:** finish step 9 and set **STRICT**; headphones stop it hearing its own voice.
+- **Twitch clips or markers say “only while live”:** that's Twitch's rule. Markers also need **Creator
+  Dashboard → Settings → Stream → Store past broadcasts** on; ads and polls need affiliate or partner.
+- **“Connect Twitch” asks for TWITCH_CLIENT_ID:** step 19, then restart Vesper. A login Twitch refuses usually
+  means the app isn't a **Public** client: register a new one (the type can't be changed).
 - **Voice sounds wrong or starts late:** **Setup → Speaking voice**; the Health check's "Speaking voice" row
   times it on your PC.
 - **Colab "GPU not available" / disconnected:** try again later; finished models are already in Drive.

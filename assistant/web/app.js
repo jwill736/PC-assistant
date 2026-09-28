@@ -613,7 +613,7 @@ render.health = function health() {
       h('thead', {}, h('tr', {}, h('th', {}, 'Part'), h('th', {}, 'State'), h('th', {}, 'Last OK'), h('th', { class: 'r wide-only' }, 'Runs'),
         h('th', { class: 'r wide-only' }, 'Restarts'), h('th', {}, 'Last problem'))),
       h('tbody', {}, parts.map(x => h('tr', {},
-        h('td', {}, x.name), h('td', {}, status(...(PART_STATUS[x.state] || PART_STATUS.starting))),
+        h('td', { class: 'fit' }, x.name), h('td', {}, status(...(PART_STATUS[x.state] || PART_STATUS.starting))),
         h('td', {}, x.last_ok ? ago(x.last_ok) : '—'), h('td', { class: 'r wide-only' }, x.kind === 'poller' ? x.runs : '·'),
         h('td', { class: 'r wide-only' }, x.restarts || '·'), h('td', { class: 'muted', title: x.last_error || '' }, x.last_error || '—'))))));
   }
@@ -720,6 +720,47 @@ render.triggers = function triggers() {
             if (!m.needs_yes || confirm(`Run ${m.name}? It includes actions that normally need a yes.`)) post(`/api/macros/${encodeURIComponent(m.name)}/run`);
           } }, 'Run'))))))
         : empty('No macros yet. Add them under macros: in config.yaml (see config.example.yaml).'));
+  }
+};
+
+const TTS_ENGINES = [
+  ['supertonic', 'Supertonic', 'fast · 85 MB'],
+  ['kokoro', 'Kokoro', 'British voices · 320 MB · slower'],
+  ['pyttsx3', 'Windows', 'built-in, robotic'],
+  ['none', 'Off', 'replies on screen only'],
+];
+
+render.speech = function speech() {
+  const t = S.data.tts;
+  for (const p of panels('speech')) {
+    const b = body(p);
+    if (!t) { fill(b, empty('Loading…')); continue; }
+    const engine = t.engine;
+    meta(p, t.state === 'loading' ? `loading${t.progress != null && t.progress < 1 ? ` · ${Math.round(t.progress * 100)}%` : ''}` : (t.labels?.[engine] || engine));
+    const set = body => post('/api/tts', body).then(r => { if (r && r.ok === false) toast(r.error); else { S.data.tts = r; render.speech(); } });
+    const engines = h('span', { class: 'seg' }, TTS_ENGINES
+      .filter(([id]) => t.neural_available || !['supertonic', 'kokoro'].includes(id))
+      .map(([id, label, note]) => h('button', { 'aria-pressed': String(engine === id), title: note, onclick: () => set({ engine: id }) }, label)));
+    const voices = (t.voices || {})[engine];
+    const picker = voices ? h('select', { class: 'field', 'aria-label': 'Voice', onchange: e => set({ voice: e.target.value }) },
+      voices.map(v => h('option', { value: v.id, selected: v.id === t.voice }, v.label))) : null;
+    const speedOut = h('span', { class: 'muted' }, `${Number(t.speed || 1).toFixed(2)}×`);
+    const speed = voices ? h('input', { type: 'range', min: '0.8', max: '1.3', step: '0.05', value: String(t.speed || 1), 'aria-label': 'Speed',
+      oninput: e => { speedOut.textContent = `${Number(e.target.value).toFixed(2)}×`; },
+      onchange: e => set({ speed: Number(e.target.value) }) }) : null;
+    fill(b,
+      h('div', { class: 'kv' },
+        h('span', { class: 'k' }, 'Engine'), h('span', {}, engines),
+        voices ? h('span', { class: 'k' }, 'Voice') : null, picker,
+        voices ? h('span', { class: 'k' }, 'Speed') : null, voices ? h('span', { class: 'range-row' }, speed, speedOut) : null,
+        h('span', { class: 'k' }, 'First words after'),
+        h('span', {}, t.first_audio_ms != null ? `${t.first_audio_ms} ms` : '—', h('span', { class: 'muted' }, t.first_audio_ms != null ? ' · median of recent replies' : ' · measured on the next reply'))),
+      t.error ? h('div', { class: 'empty' }, status('warning', t.error)) : null,
+      !t.neural_available ? h('div', { class: 'empty' }, status('warning', 'Natural voices need the voice packages: run setup.bat again.')) : null,
+      h('div', { class: 'controls' },
+        h('button', { class: 'btn primary', disabled: engine === 'none' || t.state === 'loading', onclick: () => post('/api/tts/preview') }, 'Preview'),
+        t.state === 'loading' ? h('span', { class: 'muted' }, 'First use downloads the voice…') : null),
+      h('div', { class: 't2' }, 'Long replies start speaking after the first sentence. Say “stop” or press the talk hotkey to cut it off.'));
   }
 };
 
@@ -917,6 +958,7 @@ function onEvent(ev) {
     case 'pending': paintPending(data); break;
     case 'speak': speak(data); break;
     case 'speak_stop': if ('speechSynthesis' in window) speechSynthesis.cancel(); break;
+    case 'tts': S.data.tts = data; render.speech(); break;
     case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;

@@ -261,6 +261,7 @@ table.t th { text-align: left; color: var(--muted); font-weight: 500; font-size:
   padding: 6px 6px; border-bottom: 1px solid var(--line); }
 table.t td { padding: 6px 6px; border-bottom: 1px solid var(--grid); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
 table.t tr:last-child td { border-bottom: 0; }
+table.t td.fit { width: 1%; max-width: none; overflow: visible; }  /* sized to its content, never cut */
 table.t td.r, table.t th.r { text-align: right; font-variant-numeric: tabular-nums; }
 .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden; }
 .seg button { background: none; border: 0; padding: 3px 9px; font-size: 11px; cursor: pointer; color: var(--muted);
@@ -410,6 +411,14 @@ svg.strip { width: 100%; height: 46px; display: block; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
 .kv { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 6px 12px; font-size: 13px; margin: 8px 0 12px; }
 .kv .k { color: var(--muted); }
+select.field { background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px; max-width: 100%; justify-self: start; }
+.range-row { display: inline-flex; align-items: center; gap: 10px; }
+.range-row input[type=range] { width: 160px; max-width: 100%; accent-color: var(--accent); }
+.seg { max-width: 100%; flex-wrap: wrap; }
+@media (max-width: 760px) {  /* after the .kv rules so it wins: label above value on phones */
+  .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+  .kv .k { margin-top: 8px; }
+}
 table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visible; }
 @media (max-width: 600px) {
   /* Narrow screens: wrap cell text instead of truncating every name to "s…". */

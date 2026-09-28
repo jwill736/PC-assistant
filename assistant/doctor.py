@@ -185,7 +185,44 @@ def check_voice(cfg, test_mic: bool, load_model: bool) -> list[Check]:
                              "Set voice.stt_engine: parakeet (about 4x faster on CPU) or run --bench-voice.")
             return Check("Speech model", PASS, f"{label} loaded in {load_s:.1f}s · {ms:.0f} ms per second of audio")
         out.append(_guard("Speech model", model))
+        out.append(_guard("Speaking voice", lambda: check_tts(cfg, sd)))
     return out
+
+
+def check_tts(cfg, sd=None) -> Check:
+    """Which voice replies, and how long you wait before it starts talking."""
+    from .voice import neural
+    from .voice.tts import resolve_engine
+
+    tts = cfg["voice"]["tts"]
+    engine = resolve_engine(tts.get("engine", "auto"))
+    if engine not in neural.ENGINES:
+        if engine == "none":
+            return Check("Speaking voice", SKIP, "off (voice.tts.engine: none)")
+        label = {"pyttsx3": "Windows SAPI voice", "browser": "browser voice (needs the HUD open)"}[engine]
+        if not neural.available():
+            return Check("Speaking voice", WARN, f"{label} — the natural local voices aren't installed",
+                         "pip install -r requirements-voice.txt (sherpa-onnx), then pick a voice in Setup → Voice.")
+        return Check("Speaking voice", PASS, label)
+    if sd is not None:
+        try:
+            sd.query_devices(kind="output")
+        except Exception:
+            return Check("Speaking voice", FAIL, "no audio output device",
+                         "Plug in speakers or headphones, or set voice.tts.output_device.")
+    t0 = time.time()
+    voice = neural.load(engine, cfg.data_dir / "models", tts.get("voice") or None, float(tts.get("speed", 1.0)),
+                        int(tts.get("threads", 2)))
+    voice.warm_up()
+    load_s = time.time() - t0
+    t1 = time.perf_counter()
+    voice.synth("Switched to your gameplay scene.")
+    ms = (time.perf_counter() - t1) * 1000
+    detail = f"{neural.LABELS[engine]} · {voice.voice.label} · ready in {load_s:.1f}s · first words after {ms:.0f} ms"
+    if ms > 900:
+        return Check("Speaking voice", WARN, detail,
+                     "Replies will start late. Pick Supertonic in Setup → Voice (about 5x faster on CPU).")
+    return Check("Speaking voice", PASS, detail)
 
 
 def check_port(cfg) -> Check:

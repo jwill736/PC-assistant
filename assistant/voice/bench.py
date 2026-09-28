@@ -3,7 +3,7 @@
 Records ten short commands in your voice, then runs every installed engine
 over the same recordings and reports word errors, how often the wake word was
 caught, and time from end of speech to text. ``--apply`` saves the winner as
-``voice.stt_engine`` in data/calibration.yaml. Recordings stay in memory.
+``voice.stt_engine`` in data/settings.yaml. Recordings stay in memory.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from ..config import save_setting
 from . import calibrate as calib
 from . import stt
 from .listener import split_wake
@@ -124,14 +125,8 @@ def run(cfg, record: Callable, loaders: dict[str, Callable] | None = None, say: 
     out.mkdir(parents=True, exist_ok=True)
     (out / f"voice-{time.strftime('%Y%m%d-%H%M%S')}.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     if best and apply:
-        layer_path = Path(cfg.data_dir) / calib.CALIBRATION_FILE
-        import yaml
-
-        layer = yaml.safe_load(layer_path.read_text(encoding="utf-8")) if layer_path.exists() else {}
-        layer = layer or {}
-        layer.setdefault("voice", {})["stt_engine"] = best
-        calib.write_layer(layer, Path(cfg.data_dir))
-        say(f"Saved voice.stt_engine: {best} (data/calibration.yaml). Restart the assistant to use it.")
+        save_setting(cfg, "voice.stt_engine", best)
+        say(f"Saved voice.stt_engine: {best} (data/settings.yaml). Restart the assistant to use it.")
     elif best:
         say(f"Run again with --apply to switch to {stt.LABELS.get(best, best)}, or set voice.stt_engine: {best}.")
     return report

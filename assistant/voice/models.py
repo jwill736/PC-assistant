@@ -2,9 +2,10 @@
 
 Everything here runs on sherpa-onnx (onnxruntime inside, no PyTorch), which the
 voice profile already depends on: Silero VAD for "is someone talking",
-Parakeet/Moonshine for speech-to-text. Downloads are streamed to a ``.part``
-file and only renamed into place once complete, so a dropped connection never
-leaves a half-model that fails to load forever.
+Parakeet/Moonshine for speech-to-text, Supertonic/Kokoro for speaking.
+Downloads are streamed to a ``.part`` file and only renamed into place once
+complete, so a dropped connection never leaves a half-model that fails to load
+forever.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tarfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -20,6 +22,8 @@ log = logging.getLogger(__name__)
 
 RELEASES = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
 COMPLETE = ".complete"
+_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,10 @@ MODELS = {
                                 f"{RELEASES}/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2", 460),
     "moonshine": ModelFile("sherpa-onnx-moonshine-base-en-int8",
                            f"{RELEASES}/asr-models/sherpa-onnx-moonshine-base-en-int8.tar.bz2", 200),
+    # speech output (assistant/voice/neural.py)
+    "supertonic": ModelFile("sherpa-onnx-supertonic-tts-int8-2026-03-06",
+                            f"{RELEASES}/tts-models/sherpa-onnx-supertonic-tts-int8-2026-03-06.tar.bz2", 85),
+    "kokoro": ModelFile("kokoro-en-v0_19", f"{RELEASES}/tts-models/kokoro-en-v0_19.tar.bz2", 320),
 }
 
 
@@ -53,11 +61,23 @@ def is_ready(key: str, models_dir: Path) -> bool:
 
 
 def ensure(key: str, models_dir: Path, on_progress: Callable[[float], None] | None = None) -> Path:
-    """Path to the model, downloading and unpacking it first if needed."""
-    spec = MODELS[key]
+    """Path to the model, downloading and unpacking it first if needed.
+
+    One download per model at a time: the health check or a voice switch asking for a model
+    that's still downloading waits for it instead of writing the same ``.part`` file."""
     models_dir = Path(models_dir)
-    target = models_dir / spec.name
     if is_ready(key, models_dir):
+        return models_dir / MODELS[key].name
+    with _locks_guard:
+        lock = _locks.setdefault(f"{models_dir.resolve()}/{key}", threading.Lock())
+    with lock:
+        return _download(key, models_dir, on_progress)
+
+
+def _download(key: str, models_dir: Path, on_progress: Callable[[float], None] | None) -> Path:
+    spec = MODELS[key]
+    target = models_dir / spec.name
+    if is_ready(key, models_dir):  # someone else finished it while we waited
         return target
     import httpx
 

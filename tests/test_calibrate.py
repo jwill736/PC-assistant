@@ -219,3 +219,4 @@ def test_runtime_applies_calibration_live(tmp_path):
 
     assert rt.set_speaker_check("off") == {"ok": True, "mode": "off"}
     assert rt.set_speaker_check("nope")["ok"] is False
+    assert load_config(cfg.path)["voice"]["speaker_check"] == "off"  # the HUD choice survives a restart

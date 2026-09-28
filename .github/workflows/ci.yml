@@ -38,8 +38,9 @@ jobs:
         run: python -m pytest -v -rs
 
   speech-models:
-    # The default speech engine (Parakeet via sherpa-onnx) and Silero VAD on real
-    # audio, on Windows: guards against sherpa-onnx's reported empty-text bug there.
+    # The default speech engine (Parakeet via sherpa-onnx), Silero VAD and the local
+    # voices (Supertonic, Kokoro: spoken, then heard back) on real audio, on Windows:
+    # guards against sherpa-onnx's reported empty-text bug there.
     name: speech models (windows-latest, py3.12)
     runs-on: windows-latest
     steps:
@@ -54,8 +55,32 @@ jobs:
           path: tests/.models
           key: speech-models-${{ hashFiles('assistant/voice/models.py') }}
       - name: Install
-        run: python -m pip install -r requirements-dev.txt "sherpa-onnx>=1.12" "livekit-wakeword>=0.2"
+        run: python -m pip install -r requirements-dev.txt "sherpa-onnx>=1.13" "livekit-wakeword>=0.2"
       - name: Test
         env:
           ASSISTANT_MODEL_TESTS: "1"
         run: python -m pytest -v -rs tests/test_models_live.py
+
+  setup-script:
+    # The beginner path exactly as the setup guide runs it: double-click setup.bat,
+    # then check it built a working .venv with the voice packages and the config files.
+    name: setup.bat (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Pythons the launcher can see
+        shell: cmd
+        run: py -0p || echo no py launcher
+      - name: Run setup.bat
+        shell: cmd
+        run: setup.bat < NUL
+      - name: Check the result
+        shell: cmd
+        run: |
+          .venv\Scripts\python -c "import sys, assistant, sherpa_onnx, sounddevice, pynput, livekit.wakeword; print(sys.version)" || exit /b 1
+          if not exist config.yaml (echo config.yaml missing & exit /b 1)
+          if not exist .env (echo .env missing & exit /b 1)
+          .venv\Scripts\python -m assistant --help

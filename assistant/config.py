@@ -66,7 +66,10 @@ DEFAULTS: dict[str, Any] = {
         "wake_threshold": 0.5,
         "hard_triggers": {},     # {"clip_that": "save the replay"}: trained phrase -> command
         "barge_in": True,        # "stop" / the name interrupts a spoken reply
-        "tts": {"engine": "pyttsx3", "rate": 190, "voice_hint": ""},
+        # Speech output: auto (= supertonic) | supertonic | kokoro | pyttsx3 (Windows SAPI) | browser | none
+        "tts": {"engine": "auto", "voice": "", "speed": 1.0, "threads": 2, "output_device": None,
+                "stream": True,  # speak Claude's reply sentence by sentence as it streams in
+                "rate": 190, "voice_hint": ""},  # rate / voice_hint: pyttsx3 and browser only
     },
     "goals": {"north_star": "", "this_week": []},
     "profiles": {
@@ -178,6 +181,7 @@ class Config(dict):
 
 DISCOVERED_FILE = "config.discovered.yaml"
 CALIBRATION_FILE = "calibration.yaml"  # in data_dir, written by voice calibration
+SETTINGS_FILE = "settings.yaml"        # in data_dir, choices made in the HUD / --bench-voice --apply
 
 
 def _read_yaml(path: Path) -> dict:
@@ -187,6 +191,23 @@ def _read_yaml(path: Path) -> dict:
         return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError:
         return {}
+
+
+def save_setting(cfg: Config, dotted: str, value: Any) -> None:
+    """Remember a choice made in the HUD: data/settings.yaml, which wins over config.yaml."""
+    path = cfg.data_dir / SETTINGS_FILE
+    settings = _read_yaml(path)
+    node, target = settings, cfg
+    *parents, leaf = dotted.split(".")
+    for part in parents:
+        node = node.setdefault(part, {})
+        target = target.setdefault(part, {})
+    node[leaf] = value
+    target[leaf] = value
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("# Written by the assistant when you change a setting in the HUD. Delete a line to fall back\n"
+                   "# to config.yaml.\n" + yaml.safe_dump(settings, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
 
 
 def _union(*lists) -> list:
@@ -208,8 +229,13 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     # what the PC scan found, then what voice calibration measured.
     discovered = _read_yaml(root / DISCOVERED_FILE)
     data_dir = Path(user.get("data_dir") or DEFAULTS["data_dir"]).expanduser()
-    calibration = _read_yaml((data_dir if data_dir.is_absolute() else root / data_dir) / CALIBRATION_FILE)
-    merged = Config(deep_merge(deep_merge(deep_merge(DEFAULTS, discovered), calibration), user))
+    data_path = data_dir if data_dir.is_absolute() else root / data_dir
+    calibration = _read_yaml(data_path / CALIBRATION_FILE)
+    # Choices made in the HUD (voice, speaker check) or by --bench-voice --apply sit *above*
+    # config.yaml: they're newer than the file, and config.example.yaml spells most of them out.
+    settings = _read_yaml(data_path / SETTINGS_FILE)
+    merged = deep_merge(deep_merge(DEFAULTS, discovered), calibration)
+    merged = Config(deep_merge(deep_merge(merged, user), settings))
     merged.root = root
     merged.path = cfg_path
     # An app/site the user defines replaces the scanned one outright; blending a

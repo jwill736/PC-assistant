@@ -122,3 +122,5 @@ def test_wake_model_upload_and_delete(client, monkeypatch):
     assert c.delete("/api/wakewords/clip_that").json()["ok"] is True
     assert c.get("/api/voice").json()["wake_models"] == []
     assert c.delete("/api/wakewords/clip_that").json()["ok"] is False
+    r = c.post("/api/wakewords?name=vesper (1).onnx", content=blob).json()  # the browser's re-download name
+    assert r["ok"] and r["name"] == "vesper"

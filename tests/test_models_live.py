@@ -78,3 +78,24 @@ def test_wake_words_fire_only_on_their_own_phrase(models_dir):
         ww.reset()
         hits = [h for i in range(0, len(pcm) - 480, 480) for h in ww.feed(pcm[i:i + 480])]
         assert [name for name, _ in hits] == ([expected] if expected else []), (clip, hits)
+
+
+@pytest.mark.parametrize("engine,voice", [("supertonic", "m1"), ("kokoro", "bm_george")])
+def test_local_voice_says_words_parakeet_can_hear_back(models_dir, engine, voice):
+    """Round trip on Windows: the neural voice speaks, the recogniser must hear the same words."""
+    import time
+
+    from assistant.voice import neural, stt
+
+    v = neural.load(engine, models_dir, voice)
+    assert v.voice.id == voice
+    v.warm_up()
+    t0 = time.perf_counter()
+    audio = v.synth("Switched to the gameplay scene.")
+    ms = (time.perf_counter() - t0) * 1000
+    seconds = len(audio) / v.sample_rate
+    assert 0.8 < seconds < 6 and np.abs(audio).max() > 0.05, (seconds, float(np.abs(audio).max()))
+    at16k = np.interp(np.arange(0, len(audio), v.sample_rate / 16000), np.arange(len(audio)), audio).astype(np.float32)
+    text = stt.load({"stt_engine": "parakeet"}, models_dir).transcribe(at16k).lower()
+    print(f"{engine}/{voice}: first words after {ms:.0f} ms, {seconds:.1f} s of audio, heard back: {text!r}")
+    assert "gameplay" in text and "scene" in text, text

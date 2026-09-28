@@ -20,7 +20,7 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 
 | Area | What it does |
 |---|---|
-| Voice | Local speech-to-text (Whisper, on your PC), any wake word, follow-up window, push-to-talk hotkey (`Ctrl+Alt+J`), spoken replies. Ignores its own voice coming back through your speakers |
+| Voice | Local speech-to-text (Parakeet, on your PC), any wake word, follow-up window, push-to-talk hotkey (`Ctrl+Alt+J`). Replies in a natural local voice that starts about 0.2 s after the text is ready, speaks Claude's answer sentence by sentence as it arrives, and stops the instant you say "stop". Ignores its own voice coming back through your speakers |
 | Your voice only | A one-minute calibration sets the mic threshold for your room, learns how Whisper spells the name in your voice, and enrolls your voice. After that, other voices (Discord, stream audio, the TV) are ignored |
 | Trigger phrases | One phrase runs a whole sequence: "brb" switches to the BRB scene, mutes the mic and confirms. Define them in `config.yaml`, run them by voice, from the HUD, or let Claude pick one |
 | Always on | Runs silently in the system tray and starts when you sign in. A watchdog restarts any part that crashes or stalls, and everything is logged to `data/logs/` |
@@ -38,7 +38,9 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 
 ## Quick start (Windows)
 
-1. Install **Python 3.11+** from python.org (tick *Add to PATH*).
+1. Install **Python 3.12** from python.org, ideally [3.12.10](https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe),
+   the last 3.12 with a Windows installer (tick *Add python.exe to PATH*). Step by step, with every click:
+   the [setup guide](docs/SETUP.md).
 2. Double-click **`setup.bat`**. It creates `.venv`, installs everything, and copies
    `config.example.yaml` to `config.yaml` and `.env.example` to `.env`.
 3. Edit **`.env`**. Add `ANTHROPIC_API_KEY` for the Claude brain and your calendar links.
@@ -168,6 +170,10 @@ launch downloads the models (~100 MB, from the sherpa-onnx releases on GitHub); 
 
   Results go to `data/calibration.yaml`, which sits under `config.yaml` (your own settings still win),
   and take effect immediately. Re-run it after changing mics or rooms.
+- **Choices made in the HUD win over `config.yaml`.** The voice picker, the *Only answer me* switch and
+  `--bench-voice --apply` save to `data/settings.yaml`, which is merged on top of `config.yaml` (whose
+  example spells most of these settings out, so it would otherwise undo them on every restart). Delete a line
+  there to fall back to `config.yaml`.
 - **Only your voice.** After calibration, `voice.speaker_check: strict` ignores commands whose voice
   doesn't match yours (WeSpeaker ResNet34 through sherpa-onnx: a 26 MB model downloaded once, ~50 ms per
   command on CPU). `log` scores voices without blocking, which is useful for checking the threshold; `off` answers anyone.
@@ -182,10 +188,39 @@ launch downloads the models (~100 MB, from the sherpa-onnx releases on GitHub); 
   Headphones still work best.
 - **Follow-up without the name** only happens after a question or a "say yes" confirmation, so a false wake
   can't turn into a back-and-forth. Spoken replies are stripped of markdown, links and emoji.
-- `voice.tts.engine: browser` uses Edge/Chrome's natural voices (e.g. *Microsoft
-  Ryan Online (Natural)*). They sound far better than SAPI, but only speak while
-  the HUD is open.
 - Getting cut off mid-sentence? Raise `voice.endpoint_ms`. Triggering on TV or music? Raise `voice.vad_threshold` (0.6).
+
+### Speaking voice
+Replies are spoken by a local neural voice through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): no
+cloud, no API key, and it works offline. Pick one in **Setup → Speaking voice** (*Preview* plays a sample
+through your speakers) or set `voice.tts` in `config.yaml`. Measured on 2 CPU threads, from the reply text
+being ready until its first sound:
+
+| `voice.tts.engine` | first words after | download | voices | notes |
+|---|---|---|---|---|
+| `supertonic` (default via `auto`) | 140–220 ms | 85 MB | 10 (`m1`–`m5`, `f1`–`f5`) | MIT licence file in the model package; ~11× faster than real time |
+| `kokoro` | 410–1200 ms | 320 MB | 11, incl. British `bm_george`, `bm_lewis` | Apache-2.0; its int8 build was 2.5× *slower*, so the full model is used |
+| `pyttsx3` | instant | none | Windows SAPI voices | robotic; the fallback when the voice packages aren't installed |
+| `browser` | — | none | Edge/Chrome natural voices | only speaks while the HUD is open |
+
+How it stays fast and interruptible:
+
+- **Sentence streaming.** Claude's reply is streamed, and each sentence is spoken as soon as it's complete,
+  so a long answer starts talking after its first sentence instead of after its last. Text Claude writes before
+  a tool call ("Checking your calendar.") is spoken while the tool runs. `voice.tts.stream: false` waits for the
+  whole reply.
+- **Pipelined playback.** Each sentence plays while the next one is synthesised, and the audio device stays
+  open between sentences.
+- **Stops within ~10 ms.** "stop" (or the name, or the push-to-talk hotkey) fades the audio out over 10 ms
+  instead of clicking, and silences the rest of that reply, including sentences Claude hasn't finished sending.
+- **Turns.** Each voice command starts a new turn; if you move on before a reply finishes, the rest of it is
+  dropped rather than spoken late. Commands now run off the mic thread, so it keeps listening (for "stop",
+  for the next command) while Claude thinks.
+- Initialisms are spelled out ("BRB" → "B R B", "91%" → "91 percent"). Other voice settings: `voice.tts.speed` (0.6–1.6),
+  `voice.tts.output_device`, `voice.tts.threads` (2). The health check times the chosen voice.
+
+The Windows CI job speaks a sentence with both local voices and checks that Parakeet hears the same words back.
+Nobody has listened to them on your speakers yet, so judge them by ear with *Preview*.
 
 ### Profiles: work vs stream
 `profiles.<name>.apps` and `title_keywords` decide how each minute gets
@@ -215,7 +250,7 @@ What each model does, by file name:
 The detector streams its features (≈1.3 ms of CPU per 80 ms of audio), so it costs about 2% of one core.
 
 **Talking over a reply (barge-in):** while it speaks, the mic stays on. Say "stop" / "cancel" / "never mind",
-or the name plus a new command, and it stops mid-sentence (SAPI and browser voices; pyttsx3 can't be cut off).
+or the name plus a new command, and it stops mid-sentence (local, SAPI and browser voices; only plain pyttsx3 can't be cut off).
 With a voice profile enrolled, the speaker check ignores the assistant's own voice coming out of your
 speakers; without one, a "stop" that's part of the reply itself is ignored. `voice.barge_in: false` turns it off.
 
@@ -270,7 +305,7 @@ watchdog: restarts any poller or service that crashes or stops reporting in ─�
 
 - `assistant/brain/`: `router.py` (fast path), `macros.py` (trigger phrases), `tools.py` (every action, used by both paths), `assistant.py` (Claude loop, confirmations), `briefing.py`
 - `assistant/integrations/`: `desktop`, `browser`, `system`, `obs`, `twitch`, `calendars`, `news`, `projects`, `activity`, `jobs`
-- `assistant/voice/`: `listener.py` (mic, VAD, Whisper, wake word, echo guard), `speaker_id.py` (voice profile + check), `calibrate.py` (the wizard), `tts.py`, `hotkey.py`
+- `assistant/voice/`: `listener.py` (mic, VAD, speech-to-text, wake word, echo guard), `stt.py`, `vad.py`, `wakeword.py`, `speaker_id.py` (voice profile + check), `calibrate.py` (the wizard), `neural.py` (local voices, sentence splitter, interruptible audio out), `tts.py` (turns, engines, fallbacks), `hotkey.py`
 - `assistant/watchdog.py` (supervisor + log file), `assistant/tray.py` (tray icon), `assistant/discovery.py` + `doctor.py` (PC scan and health check)
 - `assistant/web/`: the HUD (plain HTML, CSS and JS; no build step). Light and dark themes (follows Windows, or the ◐ button). Jost and Inter are bundled under the SIL Open Font License, so it looks the same offline
 - Data lives in `data/assistant.db` (SQLite): activity, tasks, notes, conversation, jobs
@@ -289,7 +324,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 196 tests, 5 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan and tray-icon APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, and runs the wake-word runtime on real recordings (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). The suite covers the router, wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 226 tests, 5 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan and tray-icon APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another runs `setup.bat` exactly as a new user would and checks the result. The suite covers the router, wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the
@@ -305,6 +340,9 @@ health check, and the API's token and Host checks.
 - **Chrome tabs are opened, not read.** Listing and switching existing tabs needs
   Chrome's remote-debugging port or a small extension.
 - **Streaming platform:** Twitch stats are built in; YouTube Live and Kick aren't yet.
+- **No echo cancellation yet.** On speakers (not headphones), barge-in relies on the echo guard and the voice
+  check to ignore the assistant's own voice. Real acoustic echo cancellation (WebRTC AEC3 against the speaker
+  output) is the next voice step.
 - **Until you train the name on Colab,** the wake word is matched on the transcript, so every utterance is
   transcribed (cheap: ~60 ms) and saying the name to chat can wake it. The notebook's models are trained on
   synthetic voices only; if one misses you, lower its threshold or retrain with `QUALITY = "best"`.

@@ -123,7 +123,7 @@ class LocalLLM:
             calls = [_call(c.get("id"), (c.get("function") or {}).get("name"), (c.get("function") or {}).get("arguments"))
                      for c in msg.get("tool_calls") or []]
             return _finish(msg.get("content") or "", calls, bool(tools))
-        text, parts = [], {}
+        text, parts, emitted = [], {}, 0
         with self.http.stream("POST", endpoint, json=body) as r:
             r.raise_for_status()
             for line in r.iter_lines():
@@ -140,8 +140,10 @@ class LocalLLM:
                     continue
                 if delta.get("content"):
                     text.append(delta["content"])
-                    if not _looks_like_json_call("".join(text)):
-                        on_text(delta["content"])
+                    so_far = "".join(text)
+                    if not _looks_like_json_call(so_far):  # hold text back only while it could be a JSON tool call
+                        on_text(so_far[emitted:])
+                        emitted = len(so_far)
                 for tc in delta.get("tool_calls") or []:
                     p = parts.setdefault(tc.get("index", 0), {"id": None, "name": "", "args": ""})
                     p["id"] = tc.get("id") or p["id"]
@@ -162,7 +164,14 @@ def _call(call_id, name, arguments) -> dict:
 
 
 def _looks_like_json_call(text: str) -> bool:
-    return text.lstrip().startswith(("{", "[", "<tool_call>", "```"))
+    """A tool call written as text starts with {, [{, <tool_call> or a code fence. A lone "[" is undecided."""
+    s = text.lstrip()
+    if s.startswith(("{", "<tool_call>", "```")):
+        return True
+    if s.startswith("["):
+        rest = s[1:].lstrip()
+        return not rest or rest.startswith("{")
+    return not s  # nothing but whitespace yet
 
 
 def _finish(content: str, calls: list[dict], tools_offered: bool) -> dict:

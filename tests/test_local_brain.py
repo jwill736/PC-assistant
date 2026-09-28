@@ -126,6 +126,9 @@ def test_open_question_goes_to_the_local_model_which_uses_tools(svc):
     assert out == {**out, "reply": "Added it to your list.", "kind": "local"}
     assert [t["title"] for t in svc.storage.list_tasks()] == ["buy a mic arm"]
     first, second = fake.bodies
+    assert first["messages"][-1] == {"role": "user", "content": "I really need to remember to get a mic arm this week, "
+                                                                 "can you put that somewhere"}  # context lives in the system message
+    assert "Right now: " in first["messages"][0]["content"] and "active window" in first["messages"][0]["content"]
     names = {t["function"]["name"] for t in first["tools"]}
     assert {"add_task", "recall", "calendar"} <= names and "close_app" in names and "twitch_chat_recent" not in names
     assert first["messages"][0]["role"] == "system" and "exact names" in first["messages"][0]["content"]
@@ -295,3 +298,21 @@ def test_brain_panel_endpoints(cfg, svc):
         assert t["ok"] and t["reply"] == "ready" and t["ms"] >= 0
         assert c.post("/api/brain", json={"provider": "gpt"}, headers=h).json()["ok"] is False
     rt._commands.shutdown()
+
+
+def test_a_repeated_context_line_is_never_said(svc):
+    """llama3.2:3b on the CI run answered "[Monday September 28 2026, 01:18 AM | active window: unknown | profile: work]
+    Task added: Buy a new mic arm." That first line would have been spoken."""
+    echo = "[Monday September 28 2026, 01:18 AM | active window: unknown | profile: work]\nTask added: Buy a new mic arm."
+    fake = FakeOllama(script=[{"role": "assistant", "content": echo}])
+    a = local_assistant(svc, fake)
+    assert a.handle("please sort out the mic arm thing")["reply"] == "Task added: Buy a new mic arm."
+    said = []
+    a._speak_sentence = lambda s, final: said.append(s)
+    a._stream_on = True
+    sse = "".join(f"data: {json.dumps({'choices': [{'delta': {'content': c}}]})}\n\n"
+                  for c in ["[Monday 01:18 AM | active window: unknown | profile: work] ", "Done. ", "It's on your list."]) + "data: [DONE]\n\n"
+    a.local.llm.http = http(FakeOllama(script=[sse]))
+    a._ask_local("and the other thing")
+    assert said and not any("active window" in s for s in said)
+

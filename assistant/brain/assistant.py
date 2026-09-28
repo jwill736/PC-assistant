@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -55,6 +56,8 @@ Profiles: {profiles}."""
 LOCAL_ADDENDUM = """
 Tools: call one only when the request needs it, using the exact names given; otherwise just answer. After a tool
 returns, answer in one or two short spoken sentences from its result. Never make up a tool result."""
+# Small models sometimes repeat the bracketed context line back ("[Monday … | active window: …]"): never say it.
+CONTEXT_ECHO = re.compile(r"^\s*\[[^\]]*(?:active window|profile:)[^\]]*\]\s*")
 OFFLINE = ("I can't answer that one without a model. Start Ollama or LM Studio with a Llama model, "
            "or add ANTHROPIC_API_KEY to the .env file.")
 
@@ -535,10 +538,17 @@ class Assistant:
         if idle or len(self.local_history) > 4 * self.cfg.get("history_turns", 12):
             self.local_history = []
         self.last_turn = time.time()
-        messages = [{"role": "system", "content": self.system_prompt + LOCAL_ADDENDUM}, *self.local_history,
-                    {"role": "user", "content": f"{self._context_line()}\n{text}"}]
+        # The context line goes in the system message, not the user turn: a 3B model put in the user turn
+        # repeated it as the first line of its answer (found by the CI run against llama3.2:3b).
+        system = f"{self.system_prompt}{LOCAL_ADDENDUM}\nRight now: {self._context_line().strip('[]')}"
+        messages = [{"role": "system", "content": system}, *self.local_history, {"role": "user", "content": text}]
         tools = self._local_tools()
-        sentences = neural.SentenceStream(self._speak_sentence) if self._stream_on else None
+
+        def speak(sentence: str, final: bool) -> None:
+            clean = CONTEXT_ECHO.sub("", sentence)
+            if clean.strip():
+                self._speak_sentence(clean, final)
+        sentences = neural.SentenceStream(speak) if self._stream_on else None
         reply = ""
         try:
             for _ in range(6):
@@ -548,7 +558,7 @@ class Assistant:
                 if self.tools.guard.hands_off:
                     raise _Stopped
                 if not out["tool_calls"]:
-                    reply = out["content"]
+                    reply = CONTEXT_ECHO.sub("", out["content"])
                     if sentences:
                         sentences.flush(final=True)
                     messages.append({"role": "assistant", "content": reply})
@@ -585,7 +595,7 @@ class Assistant:
             self._streamed = False
             log.error("local model error %s: %s", exc.response.status_code, exc.response.text[:300])
             return f"{llm.label} returned an error, status {exc.response.status_code}."
-        self.local_history = messages[1:]  # the whole turn, tool calls and results included
+        self.local_history = [m for m in messages[1:]]  # the whole turn, tool calls and results included
         return reply.strip() or "Done."
 
     def _local_briefing(self, prompt: str) -> dict | None:

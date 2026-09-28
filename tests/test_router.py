@@ -62,6 +62,13 @@ def test_routes(text, kind, tool, args):
     assert (intent.kind, intent.tool, intent.args) == (kind, tool, args)
 
 
+def test_add_task_survives_speech_to_text_mishearing_add():
+    for heard in ("Ad A Task to Record The Twitch set up video", "at a task to record the Twitch set up video",
+                  "Ada task to record the Twitch set up video."):
+        intent = route(heard)
+        assert intent.tool == "add_task" and intent.args["title"].lower() == "record the twitch set up video", heard
+
+
 @pytest.mark.parametrize("text", [
     "write me a haiku about OBS",
     "how many hours did I spend on Discord this week compared to last",

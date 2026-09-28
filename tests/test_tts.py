@@ -358,3 +358,20 @@ def test_doctor_reports_the_speaking_voice(cfg, monkeypatch):
     cfg["voice"]["tts"]["engine"] = "kokoro"
     c = doctor.check_tts(cfg)
     assert c.status == doctor.WARN and "George" in c.detail and "Supertonic" in c.fix
+
+
+def test_synthesized_speech_loses_its_padding():
+    """Supertonic put ~0.9 s of silence before "Noted.": the quickest replies started the latest."""
+    import numpy as np
+
+    from assistant.voice.neural import trim_silence
+
+    sr = 1000
+    speech = np.concatenate([np.zeros(930), np.full(400, 0.3), np.zeros(600)]).astype(np.float32)
+    out = trim_silence(speech, sr)
+    assert len(out) == 120 + 400 + 150 and out[120] == np.float32(0.3)
+    normal = np.concatenate([np.zeros(60), np.full(400, 0.3), np.zeros(100)]).astype(np.float32)
+    assert len(trim_silence(normal, sr)) == len(normal)  # a normal 60 ms lead-in is left alone
+    quiet = np.zeros(500, dtype=np.float32)
+    assert trim_silence(quiet, sr) is quiet  # nothing loud: leave it alone
+

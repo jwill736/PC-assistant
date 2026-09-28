@@ -56,8 +56,8 @@ def register_hotkey(combo: str | None, callback: Callable[[], None]) -> bool:
         _listener.daemon = True
         _listener.start()
         return True
-    except ImportError:
-        pass
+    except ImportError as exc:  # not installed, or no desktop to hook (a headless Linux box)
+        why = f"pynput: {exc}"
     except Exception as exc:
         log.warning("hotkey %s unavailable: %s", combo, exc)
         return False
@@ -67,5 +67,5 @@ def register_hotkey(combo: str | None, callback: Callable[[], None]) -> bool:
         keyboard.add_hotkey(combo, callback, suppress=False)
         return True
     except Exception as exc:  # ImportError, or needs root on Linux
-        log.warning("hotkey %s unavailable: %s", combo, exc)
+        log.warning("hotkey %s unavailable (%s; keyboard: %s)", combo, why, exc)
         return False

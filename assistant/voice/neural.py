@@ -186,7 +186,7 @@ class NeuralVoice:
 
         with self._lock:
             audio = self._tts.generate(speakable(text), sid=self.voice.sid, speed=self.speed)
-        return np.asarray(audio.samples, dtype=np.float32)
+        return trim_silence(np.asarray(audio.samples, dtype=np.float32), self.sample_rate)
 
     def warm_up(self) -> float:
         """The first synthesis is several times slower than the rest; pay it at startup."""
@@ -194,6 +194,21 @@ class NeuralVoice:
         for text in ("Ready.", "Okay, that's done."):
             self.synth(text)
         return time.perf_counter() - t0
+
+
+def trim_silence(samples, sample_rate: int, keep_lead_ms: int = 120, keep_tail_ms: int = 150, floor: float = 0.01):
+    """Cap the model's padding. Supertonic puts ~0.9 s of silence before one-word replies ("Noted."),
+    so the quickest answers started the latest. Normal sentences carry 45-80 ms and are left as they
+    are: the cap never goes below that, so no reply starts closer to its first word than usual (some
+    audio devices swallow the first few hundred ms after silence)."""
+    import numpy as np
+
+    loud = np.flatnonzero(np.abs(samples) > floor)
+    if not len(loud):
+        return samples
+    start = max(0, loud[0] - int(sample_rate * keep_lead_ms / 1000))
+    end = min(len(samples), loud[-1] + 1 + int(sample_rate * keep_tail_ms / 1000))
+    return samples[start:end]
 
 
 def load(engine: str, models_dir: Path, voice_id: str | None = None, speed: float = 1.0, threads: int = 2,

@@ -83,4 +83,9 @@ def test_calendar_link_not_set_yet(monkeypatch):
     monkeypatch.delenv("CAL_TEST_ICS", raising=False)
     h = CalendarHub([{"name": "Work", "url_env": "CAL_TEST_ICS", "profile": "work"}], "America/New_York")
     h.refresh(force=True)
-    assert h.status()[0]["error"] == "CAL_TEST_ICS is not set"
+    st = h.status()[0]  # not connected yet is not an error: a new install shouldn't open on a wall of red
+    assert st["missing"] == "CAL_TEST_ICS" and st["error"] is None and st["ok"] is False
+    monkeypatch.setenv("CAL_TEST_ICS", "/nope/cal.ics")
+    h.refresh(force=True)
+    st = h.status()[0]  # a link that doesn't work is
+    assert st["missing"] is None and st["error"].startswith("FileNotFoundError")

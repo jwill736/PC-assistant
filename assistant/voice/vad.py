@@ -26,8 +26,12 @@ class SileroSegmenter:
 
     kind = "silero"
 
-    def __init__(self, model_path: Path, threshold: float = 0.6, endpoint_ms: int = 400, min_speech_ms: int = 250,
-                 max_utterance_s: float = 15, preroll_ms: int = 300, vad=None):
+    # Measured on the first live run (spoken commands through a virtual mic): at 250 ms / 300 ms the detector
+    # dropped a leading "Vesper," before a pause and clipped "Stop" into "Start" (5/10 transcripts exact);
+    # at 150 ms / 600 ms all 10 were exact, human recordings were as good or better, and clicks, beeps and
+    # white noise still produced no segments.
+    def __init__(self, model_path: Path, threshold: float = 0.6, endpoint_ms: int = 400, min_speech_ms: int = 150,
+                 max_utterance_s: float = 15, preroll_ms: int = 600, vad=None):
         import numpy as np
 
         self._np = np
@@ -65,16 +69,18 @@ class SileroSegmenter:
             self._buf = self._buf[drop:]
             self._buf_start += drop
         self.vad.accept_waveform(frame.astype(np.float32) / 32768.0)
-        out = None
-        while not self.vad.empty():
+        first = last = None
+        while not self.vad.empty():  # two segments can finish in one frame: keep both, as one utterance
             seg = self.vad.front
             start, n = int(seg.start), len(seg.samples)
             self.vad.pop()
-            a = max(start - self.preroll, self._buf_start) - self._buf_start
-            b = min(start + n, self._fed) - self._buf_start
-            if b > a:
-                out = [self._buf[a:b].copy()]  # keep the latest if two finish in one frame
-        return out
+            first = start if first is None else min(first, start)
+            last = start + n if last is None else max(last, start + n)
+        if first is None:
+            return None
+        a = max(first - self.preroll, self._buf_start) - self._buf_start
+        b = min(last, self._fed) - self._buf_start
+        return [self._buf[a:b].copy()] if b > a else None
 
 
 def make_segmenter(cfg: dict, models_dir: Path, on_progress=None):
@@ -89,6 +95,7 @@ def make_segmenter(cfg: dict, models_dir: Path, on_progress=None):
     try:
         path = models.ensure("silero-vad", models_dir, on_progress)
         return SileroSegmenter(path, threshold=cfg.get("vad_threshold", 0.6), endpoint_ms=cfg.get("endpoint_ms", 400),
+                               min_speech_ms=cfg.get("vad_min_speech_ms", 150), preroll_ms=cfg.get("vad_preroll_ms", 600),
                                max_utterance_s=cfg.get("max_utterance_s", 15))
     except Exception as exc:
         if choice == "silero":

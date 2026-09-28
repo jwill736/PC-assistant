@@ -404,9 +404,13 @@ const render = {
       const cals = cal.calendars.filter(c => !profile || c.profile === profile);
       meta(p, `${events.filter(e => !e.all_day).length} events`);
       const legend = cals.length > 1 ? h('div', { class: 'legend' }, cals.map(c => h('span', { class: 'key' },
-        h('span', { class: 'sw', style: { background: c.color, borderRadius: '50%' } }), c.name, c.error ? status('critical', 'error') : null))) : null;
+        h('span', { class: 'sw', style: { background: c.color, borderRadius: '50%' } }), c.name,
+        c.error ? status('critical', 'error') : c.missing ? status('idle', 'not set up') : null))) : null;
       const errs = cals.filter(c => c.error).map(c => h('div', { class: 'empty' }, status('critical', `${c.name}: ${c.error}`)));
-      fill(b, h('div', { class: 'agenda' }, items), legend, ...errs);
+      const missing = cals.filter(c => c.missing && !c.error);
+      const hint = missing.length ? empty(`Not connected yet: paste each calendar's private iCal link into .env as `,
+        missing.map(c => c.missing).join(', ')) : null;
+      fill(b, h('div', { class: 'agenda' }, items), legend, ...errs, hint);
     }
   },
 

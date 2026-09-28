@@ -275,7 +275,7 @@ class AudioOut:
         return True
 
     def maybe_close(self) -> None:
-        if self._stream is not None and not self.playing and time.monotonic() - self._last_active > self.idle_close_s:
+        if self._stream is not None and not self.playing and time.monotonic() - self._last_active >= self.idle_close_s:
             self.close()
 
     def close(self) -> None:

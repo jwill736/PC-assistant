@@ -96,7 +96,9 @@ def test_abort_fades_out_within_ten_ms_instead_of_clicking():
     assert not buf[10:].any() and not out.playing
 
 
-def test_idle_stream_is_closed_and_reopened():
+def test_idle_stream_is_closed_and_reopened(monkeypatch):
+    # Windows' monotonic clock ticks every ~15.6 ms, so "idle for 0 s" can read exactly 0.0: pin it there.
+    monkeypatch.setattr(neural.time, "monotonic", lambda: 100.0)
     out, streams = audio_out(idle_close_s=0)
     out.play(np.ones(10, np.float32))
     streams[0].pull()

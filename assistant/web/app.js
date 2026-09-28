@@ -649,7 +649,7 @@ const render = {
       fill(b, 
         h('div', { class: 'brief-head' }, br.headline || ''),
         h('div', { class: 'muted', style: { fontSize: '12px', marginTop: '-6px', marginBottom: '10px' } },
-          `${br.kind === 'recap' ? 'End-of-day recap' : 'Morning briefing'} · ${ago(br.created)} · ${br.generated_by === 'claude' ? 'planned by Claude' : 'local summary (add an API key for a real plan)'}`),
+          `${br.kind === 'recap' ? 'End-of-day recap' : 'Morning briefing'} · ${ago(br.created)} · ${br.generated_by === 'claude' ? 'planned by Claude' : br.generated_by === 'local' ? `planned by ${br.model || 'your local model'}` : 'built-in summary (connect an AI model for a real plan)'}`),
         br.top_moves?.length ? h('div', { class: 'moves' }, br.top_moves.map(m => h('div', { class: 'move' }, h('div', {},
           h('div', { style: { fontWeight: 600 } }, m.move), h('div', { class: 'w' }, [m.when, m.why].filter(Boolean).join(' · ')))))) : null,
         h('div', { class: 'sections' }, (br.sections || []).map(sec => h('div', {}, h('div', { class: 'sub-h' }, sec.title),
@@ -1056,7 +1056,10 @@ function paintOrb() {
   let txt = orbState.speaking ? 'Speaking…' : orbState.thinking ? 'Thinking…' : labels[orbState.voice] || orbState.voice;
   if (orbState.voice === 'loading' && S.data.voice?.detail) txt = S.data.voice.detail;  // first-run model download
   if ((orbState.voice === 'error' || orbState.voice === 'unavailable') && S.data.voice?.error) txt = S.data.voice.error;
-  txt += a.claude ? ` · Claude ${a.model}` : ' · local mode (no API key)';
+  const brain = a.brain || {};
+  txt += brain.active === 'claude' ? ` · Claude ${a.model}`
+    : brain.active === 'local' ? ` · ${brain.local.model} on ${brain.local.server}`
+    : ' · no AI model (built-in commands only)';
   $('#voice-status').textContent = txt;
   $('#voice-status').title = txt;
 }

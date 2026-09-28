@@ -247,6 +247,13 @@ class ToolBox:
                  tier=1),
             Tool("complete_task", "Mark a task done by id or by (fuzzy) title.",
                  obj({"id": {"type": "integer"}, "title": {"type": "string"}}), self._complete_task, tier=1),
+            Tool("connections", "What's connected and what still needs setting up: the AI model in use, OBS, Twitch, "
+                                "calendars, voice, and so on, each with the next step.",
+                 obj(), lambda: s.connections() if s.connections else {"findings": [], "brain": None}),
+            Tool("recall", "Search what the user told you before: their notes, tasks and past conversations. Use it for "
+                           "'what did I say about…', 'do you remember…', and before answering questions about their own "
+                           "plans, preferences or decisions. Empty query = latest notes.",
+                 obj({"query": {"type": "string"}, "limit": {"type": "integer"}}), self._recall),
             Tool("remember", "Save a note the user wants remembered; notes feed future briefings.",
                  obj({"text": {"type": "string"}}, ["text"]), lambda text: {"ok": True, "note": s.storage.add_note(text)},
                  tier=1),
@@ -272,6 +279,15 @@ class ToolBox:
         if st.get("connected") and self.svc.stream_health:
             st["health"] = self.svc.stream_health()
         return st
+
+    def _recall(self, query: str = "", limit: int = 6) -> dict:
+        import time as _t
+        from datetime import datetime as _dt
+
+        hits = self.svc.storage.search_memory(query, max(1, min(int(limit or 6), 20)), before=_t.time() - 2)
+        for h in hits:
+            h["when"] = _dt.fromtimestamp(h["ts"], self.svc.tz).strftime("%a %b %d, %I:%M %p").replace(" 0", " ")
+        return {"ok": True, "query": query, "hits": hits}
 
     def _twitch_login(self, spoken: str) -> str:
         feed = self.svc.twitch_feed

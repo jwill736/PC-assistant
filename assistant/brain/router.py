@@ -273,6 +273,17 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "complete_task", {"title": m.group(1)})
     if re.search(r"^(?:what are|list|show|read) (?:my )?(?:tasks|to-?dos|to do list)$|^my (?:tasks|to-?dos)$", t):
         return Intent("tool", "list_tasks")
+    m = re.search(r"^(?:what did i (?:say|tell you|note|write down|decide|plan) (?:about|on|for|regarding) |"
+                  r"do you remember (?:anything about |what i said about |when |what |the )?|"
+                  r"what do (?:i|you) know about |search (?:my )?(?:notes|memory) for |"
+                  r"what (?:were|are) my notes (?:on|about) )(.+)$", t)
+    if m:
+        return Intent("tool", "recall", {"query": m.group(1)})
+    if re.search(r"^(?:what'?s|what is) (?:connected|set up|hooked up)$|^(?:connection|setup) status$"
+                 r"|^what (?:do|does) (?:i|vesper|it) (?:still )?need(?: to set up| to connect)?$|^what'?s missing$", t):
+        return Intent("tool", "connections")
+    if re.search(r"^(?:what are|read|show) (?:me )?my (?:notes|latest notes)$|^what did i (?:note|write down)(?: today)?$", t):
+        return Intent("tool", "recall", {"query": ""})
     m = re.search(r"^(?:remember|note|make a note)(?: that)? (.+)$", t)
     if m:
         return Intent("tool", "remember", {"text": _restore_case(text, m.group(1))})

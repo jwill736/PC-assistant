@@ -59,6 +59,24 @@ CREATE TABLE IF NOT EXISTS jobs (
 """
 
 
+# The second brain's index: everything you told it (notes, tasks, the conversation), searchable by word.
+# Triggers keep it in step with the tables, so nothing has to remember to index.
+MEMORY_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS memory USING fts5(kind UNINDEXED, ref UNINDEXED, ts UNINDEXED, text,
+                                                     tokenize='porter unicode61');
+CREATE TRIGGER IF NOT EXISTS memory_note AFTER INSERT ON notes BEGIN
+    INSERT INTO memory(kind, ref, ts, text) VALUES ('note', new.id, new.created, new.text); END;
+CREATE TRIGGER IF NOT EXISTS memory_task AFTER INSERT ON tasks BEGIN
+    INSERT INTO memory(kind, ref, ts, text) VALUES ('task', new.id, new.created, new.title); END;
+CREATE TRIGGER IF NOT EXISTS memory_log AFTER INSERT ON log BEGIN
+    INSERT INTO memory(kind, ref, ts, text)
+    VALUES (CASE new.role WHEN 'user' THEN 'said' ELSE 'replied' END, new.id, new.ts, new.text); END;
+"""
+STOPWORDS = frozenset("""a about am an and any anything are as at be did do does for from have how i i'd i'm in is it
+    its me my note notes of on or our remember said say says tell that the this to told us was we were what when where
+    which who why with you your know knew""".split())
+
+
 class Storage:
     """Thread-safe wrapper; every integration thread shares one connection."""
 
@@ -73,7 +91,51 @@ class Storage:
             self._db.execute(
                 "UPDATE jobs SET status='interrupted' WHERE status IN ('queued','running')"
             )
+            self.fts = self._init_memory()
             self._db.commit()
+
+    def _init_memory(self) -> bool:
+        """FTS5 ships with Python's SQLite on Windows, macOS and Linux; without it, search falls back to LIKE."""
+        try:
+            fresh = not self._db.execute("SELECT 1 FROM sqlite_master WHERE name='memory'").fetchone()
+            self._db.executescript(MEMORY_SCHEMA)
+        except sqlite3.OperationalError:
+            return False
+        if fresh:  # index what an older install already has
+            self._db.executescript("""
+                INSERT INTO memory(kind, ref, ts, text) SELECT 'note', id, created, text FROM notes;
+                INSERT INTO memory(kind, ref, ts, text) SELECT 'task', id, created, title FROM tasks;
+                INSERT INTO memory(kind, ref, ts, text)
+                    SELECT CASE role WHEN 'user' THEN 'said' ELSE 'replied' END, id, ts, text FROM log;""")
+        return True
+
+    # ---- memory (the second brain) --------------------------------------
+    def search_memory(self, query: str, limit: int = 8, before: float | None = None) -> list[dict]:
+        """Best matches for the words in ``query``: notes first, then tasks, then conversation.
+        ``before`` hides rows newer than that (the question being asked right now is logged too)."""
+        terms = [w for w in _words(query) if w not in STOPWORDS]
+        terms += [v for t in terms for v in _spellings(t) if v not in terms]  # colour / color
+        before = before if before is not None else time.time() + 1
+        if not terms:  # "what are my notes": the latest ones
+            return self.query("SELECT 'note' AS kind, id AS ref, created AS ts, text FROM notes WHERE created < ? "
+                              "ORDER BY created DESC LIMIT ?", (before, limit))
+        if self.fts:
+            match = " OR ".join(f'"{t}"*' if len(t) > 3 else f'"{t}"' for t in terms)
+            try:
+                return self.query(
+                    "SELECT kind, ref, ts, text FROM memory WHERE memory MATCH ? AND ts < ? "
+                    "ORDER BY bm25(memory) * CASE kind WHEN 'note' THEN 2.0 WHEN 'task' THEN 1.5 "
+                    "WHEN 'said' THEN 1.2 ELSE 1.0 END, ts DESC LIMIT ?", (match, before, limit))
+            except sqlite3.OperationalError:
+                pass
+        like = " OR ".join(["text LIKE ?"] * len(terms))
+        args = tuple(f"%{t}%" for t in terms)
+        return self.query(
+            f"SELECT * FROM (SELECT 'note' AS kind, id AS ref, created AS ts, text FROM notes WHERE {like} "
+            f"UNION ALL SELECT 'task', id, created, title FROM tasks WHERE {like.replace('text', 'title')} "
+            f"UNION ALL SELECT CASE role WHEN 'user' THEN 'said' ELSE 'replied' END, id, ts, text FROM log WHERE {like}) "
+            "WHERE ts < ? ORDER BY CASE kind WHEN 'note' THEN 0 WHEN 'task' THEN 1 ELSE 2 END, ts DESC LIMIT ?",
+            args * 3 + (before, limit))
 
     def execute(self, sql: str, params: tuple | dict = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -171,3 +233,22 @@ class Storage:
 
 def dumps(obj: Any) -> str:
     return json.dumps(obj, default=str, ensure_ascii=False)
+
+
+def _words(text: str) -> list[str]:
+    import re
+
+    return [w for w in re.findall(r"[a-z0-9']+", (text or "").lower()) if len(w) > 1]
+
+
+def _spellings(word: str) -> list[str]:
+    """US/UK variants, so "colors" finds "colours" (the index can't know they're the same word)."""
+    out = []
+    if "our" in word:
+        out.append(word.replace("our", "or"))
+    elif word.endswith(("or", "ors")) and len(word) > 4:
+        out.append(word[:word.rindex("or")] + "our" + word[word.rindex("or") + 2:])
+    if word.endswith("re") and len(word) > 4:
+        out.append(word[:-2] + "er")
+    return out
+

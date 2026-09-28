@@ -40,6 +40,22 @@ DEFAULTS: dict[str, Any] = {
         "history_idle_minutes": 10,
         "server_fallbacks": True,
     },
+    # Which model answers open questions. auto: Claude when ANTHROPIC_API_KEY is set, else a model running on
+    # this PC (Ollama, LM Studio, llama.cpp, Jan: found on their default ports). local: never Claude.
+    "brain": {
+        "provider": "auto",
+        "local": {
+            "enabled": True,
+            "url": "",        # only for a non-default server, e.g. http://127.0.0.1:11500
+            "model": "",      # empty = the best tools-capable model it finds (3-14B preferred)
+            "temperature": 0.3,
+            # Small models choose better from a short list; Claude always gets every tool.
+            "tools": ["open_app", "close_app", "focus_window", "web_search", "set_volume", "media_control",
+                      "obs_status", "obs_switch_scene", "obs_set_mute", "calendar", "list_tasks", "add_task",
+                      "complete_task", "remember", "recall", "news", "activity", "projects", "system_status",
+                      "prestream_check", "twitch_status", "twitch_marker", "twitch_clip"],
+        },
+    },
     "voice": {
         "enabled": True,
         # Speech-to-text: auto | parakeet | parakeet-large | moonshine | whisper (see voice/stt.py)

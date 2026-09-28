@@ -106,6 +106,10 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
         return f"{result.get('source')} {'showing' if result.get('visible') else 'hidden'}."
     if tool == "prestream_check":
         return result.get("spoken") or "Checked."
+    if tool == "recall":
+        return _recall_summary(args, result)
+    if tool == "connections":
+        return _connections_summary(result)
     if tool.startswith("twitch_") and tool != "twitch_status":
         return _twitch(tool, args, result)
     if tool == "obs_switch_scene":
@@ -252,4 +256,39 @@ def _events_summary(events: list[dict]) -> str:
     if by.get("redemption"):
         parts.append(f"{len(by['redemption'])} redemption{'s' if len(by['redemption']) != 1 else ''}")
     return ("Recently: " + "; ".join(parts) + ".") if parts else "Nothing new on Twitch yet."
+
+
+def _recall_summary(args: dict, result: dict) -> str:
+    hits = result.get("hits") or []
+    query = (args.get("query") or "").strip()
+    if not hits:
+        return f"I don't have anything about {query} yet." if query else "No notes yet. Say remember, then anything."
+    verb = {"note": "you noted", "task": "you added a task", "said": "you said", "replied": "I told you"}
+    top = hits[0]
+    day = (top.get("when") or "").split(",")[0]
+    line = f"{day + ', ' if day else ''}{verb.get(top['kind'], 'you said')}: {top['text'].rstrip('.')}."
+    more = len(hits) - 1
+    return line[0].upper() + line[1:] + (f" And {more} more on the HUD." if more else "")
+
+
+def _connections_summary(result: dict) -> str:
+    findings = result.get("findings") or []
+    brain = result.get("brain") or {}
+    active = brain.get("active")
+    local = brain.get("local") or {}
+    head = ("I'm thinking with Claude." if active == "claude" else
+            f"I'm thinking with {local.get('model')} on {local.get('server')}." if active == "local" else
+            "No AI model is connected, so only built-in commands work.")
+    if not findings:
+        return head + " Run the PC scan on the Setup tab to see the rest."
+    done = [f["name"] for f in findings if f["status"] == "connected"]
+    todo = [f for f in findings if f["status"] == "action"]
+    parts = [head]
+    if done:
+        parts.append(f"Connected: {', '.join(done[:6])}{' and more' if len(done) > 6 else ''}.")
+    if todo:
+        parts.append("Needs you: " + "; ".join(f"{f['name']}, {f['fix'] or f['detail']}".rstrip(".") for f in todo[:3]) + ".")
+    else:
+        parts.append("Nothing needs you.")
+    return " ".join(parts)
 

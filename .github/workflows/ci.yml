@@ -61,6 +61,34 @@ jobs:
           ASSISTANT_MODEL_TESTS: "1"
         run: python -m pytest -v -rs tests/test_models_live.py
 
+  local-llm:
+    # The local brain against a real Llama: Ollama installs, pulls the model, and Vesper answers
+    # a question, calls a tool, answers from memory and writes the morning plan with it.
+    name: local Llama (Ollama, ubuntu)
+    runs-on: ubuntu-latest
+    env:
+      OLLAMA_MODEL: llama3.2:3b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install
+        run: python -m pip install -r requirements-dev.txt
+      - name: Install Ollama and pull the model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:11434/api/tags >/dev/null || (ollama serve > ollama.log 2>&1 &) ; sleep 3
+          ollama pull "$OLLAMA_MODEL"
+          ollama list
+      - name: Test
+        env:
+          ASSISTANT_LLM_TESTS: "1"
+        run: python -m pytest -v -rs -s tests/test_local_llm_live.py
+
   setup-script:
     # The beginner path exactly as the setup guide runs it: double-click setup.bat,
     # then check it built a working .venv with the voice packages and the config files.

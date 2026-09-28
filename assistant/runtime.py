@@ -53,6 +53,8 @@ class Runtime:
         self._prestream_seen: set = set()
         self.svc.stream_health = lambda: {**self.stream_health.snapshot(), "mic": self.mic_watch.snapshot()}
         self.svc.prestream = self.prestream_check
+        self.svc.connections = lambda: {"findings": (self.discovery_report() or {}).get("findings") or [],
+                                        "brain": self.assistant.brain_status()}
         # Twitch live events, callouts and highlight markers (Phase 5b).
         tw_cfg = cfg["twitch"]
         self.twitch_feed = TwitchFeed()
@@ -636,6 +638,7 @@ class Runtime:
             "assistant": {
                 "name": a["name"], "user": a["user_name"], "wake_words": a["wake_words"],
                 "claude": self.assistant.claude_ready, "model": self.cfg["claude"]["model"],
+                "brain": self.assistant.brain_status(),
                 "tts": self.speaker.engine_name, "started": self.started,
             },
             "goals": self.cfg["goals"],

@@ -73,8 +73,8 @@ class CalendarHub:
                 return
             for src in self.sources:
                 url = self._source_url(src)
-                if not url:  # link not added to .env yet: say so instead of reading "." as a file
-                    self._errors[src["name"]] = f"{src.get('url_env') or 'url'} is not set"
+                if not url:  # link not added to .env yet: not connected, not broken (and never read "." as a file)
+                    self._errors.pop(src["name"], None)
                     continue
                 try:
                     if url.startswith(("http://", "https://")):
@@ -139,9 +139,11 @@ class CalendarHub:
         return self.events(day0, day0 + timedelta(days=days), profile)
 
     def status(self) -> list[dict]:
+        """``missing``: the .env name to fill in when the link isn't there yet (not an error: just not connected)."""
         return [{"name": s["name"], "profile": s["profile"], "color": s["color"],
                  "ok": s["name"] in self._cals and s["name"] not in self._errors,
-                 "error": self._errors.get(s["name"])} for s in self.sources]
+                 "error": self._errors.get(s["name"]),
+                 "missing": (s.get("url_env") or "url") if not self._source_url(s) else None} for s in self.sources]
 
 
 def free_blocks(events: list[dict], day: date, tz: tzinfo, start: str = "09:00", end: str = "18:00",

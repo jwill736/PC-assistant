@@ -129,3 +129,16 @@ def test_good_morning_reuses_prebuilt_briefing(svc):
     assert out["data"]["created"] == first["created"]  # not rebuilt (and not re-billed)
     a.briefing("recap")
     assert a.handle("good morning")["data"]["kind"] == "morning"  # a recap doesn't count
+
+
+def test_tasks_added_by_voice_refresh_the_hud(cfg, svc):
+    """The first live run: "1 open task" was spoken while the HUD's count still said 0."""
+    from assistant.runtime import Runtime
+
+    rt = Runtime(cfg, services=svc)
+    seen = []
+    rt.bus.on(lambda e: seen.append(e["data"]) if e["type"] == "tasks" else None)
+    out = rt.assistant.handle("add a task to record the Twitch setup video")
+    assert out["kind"] == "tool" and [t["title"] for t in seen[-1]] == ["record the Twitch setup video"]
+    rt._commands.shutdown()
+

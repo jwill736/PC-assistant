@@ -362,13 +362,15 @@ class Runtime:
         return h.as_dict()
 
     def _after_tool(self, event: dict) -> None:
-        """Clips and markers you ask for are highlights too."""
+        """Keep the HUD in step with what a spoken or Claude-run tool changed; clips and markers are highlights."""
         if event.get("type") != "tool":
             return
         data = event.get("data") or {}
         name, args, result = data.get("name"), data.get("args") or {}, data.get("result") or {}
         if not isinstance(result, dict) or result.get("ok") is False:
             return
+        if name in ("add_task", "complete_task"):  # said, not clicked: the HUD's list and count must follow
+            self.bus.publish("tasks", self.svc.storage.list_tasks())
         if name == "obs_control" and args.get("action") == "save_replay":
             self._highlight_async("clip", "Clip that (replay saved)", {"path": result.get("path")})
         elif name == "twitch_clip":

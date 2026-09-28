@@ -264,7 +264,8 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "clean_temp")
 
     # --- tasks & notes ------------------------------------------------
-    m = re.search(r"^(?:add (?:a )?(?:task|to-?do)(?: to)?|remind me to|new task|put on my list) (.+)$", t)
+    # "ad a task", "at a task", "ada task": how speech-to-text heard "add a task" said quickly (first live run)
+    m = re.search(r"^(?:(?:(?:add|ad|at) (?:a )?|ada )(?:task|to-?do)(?: to)?|remind me to|new task|put on my list) (.+)$", t)
     if m:
         return Intent("tool", "add_task", {"title": _restore_case(text, m.group(1))})
     m = re.search(r"^(?:mark|check off|complete|finish(?:ed)?|done with) (?:the )?(?:task )?(.+?)(?: as done| as complete)?$", t)

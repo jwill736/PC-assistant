@@ -67,7 +67,7 @@ def test_silero_segmenter_returns_speech_plus_preroll():
 
 def test_silero_segmenter_reset_restarts_the_clock():
     fake = ScriptedVAD(start=8000, end=16000)
-    seg = vad.SileroSegmenter(None, vad=fake)
+    seg = vad.SileroSegmenter(None, vad=fake, preroll_ms=300)
     for c in frames(8000)[0]:
         seg.feed(c)
     seg.reset()
@@ -75,6 +75,40 @@ def test_silero_segmenter_reset_restarts_the_clock():
     chunks, pcm = frames(16000 * 2)
     out = [np.concatenate(r) for r in (seg.feed(c) for c in chunks) if r]
     assert len(out) == 1 and np.array_equal(out[0], pcm[8000 - 4800:16000])
+
+
+class TwoAtOnceVAD(ScriptedVAD):
+    """ "Vesper," and "what time is it" finishing in the same frame (the name, a pause, the command)."""
+
+    def accept_waveform(self, samples):
+        self.fed += len(samples)
+        if not self.done and self.fed >= 40000:
+            self.done = True
+            self.queue += [SimpleNamespace(start=16000, samples=np.zeros(8000, dtype=np.float32)),
+                           SimpleNamespace(start=28000, samples=np.zeros(8000, dtype=np.float32))]
+
+
+def test_two_segments_ending_together_are_one_utterance_not_the_last_one():
+    seg = vad.SileroSegmenter(None, vad=TwoAtOnceVAD(0, 0), preroll_ms=300)
+    chunks, pcm = frames(16000 * 3)
+    outs = [np.concatenate(r) for r in (seg.feed(c) for c in chunks) if r]
+    assert len(outs) == 1 and np.array_equal(outs[0], pcm[16000 - 4800:36000])  # the name is kept
+
+
+def test_segmenter_defaults_catch_short_words_and_a_leading_name(monkeypatch, tmp_path):
+    made = {}
+
+    class Recorder(vad.SileroSegmenter):
+        def __init__(self, path, **kw):
+            made.update(kw)
+            super().__init__(path, vad=ScriptedVAD(0, 0), **{k: v for k, v in kw.items() if k != "vad"})
+    monkeypatch.setattr(vad, "SileroSegmenter", Recorder)
+    monkeypatch.setattr("assistant.voice.models.ensure", lambda *a, **k: tmp_path / "silero.onnx")
+    seg = vad.make_segmenter({}, tmp_path)
+    assert made["min_speech_ms"] == 150 and made["preroll_ms"] == 600  # measured: 10/10 vs 5/10 at 250/300
+    assert seg.preroll == 9600
+    vad.make_segmenter({"vad_min_speech_ms": 250, "vad_preroll_ms": 300}, tmp_path)
+    assert made["min_speech_ms"] == 250 and made["preroll_ms"] == 300
 
 
 def test_make_segmenter_falls_back_to_energy(monkeypatch, tmp_path):

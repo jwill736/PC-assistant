@@ -57,7 +57,7 @@ def test_step_and_failure_budget_only_counts_within_one_request():
 def test_audit_log_appends_redacts_and_survives_a_restart(tmp_path):
     log = policy.AuditLog(tmp_path, clock=lambda: 1_790_000_000.0)
     log.write(tool="open_urls", args={"targets": ["x" * 500], "api_key": "sk-123"}, tier=1, outcome="ok")
-    line = json.loads(log.path().read_text().splitlines()[0])
+    line = json.loads(log.path().read_text(encoding="utf-8").splitlines()[0])  # Windows' default is cp1252
     assert line["args"]["api_key"] == "[redacted]" and line["args"]["targets"][0].endswith("…")
     assert len(line["args"]["targets"][0]) == 201
     again = policy.AuditLog(tmp_path, clock=lambda: 1_790_000_000.0)

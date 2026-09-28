@@ -89,10 +89,12 @@ def test_system_controls_answer_cleanly_on_real_windows():
     """The PC-control libraries install and import, and every control returns an answer, never a crash
     (the CI runner has no speakers or adjustable screen, so a clean "can't" is a pass)."""
     import pycaw.pycaw  # noqa: F401
-    import pyvda  # noqa: F401
     import screen_brightness_control  # noqa: F401
 
     from assistant.integrations import controls, toast
+
+    # pyvda refuses to import on Windows Server (the CI runner); the app must fall back, not crash
+    assert controls._pyvda() is None or hasattr(controls._pyvda(), "VirtualDesktop")
 
     for out in (controls.volume(), controls.brightness(), controls.virtual_desktop("status"),
                 controls.app_volume("definitely-not-playing")):

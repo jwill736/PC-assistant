@@ -511,13 +511,52 @@ def scan_gpu() -> tuple[list[Finding], dict]:
 # Accounts & keys already configured
 # ---------------------------------------------------------------------------
 
-def scan_accounts(cfg: dict, calendar_links: list[str]) -> list[Finding]:
+LOCAL_AI_INSTALLS = {
+    "Ollama": ["%LOCALAPPDATA%/Programs/Ollama/ollama.exe", "%ProgramFiles%/Ollama/ollama.exe"],
+    "LM Studio": ["%LOCALAPPDATA%/Programs/LM Studio/LM Studio.exe", "%LOCALAPPDATA%/LM-Studio/LM Studio.exe"],
+    "Jan": ["%LOCALAPPDATA%/Programs/Jan/Jan.exe"],
+}
+
+
+def scan_local_ai(paths: SystemPaths, cfg: dict, detector=None) -> list[Finding]:
+    """A model server running on this PC (the brain without a Claude key), or one installed but not running."""
+    from .brain import local_llm
+
+    lcfg = (cfg.get("brain") or {}).get("local") or {}
+    if not lcfg.get("enabled", True):
+        return [Finding("ai", "Local AI", FOUND, "Turned off in config (brain.local.enabled: false).")]
+    found = (detector or local_llm.detect)(extra_url=lcfg.get("url") or None)
+    if found and found["models"]:
+        pick = lcfg.get("model") or local_llm.pick_model(found["models"])
+        names = [m["name"] for m in found["models"]]
+        label = local_llm.LABELS.get(found["kind"], found["kind"])
+        return [Finding("ai", f"Local AI ({label})", CONNECTED,
+                        f"{len(names)} model{'s' if len(names) != 1 else ''}: {', '.join(names[:5])}"
+                        f"{'…' if len(names) > 5 else ''}. Answers with {pick}.")]
+    if found:
+        return [Finding("ai", "Local AI", ACTION, f"{local_llm.LABELS.get(found['kind'], found['kind'])} is running "
+                        "with no models.", "Download one, e.g. in a terminal: ollama pull llama3.1:8b")]
+    installed = [name for name, cands in LOCAL_AI_INSTALLS.items()
+                 if paths.first_existing(*(paths.expand(c) for c in cands))]
+    if installed:
+        return [Finding("ai", "Local AI", ACTION, f"{installed[0]} is installed but not running.",
+                        f"Start {installed[0]}; Vesper finds it by itself within a minute.")]
+    return [Finding("ai", "Local AI", MISSING, "No local model server found (Ollama, LM Studio, Jan, llama.cpp).",
+                    "Optional: install Ollama (ollama.com) and run: ollama pull llama3.1:8b")]
+
+
+def scan_accounts(cfg: dict, calendar_links: list[str], local_ai: bool = False) -> list[Finding]:
     env = os.environ
     out = []
     key = env.get(cfg["claude"].get("api_key_env", "ANTHROPIC_API_KEY"), "")
-    out.append(Finding("ai", "Claude API", CONNECTED if key else ACTION,
-                       "API key set" if key else "No key — only the offline command set works.",
-                       "" if key else "Add ANTHROPIC_API_KEY to .env (console.anthropic.com → API keys)."))
+    if key:
+        out.append(Finding("ai", "Claude API", CONNECTED, "API key set"))
+    elif local_ai:  # a local model already answers open questions: the key is an upgrade, not a gap
+        out.append(Finding("ai", "Claude API", FOUND, "No key: your local model answers instead.",
+                           "Optional: add ANTHROPIC_API_KEY to .env for stronger plans and background research."))
+    else:
+        out.append(Finding("ai", "Claude API", ACTION, "No key and no local model: only the built-in commands work.",
+                           "Add ANTHROPIC_API_KEY to .env (console.anthropic.com → API keys), or run a local model."))
     cals = [c for c in cfg.get("calendars") or [] if c.get("url") or env.get(c.get("url_env") or "", "")]
     hint = " You use Google/Outlook calendar in the browser — each calendar has a private iCal link." if calendar_links and not cals else ""
     out.append(Finding("calendars", "Calendars", CONNECTED if cals else ACTION, f"{len(cals)} connected.{hint}",
@@ -603,7 +642,9 @@ def discover(cfg: dict, paths: SystemPaths | None = None, shortcut_index: dict[s
         f, s = res
         findings += f
         _merge(suggested, s)
-    findings += run("accounts", scan_accounts, cfg, calendar_links) or []
+    local = run("local AI", scan_local_ai, paths, cfg) or []
+    findings += local
+    findings += run("accounts", scan_accounts, cfg, calendar_links, any(f.status == CONNECTED for f in local)) or []
     order = {ACTION: 0, MISSING: 1, FOUND: 2, CONNECTED: 3}
     findings.sort(key=lambda x: (order.get(x.status, 9), x.area, x.name))
     return {

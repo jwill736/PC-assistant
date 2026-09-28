@@ -1,4 +1,5 @@
-"""The assistant: fast-path router first, Claude with tools for everything else.
+"""The assistant: fast-path router first, then a model with tools for everything else: Claude, or a Llama
+(or other model) running on this PC.
 
 Risky actions (closing apps, going live, shutting down) never run straight
 from a single utterance — they're parked as a pending confirmation until you
@@ -9,18 +10,21 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import anthropic
+import httpx
 
 from ..integrations import desktop
 from ..services import Services
 from ..voice import neural
-from . import briefing, macros as macro_mod
+from . import briefing, local_llm, macros as macro_mod
 from .router import Intent, RouterContext, route
 from .speech import clock, summarize
 from .tools import ToolBox, compact
@@ -49,6 +53,29 @@ How you operate:
 Profiles: {profiles}."""
 
 
+LOCAL_ADDENDUM = """
+Tools: call one only when the request needs it, using the exact names given; otherwise just answer. After a tool
+returns, answer in one or two short spoken sentences from its result. Never make up a tool result."""
+# Small models sometimes repeat the bracketed context line back ("[Monday … | active window: …]"): never say it.
+CONTEXT_ECHO = re.compile(r"^\s*\[[^\]]*(?:active window|profile:)[^\]]*\]\s*")
+OFFLINE = ("I can't answer that one without a model. Start Ollama or LM Studio with a Llama model, "
+           "or add ANTHROPIC_API_KEY to the .env file.")
+
+
+def _clip_spoken(text: str, max_words: int = 90) -> str:
+    """The spoken briefing, cut at a sentence end near ``max_words``; the HUD keeps the full plan."""
+    if len(text.split()) <= max_words:
+        return text
+    out, count = [], 0
+    for sentence in neural.split_sentences(text):
+        n = len(sentence.split())
+        if out and count + n > max_words:
+            break
+        out.append(sentence)
+        count += n
+    return " ".join(out)
+
+
 def _supports(model: str, prefixes: tuple[str, ...]) -> bool:
     return model.startswith(prefixes)
 
@@ -61,6 +88,8 @@ class Assistant:
     def __init__(self, svc: Services, toolbox: ToolBox | None = None, client: anthropic.Anthropic | None = None):
         self.svc = svc
         self.cfg = svc.cfg["claude"]
+        self.local = local_llm.LocalBrain((svc.cfg.get("brain") or {}).get("local") or {})
+        self.local_history: list[dict] = []  # OpenAI-style turns for the local model
         self._ctx: dict = {}  # the command being handled: source, utterance, turn, owner (for the audit log)
         self._tainted = False  # this command has read text other people wrote (see Tool.untrusted)
         self._untrusted_ids: set[str] = set()  # tool results to scrub from history once the command ends
@@ -109,6 +138,30 @@ class Assistant:
     def claude_ready(self) -> bool:
         return self.client is not None
 
+    def brain(self) -> str | None:
+        """Which model answers what the router can't: "claude", "local", or None (router only)."""
+        pref = (self.svc.cfg.get("brain") or {}).get("provider", "auto")
+        if pref == "local":
+            return "local" if self.local.ready else None  # "local" means never send it to the cloud
+        if self.claude_ready:
+            return "claude"
+        if pref == "auto" and self.local.ready:
+            return "local"
+        return None
+
+    def brain_status(self) -> dict:
+        b = self.brain()
+        return {"active": b, "provider": (self.svc.cfg.get("brain") or {}).get("provider", "auto"),
+                "claude": {"ready": self.claude_ready, "model": self.cfg["model"]}, "local": self.local.status()}
+
+    def _ask(self, text: str) -> str:
+        brain = self.brain()
+        if brain == "claude":
+            return self._ask_claude(text)
+        if brain == "local":
+            return self._ask_local(text)
+        return OFFLINE
+
     def _track_profile(self, event: dict) -> None:
         if event["type"] == "profile":
             self.active_profile = (event.get("data") or {}).get("active")
@@ -148,7 +201,8 @@ class Assistant:
                 if intent is not None:
                     out = self._run_intent(intent)
                 else:
-                    out = {"reply": self._ask_claude(text), "kind": "claude"}
+                    brain = self.brain()
+                    out = {"reply": self._ask(text), "kind": brain or "offline"}
             except Exception as exc:
                 log.exception("command failed")
                 out = {"reply": f"That failed: {type(exc).__name__}.", "kind": "error"}
@@ -212,9 +266,9 @@ class Assistant:
             b = self.briefing("recap")
             return {"reply": b["spoken"], "kind": "recap", "data": b}
         if kind == "next":
-            if self.claude_ready:
-                return {"reply": self._ask_claude("What should I work on next? Check my tasks, calendar and today's "
-                                                  "activity, then give me the single highest-leverage move."), "kind": "claude"}
+            if self.brain():
+                return {"reply": self._ask("What should I work on next? Check my tasks, calendar and today's "
+                                           "activity, then give me the single highest-leverage move."), "kind": self.brain()}
             tasks = self.svc.storage.list_tasks()
             return {"reply": f"Next: {tasks[0]['title']}." if tasks else "No open tasks. Add one and I'll line it up.",
                     "kind": "next"}
@@ -264,7 +318,7 @@ class Assistant:
             elif kind == "command":
                 intent = route(str(value), self.router_context())
                 out = self._run_intent(intent) if intent and intent.kind not in ("macro",) else {
-                    "reply": self._ask_claude(str(value)) if self.claude_ready else ""}
+                    "reply": self._ask(str(value)) if self.brain() else ""}
                 results.append({"command": value, "reply": out.get("reply")})
             else:
                 result = self.tools.run(kind, value or {}, confirmed_by=f"macro via {via}" if via else None)
@@ -477,6 +531,106 @@ class Assistant:
             self._streamed = False
             return "Stopped. PC control is paused."
 
+    # ---- a model on this PC -----------------------------------------------
+    def _local_tools(self) -> list[dict]:
+        names = ((self.svc.cfg.get("brain") or {}).get("local") or {}).get("tools") or list(self.tools.tools)
+        out = []
+        for name in names:
+            tool = self.tools.tools.get(name)
+            if tool:
+                d = tool.definition()
+                out.append({"type": "function", "function": {"name": d["name"], "description": d["description"],
+                                                             "parameters": d["input_schema"]}})
+        return out
+
+    def _ask_local(self, text: str) -> str:
+        llm = self.local.refresh()
+        if llm is None:
+            return OFFLINE
+        lcfg = (self.svc.cfg.get("brain") or {}).get("local") or {}
+        idle = time.time() - self.last_turn > self.cfg.get("history_idle_minutes", 10) * 60
+        if idle or len(self.local_history) > 4 * self.cfg.get("history_turns", 12):
+            self.local_history = []
+        self.last_turn = time.time()
+        # The context line goes in the system message, not the user turn: a 3B model put in the user turn
+        # repeated it as the first line of its answer (found by the CI run against llama3.2:3b).
+        system = f"{self.system_prompt}{LOCAL_ADDENDUM}\nRight now: {self._context_line().strip('[]')}"
+        messages = [{"role": "system", "content": system}, *self.local_history, {"role": "user", "content": text}]
+        tools = self._local_tools()
+
+        def speak(sentence: str, final: bool) -> None:
+            clean = CONTEXT_ECHO.sub("", sentence)
+            if clean.strip():
+                self._speak_sentence(clean, final)
+        sentences = neural.SentenceStream(speak) if self._stream_on else None
+        reply = ""
+        try:
+            for _ in range(6):
+                out = llm.chat(messages, tools=tools, on_text=sentences.feed if sentences else None,
+                               temperature=float(lcfg.get("temperature", 0.3)),
+                               should_stop=lambda: self.tools.guard.hands_off)
+                if self.tools.guard.hands_off:
+                    raise _Stopped
+                if not out["tool_calls"]:
+                    reply = CONTEXT_ECHO.sub("", out["content"])
+                    if sentences:
+                        sentences.flush(final=True)
+                    messages.append({"role": "assistant", "content": reply})
+                    break
+                if sentences:  # "Checking your calendar." before the call is spoken right away
+                    sentences.flush(final=False)
+                calls = out["tool_calls"]
+                messages.append({"role": "assistant", "content": out["content"] or "", "tool_calls": [
+                    {"id": c["id"], "type": "function",
+                     "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}} for c in calls]})
+                blocks = [SimpleNamespace(type="tool_use", id=c["id"], name=c["name"],
+                                          input=c["arguments"] if isinstance(c["arguments"], dict) else {})
+                          for c in calls]
+                for r in self._run_tool_calls(blocks):
+                    messages.append({"role": "tool", "tool_call_id": r["tool_use_id"], "content": r["content"]})
+                guard = self.tools.guard
+                if guard.hands_off or guard.exhausted:
+                    reply = "Stopped. PC control is paused." if guard.hands_off else (guard.check(1) or "Stopped.")
+                    self._streamed = False
+                    break
+            else:
+                reply = reply or "I went round in circles on that one. Try asking it another way."
+        except _Stopped:
+            self._streamed = False
+            return "Stopped. PC control is paused."
+        except httpx.ConnectError:
+            self.local.lost()
+            self._streamed = False
+            return f"I can't reach {llm.label} anymore. Is it still running?"
+        except httpx.TimeoutException:
+            self._streamed = False
+            return f"{llm.label} took too long to answer."
+        except httpx.HTTPStatusError as exc:
+            self._streamed = False
+            log.error("local model error %s: %s", exc.response.status_code, exc.response.text[:300])
+            return f"{llm.label} returned an error, status {exc.response.status_code}."
+        self.local_history = [m for m in messages[1:]]  # the whole turn, tool calls and results included
+        return reply.strip() or "Done."
+
+    def _local_briefing(self, prompt: str) -> dict | None:
+        llm = self.local.refresh()
+        if llm is None:
+            return None
+        try:
+            out = llm.chat([{"role": "user", "content": prompt}], json_schema=briefing.BRIEFING_SCHEMA,
+                           temperature=0.2, max_tokens=1500)
+            text = out["content"].strip().removeprefix("```json").removesuffix("```").strip()
+            result = json.loads(text)
+            if not isinstance(result, dict) or not result.get("spoken"):
+                return None
+            result["generated_by"] = "local"
+            result["model"] = llm.model
+            result["spoken"] = _clip_spoken(result["spoken"])  # a 3B model wrote ~230 words: 90 seconds of talking
+            return result
+        except (httpx.HTTPError, ValueError, KeyError):
+            log.exception("local briefing failed; using the built-in summary")
+            return None
+
     def _run_tool_calls(self, content) -> list[dict]:
         results = []
         pending_calls, pending_text = [], []
@@ -524,6 +678,9 @@ class Assistant:
         """Viewer messages stay in Claude's context for the request that read them, not for later ones."""
         if not self._untrusted_ids:
             return
+        for msg in self.local_history:
+            if msg.get("role") == "tool" and msg.get("tool_call_id") in self._untrusted_ids:
+                msg["content"] = "[viewer messages removed after use]"
         for msg in self.history:
             if msg.get("role") == "user" and isinstance(msg.get("content"), list):
                 for item in msg["content"]:
@@ -544,7 +701,7 @@ class Assistant:
         data = briefing.gather_morning(self.svc) if kind == "morning" else briefing.gather_recap(self.svc)
         user = self.svc.cfg["assistant"]["user_name"]
         result = None
-        if self.claude_ready:
+        if self.brain() == "claude":
             template = briefing.MORNING_INSTRUCTIONS if kind == "morning" else briefing.RECAP_INSTRUCTIONS
             prompt = template.format(user=user, data=json.dumps(data, default=str))
             try:
@@ -556,6 +713,9 @@ class Assistant:
                     result["generated_by"] = "claude"
             except (anthropic.APIError, StopIteration, json.JSONDecodeError):
                 log.exception("Claude briefing failed; using local version")
+        elif self.brain() == "local":
+            template = briefing.MORNING_INSTRUCTIONS if kind == "morning" else briefing.RECAP_INSTRUCTIONS
+            result = self._local_briefing(template.format(user=user, data=json.dumps(data, default=str)))
         if result is None:
             result = (briefing.fallback_morning if kind == "morning" else briefing.fallback_recap)(data, user)
         result.update(kind=kind, created=time.time())

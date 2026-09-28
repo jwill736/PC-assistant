@@ -15,6 +15,12 @@ import psutil
 
 from .desktop import ALWAYS_PROTECTED, normalize_app
 
+# The local model's server is supposed to hold gigabytes: never suggest closing it as a "memory hog"
+# (the first morning plan written by llama3.2:3b told the user to deal with llama-server). Closing it on
+# request still works.
+LOCAL_AI_PROCESSES = {"ollama", "ollama_llama_server", "ollama app", "llama-server", "llama_server", "lm studio",
+                      "lms", "lmstudio", "jan", "koboldcpp"}
+
 IS_WINDOWS = sys.platform == "win32"
 
 POWER_PLANS = {  # powercfg aliases, stable across Windows installs
@@ -207,7 +213,8 @@ class SystemMonitor:
         findings: list[dict] = []
         mem = snap["memory"]
         procs = snap["processes"]
-        heavy = [p for p in procs["by_mem"] if p["mem_mb"] * 1048576 >= self.heavy_bytes and p["name"] not in self.protected]
+        heavy = [p for p in procs["by_mem"] if p["mem_mb"] * 1048576 >= self.heavy_bytes and p["name"] not in self.protected
+                 and normalize_app(p["name"]) not in LOCAL_AI_PROCESSES]
         if mem["percent"] >= 85:
             findings.append({
                 "severity": "high", "title": f"Memory at {mem['percent']}%",

@@ -277,6 +277,20 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         body = await request.json()
         return runtime.set_speaker_check(str(body.get("mode", "")))
 
+    @app.get("/api/brain")
+    async def brain_status():
+        return await run_in_threadpool(runtime.assistant.brain_status)
+
+    @app.post("/api/brain")
+    async def brain_set(request: Request):
+        """{"provider": "auto"|"claude"|"local", "model": "llama3.1:8b"}"""
+        body = await request.json()
+        return await run_in_threadpool(lambda: runtime.set_brain(body.get("provider"), body.get("model")))
+
+    @app.post("/api/brain/test")
+    async def brain_test():
+        return await run_in_threadpool(runtime.test_brain)
+
     @app.get("/api/tts")
     async def tts_status():
         return runtime.speaker.status()

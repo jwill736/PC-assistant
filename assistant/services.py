@@ -47,6 +47,7 @@ class Services:
     prestream: Callable[[], dict] | None = None
     # Twitch live events (Phase 5b): the feed of follows/subs/raids/chat and today's highlight moments.
     twitch_feed: Any = None
+    connections: Callable[[], dict] | None = None  # the PC scan's findings + which brain answers
     highlights: Callable[[], list] | None = None
 
     @property

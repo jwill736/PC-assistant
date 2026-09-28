@@ -22,6 +22,14 @@ claude:
   command_effort: low           # voice commands: fast
   briefing_effort: high         # morning plan: think harder
 
+# What answers open questions. auto = Claude when ANTHROPIC_API_KEY is set, else a model on this PC
+# (Ollama, LM Studio, llama.cpp or Jan, found by itself). local = never the cloud. Also in Setup → Brain.
+brain:
+  provider: auto
+  local:
+    model: ""                   # empty = the best tools-capable model it finds, e.g. llama3.1:8b
+    # url: http://127.0.0.1:11434   # only for a non-default port
+
 voice:
   enabled: true
   stt_engine: auto              # auto (= parakeet) | parakeet | moonshine | parakeet-large | whisper

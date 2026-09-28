@@ -71,6 +71,27 @@ def check_claude(cfg) -> Check:
     return Check("Claude API", PASS, f"key valid, {model} available")
 
 
+def check_brain(cfg, brain=None) -> Check:
+    """What answers open questions: Claude, a model on this PC, or nothing (the router only)."""
+    from .brain import local_llm
+
+    has_key = bool(cfg.secret(cfg["claude"].get("api_key_env")))
+    lcfg = (cfg.get("brain") or {}).get("local") or {}
+    local = brain if brain is not None else local_llm.LocalBrain(lcfg)
+    llm = local.refresh(force=True) if lcfg.get("enabled", True) else None
+    provider = (cfg.get("brain") or {}).get("provider", "auto")
+    if provider == "local":
+        return (Check("Brain", PASS, f"local: {llm.label}") if llm else
+                Check("Brain", FAIL, "set to local, but no local model server is running",
+                      "Start Ollama or LM Studio (with a model downloaded)."))
+    if has_key:
+        return Check("Brain", PASS, "Claude" + (f"; {llm.label} also found" if llm else ""))
+    if llm:
+        return Check("Brain", PASS, f"local: {llm.label} (no Claude key)")
+    return Check("Brain", WARN, "no model: only built-in commands work",
+                 "Start Ollama/LM Studio with a Llama model, or add ANTHROPIC_API_KEY to .env.")
+
+
 def check_obs(cfg, obs=None) -> Check:
     if not cfg["obs"].get("enabled", True):
         return Check("OBS", SKIP, "disabled in config")
@@ -265,6 +286,7 @@ def run_doctor(cfg, svc=None, *, test_mic: bool = True, load_model: bool = True,
     checks: list[Check] = [check_python(), *check_files(cfg)]
     if network:
         checks.append(_guard("Claude API", lambda: check_claude(cfg)))
+    checks.append(_guard("Brain", lambda: check_brain(cfg)))
     checks.append(_guard("OBS", lambda: check_obs(cfg, svc.obs if svc else None)))
     if network:
         checks += _guard_list("Calendars", lambda: check_calendars(cfg, svc.calendars if svc else None))

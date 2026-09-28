@@ -85,12 +85,23 @@ You need Windows 10 or 11, a microphone and a Google account (for Part 3).
     twitch.tv/activate) → **Authorize**. Vesper says “Twitch is connected as …”. Try “Vesper, any new
     followers?”.
 
-## Part 5 · Optional
+## Part 5 · Use your own model (optional, 5 minutes)
 
-21. **Start at sign-in:** in the folder's address bar type `powershell`, then run
+If Ollama or LM Studio is already on this PC with a model, skip to step 23: Vesper finds it.
+
+21. **Install Ollama** from [ollama.com](https://ollama.com/download) (Windows installer, next-next-finish).
+22. **Download a model.** Open a terminal (Win+R, `cmd`) and run `ollama pull llama3.1:8b` (about 5 GB). On a GPU
+    with less than 8 GB, use `ollama pull llama3.2:3b` instead.
+23. **Check it's connected.** HUD → **Setup → Brain**: “Answering with llama3.1:8b on Ollama”. Click **Test**. Then
+    say “Vesper, what's connected?” and “Vesper, remember that the new overlay colours are orange and black”, and
+    a minute later “Vesper, which colours did I pick for the overlay?”.
+
+## Part 6 · Optional
+
+24. **Start at sign-in:** in the folder's address bar type `powershell`, then run
     `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`. Vesper then lives as a ring icon
     by the clock (click <kbd>^</kbd> if hidden): right-click for **Open HUD**, **Mute microphone**, **Quit**.
-22. **Updates:** GitHub Desktop → **Fetch origin → Pull origin**, run `setup.bat` again (settings kept), quit
+25. **Updates:** GitHub Desktop → **Fetch origin → Pull origin**, run `setup.bat` again (settings kept), quit
     Vesper from the tray and start it again.
 
 ## Where everything lives

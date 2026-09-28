@@ -20,6 +20,7 @@ def cfg(tmp_path) -> Config:
         "obs": {"enabled": False},
         "claude": {"enabled": False},
         "pc_control": {"toast_confirm": False},  # no real Windows notifications from the test run
+        "brain": {"local": {"enabled": False}},  # a developer's running Ollama must not change test results
         "profiles": {
             "work": {"label": "Work", "apps": ["code", "slack"], "title_keywords": ["github", "jira"],
                      "launch": {"apps": ["slack"], "urls": ["gmail"], "obs_scene": None}, "close_apps": []},

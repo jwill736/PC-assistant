@@ -52,7 +52,11 @@ def main() -> int:
         token = (data / "api_token").read_text().strip()
         if token not in html:
             problems.append("the HUD page doesn't carry the API token")
-        client = httpx.Client(base_url=base, headers={"x-assistant-token": token}, timeout=30)
+        # A fresh connection per request: uvicorn drops idle keep-alive connections after 5 s, and on
+        # Windows reusing one at that moment fails with WinError 10053 even though the app is fine.
+        # A dead app still fails loudly (connection refused).
+        client = httpx.Client(base_url=base, headers={"x-assistant-token": token}, timeout=30,
+                              limits=httpx.Limits(max_keepalive_connections=0))
 
         for path in ("/api/state", "/api/health", "/api/voice", "/api/control", "/api/tasks", "/api/jobs"):
             r = client.get(path)
@@ -120,7 +124,7 @@ def settle(client: httpx.Client, timeout: float) -> dict:
         if voice not in ("starting", "loading", None):
             break
         time.sleep(3)
-    time.sleep(5)  # a few poller passes
+    time.sleep(6)  # a few poller passes
     return client.get("/api/state").json()
 
 

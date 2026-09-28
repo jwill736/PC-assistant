@@ -9,3 +9,4 @@ config.discovered.yaml
 research_notes/
 reports/
 tests/.models/
+smoke_boot.out

@@ -84,3 +84,12 @@ jobs:
           if not exist config.yaml (echo config.yaml missing & exit /b 1)
           if not exist .env (echo .env missing & exit /b 1)
           .venv\Scripts\python -m assistant --help
+      - uses: actions/cache@v4
+        with:
+          path: data/models
+          key: runtime-models-${{ hashFiles('assistant/voice/models.py') }}
+      - name: Boot it like start.bat and check the HUD answers
+        # First launch on a bare PC: no mic, speakers, OBS or API keys. Everything that
+        # can't connect must show up as a message, not take the app down.
+        shell: cmd
+        run: .venv\Scripts\python scripts\smoke_boot.py

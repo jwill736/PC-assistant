@@ -137,6 +137,8 @@ def test_spoken_numbers_and_new_voice_commands():
         "open bluetooth settings": ("open_settings", {"page": "bluetooth"}),
         "go to desktop two": ("virtual_desktop", {"action": "go", "number": 2}),
         "next desktop": ("virtual_desktop", {"action": "next"}),
+        "what's my volume": ("set_volume", {}),     # no arguments: reports the level
+        "how bright is the screen": ("set_brightness", {}),
     }
     for text, (tool, args) in cases.items():
         intent = route(text)

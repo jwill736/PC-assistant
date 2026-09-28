@@ -174,6 +174,10 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "obs_set_mute", {"source": src, "muted": m.group(1) == "mute"})
 
     # --- media / volume -------------------------------------------------
+    if re.search(r"^(?:what(?:'s| is) (?:my |the )?(?:volume|sound level)(?: at)?|how loud is it)$", t):
+        return Intent("tool", "set_volume", {})
+    if re.search(r"^(?:what(?:'s| is) (?:my |the )?(?:screen )?brightness(?: at)?|how bright is (?:it|the screen))$", t):
+        return Intent("tool", "set_brightness", {})
     m = re.search(rf"^(?:set |turn )?(?:the )?(?:volume|sound)(?: to| at)? {NUMBER}(?: percent| %|%)?$", t)
     if m and number(m.group(1)) is not None:
         return Intent("tool", "set_volume", {"level": min(100, number(m.group(1)))})

@@ -66,6 +66,25 @@ class MenuItem:
     separator: bool = False
 
 
+def pystray_menu(pystray, items: list[MenuItem]):
+    """Our menu as a pystray.Menu. pystray accepts callbacks of 0-2 parameters and counts default
+    arguments too, so each callback is a plain two-parameter closure (a ``fn=...`` default made it
+    three, and pystray refused to start on Windows)."""
+    def call(fn):
+        return lambda _icon, _item: fn()
+
+    def check(fn):
+        return lambda _item: fn()
+
+    def wrap(item: MenuItem):
+        if item.separator:
+            return pystray.Menu.SEPARATOR
+        return pystray.MenuItem(item.label, call(item.action) if item.action else None,
+                                checked=check(item.checked) if item.checked else None, default=item.default)
+
+    return pystray.Menu(*(wrap(i) for i in items))
+
+
 class Tray:
     def __init__(self, runtime, hud_url: str, on_quit: Callable[[], None]):
         self.rt = runtime
@@ -196,20 +215,18 @@ class Tray:
             log.warning("tray icon unavailable: %s", exc)
             return False
 
-        def wrap(item: MenuItem):
-            if item.separator:
-                return pystray.Menu.SEPARATOR
-            action = (lambda icon, _item, fn=item.action: fn()) if item.action else None
-            checked = (lambda _item, fn=item.checked: fn()) if item.checked else None
-            return pystray.MenuItem(item.label, action, checked=checked, default=item.default)
-
-        self.state = self.compute_state()
-        self._icon = pystray.Icon("pc-assistant", self.image(self.state), self.tooltip(),
-                                  menu=pystray.Menu(*(wrap(i) for i in self.menu_items())))
         try:
-            self._icon.run_detached()
-        except (NotImplementedError, AttributeError):
-            threading.Thread(target=self._icon.run, name="tray", daemon=True).start()
+            self.state = self.compute_state()
+            self._icon = pystray.Icon("pc-assistant", self.image(self.state), self.tooltip(),
+                                      menu=pystray_menu(pystray, self.menu_items()))
+            try:
+                self._icon.run_detached()
+            except (NotImplementedError, AttributeError):
+                threading.Thread(target=self._icon.run, name="tray", daemon=True).start()
+        except Exception:  # the tray is a convenience: never let it take the app down
+            log.exception("tray icon failed to start; running without it")
+            self._icon = None
+            return False
         return True
 
     def stop(self) -> None:

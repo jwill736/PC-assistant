@@ -16,6 +16,8 @@ from .bus import EventBus
 from .config import Config, load_config, save_setting
 from .integrations import prestream, toast
 from .integrations.activity import Categorizer
+from .integrations.eventsub import EventSub, TwitchFeed, callout, normalize
+from .integrations.highlights import ChatSpike, Highlight, HighlightLog, spike_reason
 from .integrations.stream_health import MicWatch, StreamHealth
 from .integrations.jobs import JobRunner
 from .services import Services, build_services
@@ -51,6 +53,21 @@ class Runtime:
         self._prestream_seen: set = set()
         self.svc.stream_health = lambda: {**self.stream_health.snapshot(), "mic": self.mic_watch.snapshot()}
         self.svc.prestream = self.prestream_check
+        # Twitch live events, callouts and highlight markers (Phase 5b).
+        tw_cfg = cfg["twitch"]
+        self.twitch_feed = TwitchFeed()
+        self.highlights = HighlightLog(cfg.data_dir / "highlights")
+        self.chat_spike = ChatSpike(ratio=float(tw_cfg.get("spike_ratio", 3.0)))
+        self.svc.twitch_feed = self.twitch_feed
+        self.svc.highlights = lambda: list(self.highlights.recent)
+        twitch = self.svc.twitch
+        self.eventsub: EventSub | None = None
+        if getattr(twitch, "configured", False) and tw_cfg.get("events", True):
+            self.eventsub = EventSub(twitch, self._on_twitch_event,
+                                     on_state=lambda st: self.bus.publish("twitch_events_state", st, sticky=True))
+        if getattr(twitch, "auth", None) is not None:
+            twitch.auth.on_change = self._on_twitch_auth
+        self.bus.on(self._after_tool)
         self.svc.jobs = JobRunner(
             self.svc.storage, self.bus, cfg["jobs"], repo_lookup=self.svc.projects.repos,
             research_fn=self.assistant.research if self.assistant.claude_ready else None,
@@ -150,6 +167,11 @@ class Runtime:
         sup.poller("obs", 3, self._poll_obs, stall_after=60)
         sup.poller("activity summary", 60, self._poll_activity)
         sup.poller("twitch", 90, self._poll_twitch)
+        if self.eventsub:
+            events = self.eventsub
+            events.heartbeat = lambda: sup.beat("twitch events")
+            sup.service("twitch events", events.restart, heartbeat_s=60,
+                        is_disabled=lambda: not self.svc.twitch.auth.connected)
         sup.poller("projects", 120, self._poll_projects)
         sup.poller("calendars", 300, self._poll_calendar)
         sup.poller("pre-stream check", 60, self._prestream_tick, delay=30)
@@ -165,6 +187,8 @@ class Runtime:
             self.listener.stop()
         self.speaker.stop()
         self.svc.obs.close_events()
+        if self.eventsub:
+            self.eventsub.stop()
         self._commands.shutdown(wait=False, cancel_futures=True)
         if self.svc.jobs:
             self.svc.jobs.shutdown()
@@ -226,8 +250,132 @@ class Runtime:
         self.speaker.say(f"{event['title']} starts soon. {result['spoken']}", expects_reply=False)
 
     def _poll_twitch(self) -> None:
-        if self.svc.twitch.enabled:
-            self.bus.publish("twitch", self.svc.twitch.status(), sticky=True)
+        tw = self.svc.twitch
+        if not getattr(tw, "configured", tw.enabled):
+            return
+        if tw.auth.connected:
+            tw.auth.validate()  # Twitch requires this hourly; it's a no-op in between
+        st = tw.status()
+        st["events"] = self.eventsub.status() if self.eventsub else None
+        st["feed"] = self.twitch_feed.snapshot()
+        st["highlights"] = list(self.highlights.recent)[:20]
+        self.bus.publish("twitch", st, sticky=True)
+
+    # ---- Twitch: login, live events, highlights ---------------------------
+    def twitch_connect(self) -> dict:
+        out = self.svc.twitch.auth.start_login()
+        self._poll_twitch_soon()
+        return out
+
+    def twitch_logout(self) -> dict:
+        if self.eventsub:
+            self.eventsub.stop()
+        out = self.svc.twitch.auth.logout()
+        self._poll_twitch_soon()
+        return out
+
+    def _poll_twitch_soon(self) -> None:
+        threading.Thread(target=self._safe(self._poll_twitch), name="twitch-refresh", daemon=True).start()
+
+    @staticmethod
+    def _safe(fn):
+        def run(*a):
+            try:
+                fn(*a)
+            except Exception:
+                log.exception("%s failed", getattr(fn, "__name__", "task"))
+        return run
+
+    def _on_twitch_auth(self, status: dict) -> None:
+        self.bus.publish("twitch_auth", status, sticky=True)
+        if status.get("connected") and status.get("login") and not status.get("pending"):
+            if self.eventsub:
+                self.eventsub.start()
+            self.announce(f"Twitch is connected as {status['login']}.")
+        elif status.get("error"):
+            self.bus.publish("announce", {"text": status["error"]})
+        self._poll_twitch_soon()
+
+    def _live(self) -> tuple[bool, float | None]:
+        """(live, seconds since the stream started), from OBS or else Twitch."""
+        obs = (self.bus.latest.get("obs") or {}).get("data") or {}
+        stream = obs.get("streaming") or {}
+        if obs.get("connected") and stream.get("active"):
+            ms = stream.get("duration_ms")
+            return True, ms / 1000 if ms else None
+        tw_event = self.bus.latest.get("twitch") or {}
+        tw = tw_event.get("data") or {}
+        if tw.get("live") and tw.get("uptime_s") is not None:
+            return True, tw["uptime_s"] + (time.time() - tw_event.get("ts", time.time()))
+        return bool(tw.get("live")), None
+
+    def _on_twitch_event(self, sub_type: str, event: dict) -> None:
+        ev = normalize(sub_type, event)
+        if ev is None:
+            return
+        ev = self.twitch_feed.add(ev)
+        tw_cfg = self.cfg["twitch"]
+        kind = ev["kind"]
+        if kind == "chat":
+            self.chat_spike.add(ev.get("user") or "", ev.get("text") or "", ev["ts"])
+            spike = self.chat_spike.check(ev["ts"])
+            if spike:
+                self._highlight_async("chat_spike", spike_reason(spike), spike)
+            return
+        if kind in ("online", "offline"):
+            if kind == "online":
+                self.chat_spike = ChatSpike(ratio=float(tw_cfg.get("spike_ratio", 3.0)))
+            self._poll_twitch_soon()
+            return
+        self.bus.publish("twitch_event", {k: v for k, v in ev.items() if k != "text"})  # viewer text stays off the HUD feed
+        said = callout(ev, tw_cfg.get("callouts") or {})
+        if kind == "raid" and said and ev.get("user"):
+            login = (ev.get("detail") or {}).get("login") or ev["user"]
+            self.assistant.offer([("twitch_shoutout", {"user": login})], f"shout out {login}")
+        if said:
+            self.bus.publish("announce", {"text": said})
+            self.speaker.say(said, expects_reply=True if kind == "raid" else False)
+        amount = int(ev.get("amount") or 0)
+        big = (kind in ("raid", "hype_train") or (kind == "cheer" and amount >= 5 * int((tw_cfg.get("callouts") or {}).get("cheer_min", 100)))
+               or (kind == "gift" and amount >= 5))
+        if big:
+            what = {"raid": f"Raid from {ev.get('user')} ({amount})", "hype_train": "Hype train",
+                    "cheer": f"{amount} bits from {ev.get('user') or 'anonymous'}",
+                    "gift": f"{amount} gifted subs from {ev.get('user') or 'anonymous'}"}[kind]
+            self._highlight_async(kind, what, {k: v for k, v in ev.items() if k != "text"})
+
+    def _highlight_async(self, kind: str, reason: str, detail: dict | None = None, place_marker: bool = True) -> None:
+        # Off the event thread: a marker is an HTTP call, and EventSub must keep reading.
+        threading.Thread(target=self._safe(self.highlight), args=(kind, reason, detail, place_marker),
+                         name="highlight", daemon=True).start()
+
+    def highlight(self, kind: str, reason: str, detail: dict | None = None, place_marker: bool = True) -> dict:
+        live, uptime = self._live()
+        h = Highlight(kind, reason[:140], time.time(), uptime, detail=detail or {})
+        twitch = self.svc.twitch
+        if (place_marker and live and self.cfg["twitch"].get("auto_markers", True)
+                and getattr(twitch, "auth", None) is not None and twitch.auth.connected):
+            r = self.assistant.tools.run("twitch_marker", {"description": h.reason}, context={"source": "highlight"})
+            h.marker = bool(r.get("ok"))
+        self.highlights.add(h)
+        self.bus.publish("highlight", h.as_dict())
+        return h.as_dict()
+
+    def _after_tool(self, event: dict) -> None:
+        """Clips and markers you ask for are highlights too."""
+        if event.get("type") != "tool":
+            return
+        data = event.get("data") or {}
+        name, args, result = data.get("name"), data.get("args") or {}, data.get("result") or {}
+        if not isinstance(result, dict) or result.get("ok") is False:
+            return
+        if name == "obs_control" and args.get("action") == "save_replay":
+            self._highlight_async("clip", "Clip that (replay saved)", {"path": result.get("path")})
+        elif name == "twitch_clip":
+            self._highlight_async("clip", "Twitch clip" + (f": {result['title']}" if result.get("title") else ""),
+                                  {"url": result.get("url")})
+        elif name == "twitch_marker":
+            self._highlight_async("manual", args.get("description") or "Marker", {}, place_marker=False)
 
     def _poll_activity(self) -> None:
         self.bus.publish("activity", self.svc.activity.summary_for_day(tz=self.svc.tz), sticky=True)

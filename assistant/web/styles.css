@@ -433,3 +433,13 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
   table.t td { white-space: normal; overflow-wrap: break-word; max-width: none; }
   table.t .wide-only { display: none; }
 }
+
+/* Twitch: device-code login, account bar, highlights */
+.twitch-login { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 14px; display: grid; gap: 10px; margin-bottom: 12px; }
+.twitch-login .code { font-family: var(--display); font-size: 30px; letter-spacing: .24em; font-variant-numeric: tabular-nums; color: var(--ink); }
+.twitch-login .warn, .t2.warn { color: var(--warning); }
+.twitch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0 4px; }
+.twitch-bar .grow { flex: 1; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.stamp { font-variant-numeric: tabular-nums; color: var(--ink-2); margin-right: 8px; }
+

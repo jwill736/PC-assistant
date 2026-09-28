@@ -1,6 +1,6 @@
 # Setting up Vesper, click by click
 
-Every step in order, with exactly where to click. Parts 1–3 are once only.
+Every step in order, with exactly where to click. Parts 1–4 are once only.
 Parts 1–2 take about 30 minutes; Part 3 about 2 hours, mostly waiting.
 You need Windows 10 or 11, a microphone and a Google account (for Part 3).
 
@@ -71,12 +71,26 @@ You need Windows 10 or 11, a microphone and a Google account (for Part 3).
     “stop” during a reply cuts it off. Misses you → re-add with a threshold 0.05 lower; fires on its own →
     0.05 higher.
 
-## Part 4 · Optional
+## Part 4 · Connect Twitch (5 minutes)
 
-18. **Start at sign-in:** in the folder's address bar type `powershell`, then run
+18. **Register the app.** [dev.twitch.tv/console](https://dev.twitch.tv/console) → log in → **Register Your
+    Application**. Twitch first asks you to turn on two-factor authentication if it's off. Fill in:
+    **Name** `Vesper <your name>` · **OAuth Redirect URLs** `http://localhost` → **Add** · **Category**
+    Application Integration · **Client Type** **Public** (can't be changed later) · tick the captcha →
+    **Create**.
+19. **Copy the Client ID.** In the list, click **Manage** next to the app, copy **Client ID**. Paste it into
+    `.env` straight after `TWITCH_CLIENT_ID=` and save. Leave `TWITCH_CLIENT_SECRET=` empty.
+20. **Log in.** Restart Vesper (close the black window, double-click `start.bat`). Say “Vesper, connect
+    Twitch” or click **Connect Twitch** on the **Stream** tab. Click **Open Twitch** (or type the code at
+    twitch.tv/activate) → **Authorize**. Vesper says “Twitch is connected as …”. Try “Vesper, any new
+    followers?”.
+
+## Part 5 · Optional
+
+21. **Start at sign-in:** in the folder's address bar type `powershell`, then run
     `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`. Vesper then lives as a ring icon
     by the clock (click <kbd>^</kbd> if hidden): right-click for **Open HUD**, **Mute microphone**, **Quit**.
-19. **Updates:** GitHub Desktop → **Fetch origin → Pull origin**, run `setup.bat` again (settings kept), quit
+22. **Updates:** GitHub Desktop → **Fetch origin → Pull origin**, run `setup.bat` again (settings kept), quit
     Vesper from the tray and start it again.
 
 ## Where everything lives
@@ -84,18 +98,24 @@ You need Windows 10 or 11, a microphone and a Google account (for Part 3).
 | what | where | for |
 |---|---|---|
 | `setup.bat` / `start.bat` | top of the folder | install or update / start with a log window |
-| `.env` | top of the folder | Claude key, calendar links (private) |
+| `.env` | top of the folder | Claude key, Twitch Client ID, calendar links (private) |
 | `config.yaml` | top of the folder | your name, goals, apps, scenes, macros |
 | `data\settings.yaml` | `data` folder | what you chose in the HUD (wins over `config.yaml`) |
 | HUD | `http://127.0.0.1:8765` | the dashboard |
 | Log | `data\logs\assistant.log` | what went wrong |
 | Models | `data\models\` | speech, voices, trained wake words |
+| Twitch login | `data\twitch_token.json` | delete it (or **Disconnect**) to log out |
+| Highlights | `data\highlights\` | one file per day: moments with the time into the stream |
 
 ## If something's off
 
 - **Never hears you:** redo step 1, then **Setup → Health check → Run check** and read the Microphone row.
 - **Nothing happens on `start.bat`:** it's probably already running in the tray; a second copy opens the HUD.
 - **Answers other people:** finish step 9 and set **STRICT**; headphones stop it hearing its own voice.
+- **Twitch clips or markers say “only while live”:** that's Twitch's rule. Markers also need **Creator
+  Dashboard → Settings → Stream → Store past broadcasts** on; ads and polls need affiliate or partner.
+- **“Connect Twitch” asks for TWITCH_CLIENT_ID:** step 19, then restart Vesper. A login Twitch refuses usually
+  means the app isn't a **Public** client: register a new one (the type can't be changed).
 - **Voice sounds wrong or starts late:** **Setup → Speaking voice**; the Health check's "Speaking voice" row
   times it on your PC.
 - **Colab "GPU not available" / disconnected:** try again later; finished models are already in Drive.

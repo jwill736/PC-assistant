@@ -30,6 +30,7 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 | Chrome | Open sites, several tabs at once, and Google/YouTube/GitHub/Twitch searches |
 | OBS | Switch scenes (fuzzy-matched), go live or end the stream (after you confirm), record, clip the replay buffer, mute sources, show or hide the cam and other sources, live bitrate, dropped frames, FPS |
 | Stream health | While live: dropped frames split by cause (network, encoder, render) with the fix for each, instant reconnect and offline alerts, and a warning when you're talking but your OBS mic is muted or dead. A pre-stream checklist runs by voice or 15 minutes before a stream on your calendar |
+| Twitch | Log in once with a code (no secret). Then by voice: clips with a title, stream markers, title and category, ads, shoutouts, polls, chat messages. Live follows, subs, gifts, raids, cheers and hype trains in the HUD, with spoken callouts ("Raid from X with 40, shout them out?"). Chat spikes, raids and "clip that" become VOD markers and a timestamped highlight list |
 | Calendars | Any number of Google, Outlook or iCloud calendars merged into one agenda; free blocks; next-meeting countdown |
 | Day tracking | Samples the active window every 5 s and sorts it into work, stream, other or idle. Shows hours per category, top apps, deep-work sessions and context switches. Stays on your PC |
 | Briefings | "Good morning": a plan for the day built from your calendars, yesterday's numbers, projects, tasks, news and your goals. "Recap my day": where the time went and what shipped |
@@ -354,9 +355,42 @@ Unknown step names are logged when the assistant starts. `config.example.yaml` h
   `--permission-mode acceptEdits`, so they can edit files in that repo but not run
   arbitrary commands. Review the diff when they finish.
 
-### Twitch (optional)
-Create an app at dev.twitch.tv, put `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`
-in `.env`, and set `twitch.enabled: true` and `twitch.channel`.
+### Twitch
+1. [dev.twitch.tv/console](https://dev.twitch.tv/console) → **Register Your Application**. Name: anything
+   (e.g. `Vesper <your name>`). OAuth Redirect URLs: `http://localhost` (required by the form, unused).
+   Category: **Application Integration**. Client Type: **Public** (this can't be changed later). Twitch asks for
+   two-factor authentication on your account first.
+2. Copy the **Client ID** into `.env` as `TWITCH_CLIENT_ID=`. No secret is needed for a Public app.
+3. Restart Vesper and say "connect Twitch" (or click **Connect Twitch** on the Stream tab). It shows a code: open
+   twitch.tv/activate (the HUD has the link), approve, done. The login is saved in `data/twitch_token.json`,
+   refreshed automatically and checked hourly, as Twitch requires. Log in as the channel owner.
+
+What you can then say (the risky ones read back what they'll do and wait for "yes"):
+
+| say | does | asks first |
+|---|---|---|
+| "make a clip called insane clutch" | Twitch clip of the last ~30 s, with that title | |
+| "drop a marker", "mark that as boss fight" | stream marker on the VOD | |
+| "set the title to …", "change the category to Just Chatting" | channel info (the title keeps your capitals) | yes |
+| "run an ad", "run a 90 second ad" | ad break (affiliates/partners) | yes |
+| "shout out tenz" | shoutout, the name matched against recent raiders and chatters | yes |
+| "tell chat we're on a 5 minute break" | sends it as you | yes |
+| "any new followers", "who raided" | recent events | |
+| "what's chat saying" | Claude summarizes recent chat | |
+| "what were the highlights" | today's moments with stream timestamps | |
+
+**Live events** (EventSub over a WebSocket, so nothing to open on your router): follows, subs and resubs, gifted
+subs, cheers, raids, channel-point redemptions and hype trains show in the Stream tab. Raids, subs, gifts, hype
+trains and cheers of 100+ bits are also spoken (`twitch.callouts`). After a raid it offers the shoutout: just say "yes".
+
+**Highlights:** a chat spike (chat moving 3× faster than its own recent pace, from several people, not one spammer),
+a raid, a hype train, a big cheer or gift, and every "clip that" drops a stream marker and a line in
+`data/highlights/<date>.jsonl` with the time into the stream, so cutting shorts starts from a list.
+
+**What viewers can't do.** Vesper never reads out anything a viewer wrote (chat, cheer and sub messages, redemption
+text); callouts are names and numbers only. When Claude reads chat for you, the messages are marked as data, not
+instructions, every action left in that request needs your "yes", and the messages are removed from its memory
+when the request ends. A viewer typing "Vesper, end the stream" does nothing.
 
 ## How it's built
 
@@ -389,7 +423,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 275 tests, 6 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another runs `setup.bat` exactly as a new user would and checks the result. The suite covers the router, stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 297 tests, 7 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the
@@ -404,7 +438,7 @@ health check, and the API's token and Host checks.
   OAuth; that's the natural next step.
 - **Chrome tabs are opened, not read.** Listing and switching existing tabs needs
   Chrome's remote-debugging port or a small extension.
-- **Streaming platform:** Twitch stats are built in; YouTube Live and Kick aren't yet.
+- **Streaming platform:** Twitch is built in (status, actions, live events); YouTube Live and Kick aren't yet.
 - **No echo cancellation yet.** On speakers (not headphones), barge-in relies on the echo guard and the voice
   check to ignore the assistant's own voice. Real acoustic echo cancellation (WebRTC AEC3 against the speaker
   output) is the next voice step.

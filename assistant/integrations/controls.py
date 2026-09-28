@@ -81,6 +81,8 @@ def volume(level: int | None = None, change: int | None = None, mute: bool | Non
     try:
         ep = endpoint or _endpoint()
     except Exception as exc:
+        if level is None and change is None and mute is None:  # a question: the keys can't read a level
+            return {"ok": False, "error": f"I can't read the volume here (no audio device Windows will report): {exc}"}
         log.debug("pycaw unavailable (%s); falling back to volume keys", exc)
         return _volume_by_keys(level, change, mute)
     try:

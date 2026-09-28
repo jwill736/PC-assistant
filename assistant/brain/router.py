@@ -72,6 +72,51 @@ def clean(text: str) -> str:
     return t.strip()
 
 
+def _raw(text: str, pattern: str) -> str | None:
+    """The same words from the original transcript, keeping its capitals (for titles and chat)."""
+    m = re.search(pattern, text.strip(), re.I)
+    return m.group(1).strip(" .“”\"'") if m else None
+
+
+def twitch_intent(text: str, t: str) -> Intent | None:
+    if re.search(r"^(?:connect|link|log ?in to|sign in to|set up) (?:my )?twitch(?: account)?$", t):
+        return Intent("tool", "twitch_connect")
+    m = re.search(r"^(?:make|create|take) a (?:twitch )?clip(?: (?:called|named|titled) (.+))?$|^(?:twitch clip|clip (?:that|it) on twitch)(?: (?:called|named|titled) (.+))?$", t)
+    if m:
+        title = _raw(text, r"(?:called|named|titled)\s+(.+)$") if (m.group(1) or m.group(2)) else None
+        return Intent("tool", "twitch_clip", {"title": title} if title else {})
+    m = re.search(r"^(?:(?:drop|add|place|set|make) a (?:stream )?marker|mark (?:that|this|it)|marker)(?: (?:here|now))?(?: (?:for|as|called) (.+))?$", t)
+    if m:
+        return Intent("tool", "twitch_marker", {"description": m.group(1)} if m.group(1) else {})
+    if re.search(r"^(?:set|change|update|make) (?:the |my )?(?:stream |twitch )?title (?:to )?.+$", t):
+        title = _raw(text, r"title\s+(?:to\s+)?(.+)$")
+        if title:
+            return Intent("tool", "twitch_set_channel", {"title": title})
+    m = re.search(r"^(?:set|change|switch|update) (?:the |my )?(?:stream |twitch )?(?:category|game) (?:to )?(.+)$", t)
+    if m:
+        return Intent("tool", "twitch_set_channel", {"category": m.group(1)})
+    m = re.search(r"^(?:run|start|play) (?:an? |some )?(?:(\S+(?: \S+)?) (second|minute) )?(?:ads?|ad break|commercial(?: break)?)(?: now)?$", t)
+    if m:
+        length = 60
+        if m.group(1) and number(m.group(1)) is not None:
+            length = number(m.group(1)) * (60 if m.group(2) == "minute" else 1)
+        return Intent("tool", "twitch_ad", {"length": max(30, min(180, length))})
+    m = re.search(r"^(?:give )?(?:a )?shout ?out(?: to| for)? (.+)$|^give (.+) a shout ?out$", t)
+    if m:
+        return Intent("tool", "twitch_shoutout", {"user": (m.group(1) or m.group(2)).removeprefix("@")})
+    if re.search(r"^(?:say|send|post|type|write) .+ (?:in|to|into) (?:the |my )?(?:twitch )?chat$|^tell (?:the )?chat .+$", t):
+        msg = _raw(text, r"^(?:say|send|post|type|write)\s+(.+?)\s+(?:in|to|into)\s+(?:the\s+|my\s+)?(?:twitch\s+)?chat\W*$") \
+            or _raw(text, r"^tell\s+(?:the\s+)?chat\s+(?:that\s+)?(.+)$")
+        if msg:
+            return Intent("tool", "twitch_chat_send", {"message": msg})
+    if re.search(r"^(?:any |who (?:are )?(?:the |my )?)?(?:new |recent |latest )?(?:followers|follows|subs|subscribers|twitch events|events)(?: today)?$"
+                 r"|^who (?:just )?(?:followed|subbed|raided|cheered)$", t):
+        return Intent("tool", "twitch_events")
+    if re.search(r"^(?:what were |list |show |read )?(?:the |today's |my |stream )?highlights(?: today| so far)?$", t):
+        return Intent("tool", "twitch_highlights")
+    return None
+
+
 def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
     ctx = ctx or RouterContext()
     t = clean(text)
@@ -148,6 +193,9 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "obs_control", {"action": "save_replay"})
     if re.search(r"^(?:am i ready to (?:stream|go live)|(?:run (?:the |a )?)?pre-? ?stream (?:check|checklist)|stream check|ready to stream)$", t):
         return Intent("tool", "prestream_check")
+    twitch = twitch_intent(text, t)
+    if twitch:
+        return twitch
     if re.search(r"\b(stream|obs) (status|stats|health)\b|\bhow(?:'?s| is) the stream\b|\bam i live\b|\bdropp(ed|ing) frames\b", t):
         return Intent("tool", "obs_status")
     m = re.search(r"^(hide|show|toggle|turn off|turn on) (?:the |my )?(cam|webcam|camera|face ?cam|chat|alerts?|overlay)$", t) \
@@ -174,6 +222,10 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "obs_set_mute", {"source": src, "muted": m.group(1) == "mute"})
 
     # --- media / volume -------------------------------------------------
+    if re.search(r"^(?:what(?:'s| is) (?:my |the )?(?:volume|sound level)(?: at)?|how loud is it)$", t):
+        return Intent("tool", "set_volume", {})
+    if re.search(r"^(?:what(?:'s| is) (?:my |the )?(?:screen )?brightness(?: at)?|how bright is (?:it|the screen))$", t):
+        return Intent("tool", "set_brightness", {})
     m = re.search(rf"^(?:set |turn )?(?:the )?(?:volume|sound)(?: to| at)? {NUMBER}(?: percent| %|%)?$", t)
     if m and number(m.group(1)) is not None:
         return Intent("tool", "set_volume", {"level": min(100, number(m.group(1)))})

@@ -473,16 +473,53 @@ const render = {
     for (const p of panels('twitch')) {
       const b = body(p);
       if (!tw || !tw.enabled) {
-        fill(b, empty('Twitch stats are off. Set twitch.enabled, channel, and TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET (see README).'));
+        fill(b, empty('Twitch isn’t set up. Register an app at dev.twitch.tv/console (Client Type: Public) and put its Client ID in .env as', 'TWITCH_CLIENT_ID'));
         continue;
       }
-      if (tw.error) { fill(b, empty(`Twitch error: ${tw.error}`)); continue; }
-      fill(b, 
-        h('div', { class: 'obs-top' }, h('span', { class: `badge-live ${tw.live ? '' : 'off'}` }, tw.live ? 'LIVE' : 'OFFLINE'), h('span', { class: 'ink2' }, tw.channel)),
-        tw.live ? h('div', { class: 'stats' },
+      const auth = tw.auth || {};
+      const parts = [];
+      if (auth.pending) parts.push(twitchLogin(auth.pending));
+      else if (!auth.connected) {
+        parts.push(h('div', { class: 'twitch-login' },
+          h('div', { class: 't1' }, 'Connect Twitch'),
+          h('div', { class: 't2' }, 'Clips, markers, title changes, shoutouts, polls, chat and live follows/subs/raids need a login. Or say “connect Twitch”.'),
+          auth.error ? h('div', { class: 't2 warn' }, auth.error) : null,
+          h('div', { class: 'controls' }, h('button', { class: 'btn primary', onclick: twitchConnect }, 'Connect Twitch'))));
+      }
+      if (tw.error) parts.push(empty(`Twitch error: ${tw.error}`));
+      else if (!tw.needs_login) {
+        parts.push(h('div', { class: 'obs-top' }, h('span', { class: `badge-live ${tw.live ? '' : 'off'}` }, tw.live ? 'LIVE' : 'OFFLINE'), h('span', { class: 'ink2' }, tw.channel)));
+        if (tw.live) parts.push(h('div', { class: 'stats' },
           h('div', { class: 'stat' }, h('div', { class: 'label' }, 'Viewers'), h('div', { class: 'value' }, compact(tw.viewers))),
-          h('div', { class: 'stat' }, h('div', { class: 'label' }, 'Uptime'), h('div', { class: 'value' }, fmtDur(tw.uptime_s)))) : null,
-        tw.title ? h('div', { class: 'item' }, h('div', { class: 'main' }, h('div', { class: 't1' }, tw.title), h('div', { class: 't2' }, tw.game || ''))) : null);
+          h('div', { class: 'stat' }, h('div', { class: 'label' }, 'Uptime'), h('div', { class: 'value' }, fmtDur(tw.uptime_s)))));
+        if (tw.title) parts.push(h('div', { class: 'item' }, h('div', { class: 'main' }, h('div', { class: 't1' }, tw.title), h('div', { class: 't2' }, tw.game || ''))));
+      }
+      if (auth.connected) {
+        const ev = tw.events || {};
+        const evState = { connected: status('good', 'Events live'), connecting: status('idle', 'Connecting…'),
+          reconnecting: status('warning', 'Reconnecting…'), stopped: status('idle', 'Events off') }[ev.state] || null;
+        parts.push(h('div', { class: 'twitch-bar' },
+          status('good', `Connected as ${auth.login || '…'}`), evState,
+          h('span', { class: 'grow' }),
+          h('button', { class: 'btn small', title: 'Drop a stream marker here', onclick: () => tool('twitch_marker', {}).then(r => toast(r.ok ? 'Marker added.' : r.error)) }, 'Marker'),
+          h('button', { class: 'btn small', title: 'Make a Twitch clip of the last 30 seconds', onclick: () => tool('twitch_clip', {}).then(r => toast(r.ok ? 'Clipped on Twitch.' : r.error)) }, 'Clip'),
+          h('button', { class: 'btn small ghost', onclick: twitchLogout }, 'Disconnect')));
+        const events = (tw.feed && tw.feed.events) || [];
+        parts.push(h('div', { class: 'sub-h' }, 'Recent'));
+        parts.push(events.length ? h('div', { class: 'list' }, events.slice(0, 8).map(twitchEvent)) : empty('No follows, subs or raids yet.'));
+        if (ev.failed && Object.keys(ev.failed).length) {
+          parts.push(h('div', { class: 't2 warn' }, `Not receiving: ${Object.keys(ev.failed).map(k => k.replace(/^channel\./, '').replace(/_/g, ' ')).join(', ')} (${Object.values(ev.failed)[0]})`));
+        }
+      }
+      const hs = tw.highlights || [];
+      if (hs.length) {
+        parts.push(h('div', { class: 'sub-h' }, `Highlights · today`));
+        parts.push(h('div', { class: 'list' }, hs.slice(0, 8).map(x => h('div', { class: 'item' },
+          h('div', { class: 'main' },
+            h('div', { class: 't1' }, x.uptime_s != null ? h('span', { class: 'stamp' }, stamp(x.uptime_s)) : null, x.reason),
+            h('div', { class: 't2' }, `${ago(x.ts)}${x.marker ? ' · marker on the VOD' : ''}`))))));
+      }
+      fill(b, ...parts);
     }
   },
 
@@ -893,6 +930,47 @@ function renderFindings(res) {
 function renderAll() { for (const fn of Object.values(render)) { try { fn(); } catch (err) { console.error(err); } } }
 
 // ---------------------------------------------------------------- actions
+const TWITCH_EVENT = {
+  follow: () => 'followed', sub: e => `subscribed${e.detail && e.detail.tier ? ` · ${e.detail.tier}` : ''}`,
+  resub: e => `resubscribed · ${e.amount} months`, gift: e => `gifted ${e.amount} sub${e.amount === 1 ? '' : 's'}`,
+  cheer: e => `cheered ${e.amount} bits`, raid: e => `raided with ${e.amount}`,
+  redemption: e => `redeemed ${(e.detail && e.detail.reward) || 'a reward'}`, hype_train: e => `hype train · level ${e.amount || 1}`,
+};
+function twitchEvent(e) {
+  const what = (TWITCH_EVENT[e.kind] || (() => e.kind))(e);
+  return h('div', { class: 'item' }, h('div', { class: 'main' },
+    h('div', { class: 't1' }, e.user || (e.kind === 'hype_train' ? 'Chat' : 'Anonymous'), ' ', h('span', { class: 'ink2' }, what)),
+    h('div', { class: 't2' }, ago(e.ts))));
+}
+function stamp(sec) {
+  sec = Math.max(0, Math.round(sec));
+  return `${Math.floor(sec / 3600)}:${String(Math.floor(sec % 3600 / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+}
+function twitchLogin(pending) {
+  const code = pending.user_code || '';
+  return h('div', { class: 'twitch-login' },
+    h('div', { class: 't2' }, 'Enter this code at twitch.tv/activate, or open the link and approve:'),
+    h('div', { class: 'code' }, code),
+    h('div', { class: 'controls' },
+      h('a', { class: 'btn primary', href: pending.verification_uri, target: '_blank', rel: 'noopener' }, 'Open Twitch'),
+      h('button', { class: 'btn', onclick: () => post('/api/twitch/cancel').catch(() => {}) }, 'Cancel')),
+    h('div', { class: 't2' }, 'Waiting for you to approve… this updates on its own.'));
+}
+async function twitchConnect() {
+  try {
+    const r = await post('/api/twitch/connect');
+    if (!r.ok) toast(r.error);
+  } catch (err) { toast(`Failed: ${err.message}`); }
+}
+async function twitchLogout() {
+  try { await post('/api/twitch/logout'); toast('Twitch disconnected.'); } catch (err) { toast(`Failed: ${err.message}`); }
+}
+function twitchPatch(fn) {
+  S.data.twitch = S.data.twitch || { enabled: true };
+  fn(S.data.twitch);
+  render.twitch();
+}
+
 async function tool(name, args) {
   try { return await post(`/api/tool/${name}`, args || {}); } catch (err) { toast(`Failed: ${err.message}`); return { ok: false }; }
 }
@@ -1054,6 +1132,10 @@ function onEvent(ev) {
     case 'pending': paintPending(data); break;
     case 'pc_control': S.data.pc_control = data; paintHalt(); render.control(); break;
     case 'stream_alert': toast(data.text); break;
+    case 'twitch_auth': twitchPatch(t => { t.auth = data; if (data.connected) t.needs_login = false; }); break;
+    case 'twitch_events_state': twitchPatch(t => { t.events = data; }); break;
+    case 'twitch_event': twitchPatch(t => { t.feed = t.feed || { events: [] }; t.feed.events = [{ ...data, ts: data.ts || ev.ts }, ...(t.feed.events || [])].slice(0, 25); }); break;
+    case 'highlight': twitchPatch(t => { t.highlights = [data, ...(t.highlights || [])].slice(0, 20); }); toast(`Highlight: ${data.reason}${data.marker ? ' (marker added)' : ''}`); break;
     case 'prestream': S.data.prestream = data; render.obs(); break;
     case 'tool': if (S.data.pc_control) refreshControl(); break;
     case 'speak': speak(data); break;

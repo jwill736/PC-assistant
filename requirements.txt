@@ -5,6 +5,7 @@ uvicorn[standard]>=0.29
 pyyaml>=6.0
 psutil>=5.9
 httpx>=0.27
+websockets>=13.0  # Twitch EventSub (live follows, subs, raids, chat)
 feedparser>=6.0
 icalendar>=5.0
 recurring-ical-events>=3.0

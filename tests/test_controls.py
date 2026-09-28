@@ -45,6 +45,9 @@ def test_volume_falls_back_to_the_volume_keys(monkeypatch):
     presses.clear()
     controls.volume(change=-10)
     assert presses == [("volume_down", 5)]
+    presses.clear()
+    asked = controls.volume()  # "what's my volume": the keys can't answer, so say so instead of "adjusted"
+    assert asked["ok"] is False and "can't read the volume" in asked["error"] and presses == []
 
 
 class Session:
@@ -137,6 +140,8 @@ def test_spoken_numbers_and_new_voice_commands():
         "open bluetooth settings": ("open_settings", {"page": "bluetooth"}),
         "go to desktop two": ("virtual_desktop", {"action": "go", "number": 2}),
         "next desktop": ("virtual_desktop", {"action": "next"}),
+        "what's my volume": ("set_volume", {}),     # no arguments: reports the level
+        "how bright is the screen": ("set_brightness", {}),
     }
     for text, (tool, args) in cases.items():
         intent = route(text)

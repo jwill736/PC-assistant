@@ -206,6 +206,24 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
             svc.bus.publish("obs", await run_in_threadpool(svc.obs.status), sticky=True)
         return result
 
+    @app.post("/api/twitch/connect")
+    async def twitch_connect():
+        return await run_in_threadpool(runtime.twitch_connect)
+
+    @app.post("/api/twitch/cancel")
+    async def twitch_cancel():
+        svc.twitch.auth.cancel_login()
+        runtime.bus.publish("twitch_auth", svc.twitch.auth.status(), sticky=True)
+        return {"ok": True}
+
+    @app.post("/api/twitch/logout")
+    async def twitch_logout():
+        return await run_in_threadpool(runtime.twitch_logout)
+
+    @app.get("/api/highlights")
+    async def highlights():
+        return {"highlights": list(runtime.highlights.recent)}
+
     @app.get("/api/health")
     async def health():
         return runtime.supervisor.snapshot()

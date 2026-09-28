@@ -25,6 +25,8 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 | Trigger phrases | One phrase runs a whole sequence: "brb" switches to the BRB scene, mutes the mic and confirms. Define them in `config.yaml`, run them by voice, from the HUD, or let Claude pick one |
 | Always on | Runs silently in the system tray and starts when you sign in. A watchdog restarts any part that crashes or stalls, and everything is logged to `data/logs/` |
 | Apps & windows | Open any installed program or game by name (Start Menu and Desktop shortcuts are found automatically), close apps (after you confirm), bring windows to the front, "where am I" |
+| System controls | Exact volume ("volume 30"), per-app volume ("Discord volume 20"), brightness, Windows Settings pages, virtual desktops |
+| Safety | Every action has a risk tier; the risky ones wait for your "yes" (voice, HUD or a Windows notification button). A kill switch (`Ctrl+Alt+K`, the tray, or "stop everything") stops it all. Every action is logged |
 | Chrome | Open sites, several tabs at once, and Google/YouTube/GitHub/Twitch searches |
 | OBS | Switch scenes (fuzzy-matched), go live or end the stream (after you confirm), record, clip the replay buffer, mute sources, live bitrate, dropped frames, FPS |
 | Calendars | Any number of Google, Outlook or iCloud calendars merged into one agenda; free blocks; next-meeting countdown |
@@ -254,6 +256,37 @@ or the name plus a new command, and it stops mid-sentence (local, SAPI and brows
 With a voice profile enrolled, the speaker check ignores the assistant's own voice coming out of your
 speakers; without one, a "stop" that's part of the reply itself is ignored. `voice.barge_in: false` turns it off.
 
+### PC control: what it may do, and the kill switch
+Every action goes through one checkpoint that knows its risk tier (the research's plan, `assistant/brain/policy.py`):
+
+| tier | examples | what happens |
+|---|---|---|
+| T0 read-only | where am I, calendar, system status | runs; works even while paused |
+| T1 reversible | volume, brightness, open apps and sites, switch scenes, lock | runs |
+| T2 may lose work | close an app | waits for a "yes" |
+| T3 can't be undone, or public | shut down or restart, go live or end the stream, stop recording, delete temp files, let Claude Code change a repo | waits for a "yes" for that one action, with its exact target read back; by voice, only in *your* voice |
+
+- **Yes from anywhere, for that action only.** Say "yes", click *Yes, do it* in the HUD, or (Windows) click *Yes* on
+  the notification. Each waiting action has an id; a slow click on an old notification never confirms whatever
+  replaced it. With a voice profile in `LOG` mode, a T3 "yes" in a voice that doesn't match yours is refused.
+- **Kill switch:** `Ctrl+Alt+K` (`pc_control.kill_hotkey`), *Stop everything* in the tray or HUD, or say "stop
+  everything" (no name needed; "hands off" and "freeze" work with the name). It stops the voice mid-word, drops
+  anything waiting on a yes, cancels background jobs, cuts off Claude mid-reply and refuses every action until you
+  say "resume control" or click *Resume*. Reads and answers keep working. Spoken, it skips the command queue, so it
+  takes effect while a long request is still running. (In acoustic wake mode, without the name it's heard only
+  while a reply is playing.)
+- **Budget:** one request may take at most 25 actions and stops after 3 failures in a row (`pc_control.max_steps`,
+  `max_failures`), so a confused tool loop can't run away.
+- **Audit log:** every action, refusal and kill is one line in `data/logs/actions-YYYY-MM.jsonl`: time, tool,
+  arguments (secrets redacted, long text clipped), tier, who asked (voice, typed, HUD) and the words they used,
+  how it was confirmed, and the result. The last 25 are in **Setup → PC control**.
+- **System controls** use Windows' own APIs: Core Audio via `pycaw` for exact master and per-app volume (the volume
+  keys are the fallback), `screen-brightness-control` for brightness (laptop panels; desktop monitors need DDC/CI
+  turned on in their menu), `ms-settings:` pages, and virtual desktops via Ctrl+Win+arrows or `pyvda` for "desktop 3".
+  Say "volume 30", "Discord volume 20", "brightness 70", "dimmer", "open Bluetooth settings", "next desktop".
+- **Not yet:** clicking and typing inside apps (Windows UI Automation) and screen-based computer use are Phase 4b;
+  they build on this layer.
+
 ### Trigger phrases (macros)
 One phrase, several actions, in order. Put them in `config.yaml`:
 
@@ -324,7 +357,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 226 tests, 5 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan and tray-icon APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another runs `setup.bat` exactly as a new user would and checks the result. The suite covers the router, wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 255 tests, 6 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another runs `setup.bat` exactly as a new user would and checks the result. The suite covers the router, risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the

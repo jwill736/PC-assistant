@@ -96,7 +96,7 @@ class SlowAssistant:
         self.calls, self.started, self.release = [], threading.Event(), threading.Event()
         self.claude_ready = False
 
-    def handle(self, text, source="text", turn=None):
+    def handle(self, text, source="text", turn=None, owner=None):
         self.calls.append((text, source, turn, threading.current_thread().name))
         self.started.set()
         self.release.wait(2)

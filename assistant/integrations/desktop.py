@@ -158,6 +158,17 @@ if IS_WINDOWS:  # pragma: no cover - exercised by the Windows CI job
         user32.keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY, 0)
         user32.keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
 
+    def press_chord(*vks: int) -> None:
+        """Hold each key in order, then release in reverse: press_chord(CTRL, WIN, RIGHT)."""
+        KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 0x1, 0x2
+        try:
+            for vk in vks:
+                user32.keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY, 0)
+                time.sleep(0.01)
+        finally:  # never leave a modifier stuck down
+            for vk in reversed(vks):
+                user32.keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+
 else:
 
     def _run_quiet(args: list[str]) -> str:
@@ -203,6 +214,9 @@ else:
 
     def _press_vk(vk: int) -> None:
         raise NotImplementedError("media keys are only wired up on Windows")
+
+    def press_chord(*vks: int) -> None:
+        raise NotImplementedError("key shortcuts are only wired up on Windows")
 
 
 # --------------------------------------------------------------------------

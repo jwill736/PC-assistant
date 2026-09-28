@@ -225,6 +225,30 @@ def check_tts(cfg, sd=None) -> Check:
     return Check("Speaking voice", PASS, detail)
 
 
+PC_CONTROL_LIBS = {"pycaw": "exact and per-app volume", "screen_brightness_control": "brightness",
+                   "pyvda": "numbered virtual desktops", "win11toast": "Yes/No notification buttons"}
+
+
+def check_pc_control(cfg, importer=None) -> Check:
+    """The Windows libraries behind the system controls; each missing one only loses its feature."""
+    if sys.platform != "win32" and importer is None:
+        return Check("PC control", SKIP, "Windows only")
+    import importlib
+
+    importer = importer or importlib.import_module
+    missing = []
+    for mod, feature in PC_CONTROL_LIBS.items():
+        try:
+            importer(mod)
+        except Exception:
+            missing.append(feature)
+    hotkey = (cfg.get("pc_control") or {}).get("kill_hotkey") or "none"
+    if missing:
+        return Check("PC control", WARN, f"missing: {', '.join(missing)} · kill switch {hotkey}",
+                     "Run setup.bat again to install them.")
+    return Check("PC control", PASS, f"volume, brightness, desktops, toast confirmations · kill switch {hotkey}")
+
+
 def check_port(cfg) -> Check:
     host, port = cfg["server"]["host"], cfg["server"]["port"]
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -248,6 +272,7 @@ def run_doctor(cfg, svc=None, *, test_mic: bool = True, load_model: bool = True,
     checks.append(_guard("Chrome", check_browser))
     checks.append(_guard("Claude Code CLI", lambda: check_claude_cli(cfg)))
     checks += _guard_list("Voice", lambda: check_voice(cfg, test_mic, load_model))
+    checks.append(_guard("PC control", lambda: check_pc_control(cfg)))
     if check_ports:
         checks.append(_guard("HUD port", lambda: check_port(cfg)))
     return {"ran_at": time.time(), "checks": [asdict(c) for c in checks],

@@ -124,6 +124,8 @@ class Tray:
                          checked=lambda: rt.listener.muted),
             ]
         items += [
+            MenuItem("Stop everything (kill switch)", self.toggle_kill_switch,
+                     checked=lambda: rt.assistant.tools.guard.hands_off),
             MenuItem("Pause activity tracking", self.toggle_tracking, checked=lambda: rt.svc.activity.paused),
             MenuItem("", separator=True),
             MenuItem("Setup && health", lambda: self.open_hud("#setup")),
@@ -133,6 +135,13 @@ class Tray:
             MenuItem(f"Quit {rt.cfg['assistant']['name']}", self.quit),
         ]
         return items
+
+    def toggle_kill_switch(self) -> None:
+        """Ticked = PC control paused. Clicking it again resumes."""
+        if self.rt.assistant.tools.guard.hands_off:
+            self.rt.resume_control("tray")
+        else:
+            self.rt.kill_switch("tray")
 
     def toggle_tracking(self) -> None:
         act = self.rt.svc.activity

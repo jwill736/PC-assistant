@@ -19,6 +19,7 @@ _NAMED = {"space", "enter", "tab", "esc", "backspace", "delete", "insert", "home
 _ALIASES = {"control": "ctrl", "win": "cmd", "super": "cmd", "windows": "cmd", "escape": "esc", "return": "enter",
             "pgup": "page_up", "pgdn": "page_down", "del": "delete", "ins": "insert"}
 _listener = None
+_bindings: dict[str, Callable[[], None]] = {}  # pynput combo -> callback; one listener serves them all
 
 
 def to_pynput(combo: str) -> str:
@@ -38,22 +39,27 @@ def to_pynput(combo: str) -> str:
 
 
 def register_hotkey(combo: str | None, callback: Callable[[], None]) -> bool:
+    """Add a global hotkey. Earlier ones stay registered (push-to-talk and the kill switch coexist)."""
     global _listener
     if not combo:
         return False
     try:
         from pynput import keyboard as pk
 
+        key = to_pynput(combo)
+        if key in _bindings and _bindings[key] is not callback:
+            log.warning("hotkey %s was already taken; the newer action wins", combo)
+        _bindings[key] = callback
         if _listener is not None:
             _listener.stop()
-        _listener = pk.GlobalHotKeys({to_pynput(combo): callback})
+        _listener = pk.GlobalHotKeys(dict(_bindings))
         _listener.daemon = True
         _listener.start()
         return True
     except ImportError:
         pass
     except Exception as exc:
-        log.warning("push-to-talk hotkey %s unavailable: %s", combo, exc)
+        log.warning("hotkey %s unavailable: %s", combo, exc)
         return False
     try:  # older installs
         import keyboard
@@ -61,5 +67,5 @@ def register_hotkey(combo: str | None, callback: Callable[[], None]) -> bool:
         keyboard.add_hotkey(combo, callback, suppress=False)
         return True
     except Exception as exc:  # ImportError, or needs root on Linux
-        log.warning("push-to-talk hotkey %s unavailable: %s", combo, exc)
+        log.warning("hotkey %s unavailable: %s", combo, exc)
         return False

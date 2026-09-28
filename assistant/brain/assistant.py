@@ -11,6 +11,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -52,11 +53,18 @@ def _supports(model: str, prefixes: tuple[str, ...]) -> bool:
     return model.startswith(prefixes)
 
 
+class _Stopped(Exception):
+    """The kill switch fired while Claude was still writing."""
+
+
 class Assistant:
     def __init__(self, svc: Services, toolbox: ToolBox | None = None, client: anthropic.Anthropic | None = None):
         self.svc = svc
         self.cfg = svc.cfg["claude"]
-        self.tools = toolbox or ToolBox(svc)
+        self._ctx: dict = {}  # the command being handled: source, utterance, turn, owner (for the audit log)
+        self.tools = toolbox or ToolBox(svc, context=lambda: self._ctx)
+        self.on_kill = None  # the runtime adds what only it can stop: speech, background jobs
+        self.on_pending = None  # e.g. a Windows toast with Yes/No buttons
         self.macros = macro_mod.load_macros(svc.cfg)
         for problem in macro_mod.validate(self.macros, set(self.tools.tools)):
             log.warning(problem)
@@ -115,12 +123,15 @@ class Assistant:
         )
 
     # ------------------------------------------------------------------
-    def handle(self, text: str, source: str = "text", turn: int | None = None) -> dict:
-        """``turn`` (voice commands) tags the spoken reply, so a newer command drops what's left of it."""
+    def handle(self, text: str, source: str = "text", turn: int | None = None, owner: str | None = None) -> dict:
+        """``turn`` (voice commands) tags the spoken reply, so a newer command drops what's left of it.
+        ``owner`` is how the speaker check judged the voice: match | mismatch | pressed | unknown."""
         text = (text or "").strip()
         if not text:
             return {"reply": "", "kind": "empty"}
         with self._lock:
+            self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner}
+            self.tools.guard.new_command()
             self.svc.storage.log("user", text, source)
             self.svc.bus.publish("user_said", {"text": text, "source": source})
             self.svc.bus.publish("thinking", {"active": True})
@@ -140,6 +151,7 @@ class Assistant:
                 out = {"reply": f"That failed: {type(exc).__name__}.", "kind": "error"}
             finally:
                 self._stream_on = False
+                self.tools.guard.end_command()
                 self.svc.bus.publish("thinking", {"active": False})
             out["ms"] = round((time.time() - started) * 1000)
             reply = out.get("reply") or ""
@@ -152,6 +164,7 @@ class Assistant:
             if reply and speak and not self._streamed:
                 # A waiting confirmation keeps the mic open for the "yes"; otherwise only a question does.
                 self.svc.speak(reply, expects_reply=True if self.pending_view() else None, turn=turn)
+            self._ctx = {}
             return out
 
     def _speak_sentence(self, sentence: str, final: bool) -> None:
@@ -162,7 +175,7 @@ class Assistant:
 
     def pending_view(self) -> dict | None:
         if self.pending and self.pending["expires"] > time.time():
-            return {"text": self.pending["text"]}
+            return {"text": self.pending["text"], "id": self.pending["id"], "tier": self.pending["tier"]}
         return None
 
     # ------------------------------------------------------------------
@@ -175,6 +188,13 @@ class Assistant:
             self.pending = None
             self.svc.bus.publish("pending", None)
             return {"reply": "Cancelled." if had else "Okay.", "kind": "cancel"}
+        if kind == "kill":
+            self.stop_everything("voice")
+            return {"reply": "Stopped. PC control is paused until you say resume control.", "kind": "kill"}
+        if kind == "resume":
+            was = self.tools.guard.hands_off
+            self.resume_control()
+            return {"reply": "Back in control." if was else "PC control wasn't paused.", "kind": "resume"}
         if kind == "reset":
             self.reset()
             return {"reply": "Fresh start.", "kind": "reset"}
@@ -210,16 +230,28 @@ class Assistant:
                 risks.append(tool.describe(args))
         return risks
 
-    def run_macro(self, name: str, *, confirmed: bool = False) -> dict:
+    def _tier_of(self, name: str, args: dict) -> int:
+        if name == "run_macro":
+            macro = self.macros.get(str(args.get("name", "")).lower())
+            return max([self._tier_of(t, a) for t, a in macro.tool_steps()] or [0]) if macro else 0
+        tool = self.tools.tools.get(name)
+        return tool.tier_for(args) if tool else 0
+
+    def run_macro(self, name: str, *, confirmed: bool | str = False) -> dict:
+        """``confirmed``: False, or how the yes came in (voice / hud / toast); True means the HUD."""
+        via = confirmed if isinstance(confirmed, str) else ("hud" if confirmed else None)
         macro = self.macros.get(name.lower())
         if macro is None:
             return {"reply": f"I don't have a macro called {name}.", "kind": "error"}
         risks = self.macro_risks(name)
-        if risks and not confirmed:
+        if risks and not via:
             self._set_pending([("run_macro", {"name": macro.name})], f"run {macro.name} ({'; '.join(risks)})")
             return {"reply": f"{macro.name} will {', '.join(risks)}. Say yes to run it.", "kind": "pending"}
         spoken, results = [], []
         for step in macro.steps:
+            if self.tools.guard.hands_off:
+                spoken.append(f"{macro.name} stopped: PC control is paused.")
+                break
             (kind, value), = step.items()
             if kind == "say":
                 spoken.append(str(value))
@@ -231,7 +263,7 @@ class Assistant:
                     "reply": self._ask_claude(str(value)) if self.claude_ready else ""}
                 results.append({"command": value, "reply": out.get("reply")})
             else:
-                result = self.tools.run(kind, value or {})
+                result = self.tools.run(kind, value or {}, confirmed_by=f"macro via {via}" if via else None)
                 self.svc.bus.publish("tool", {"name": kind, "args": value, "result": result, "macro": macro.name})
                 results.append({"tool": kind, "ok": result.get("ok", True), "error": result.get("error")})
                 if result.get("ok") is False and result.get("error"):
@@ -251,16 +283,18 @@ class Assistant:
                 "input_schema": {"type": "object", "properties": {"name": {"type": "string", "enum": [m.name for m in self.macros.values()]}},
                                  "required": ["name"]}}
 
-    def run_tool(self, name: str, args: dict, *, confirmed: bool = False, hints: dict | None = None) -> dict:
+    def run_tool(self, name: str, args: dict, *, confirmed: bool | str = False, hints: dict | None = None) -> dict:
+        """``confirmed``: False, or how the yes came in (voice / hud / toast); True means the HUD."""
+        via = confirmed if isinstance(confirmed, str) else ("hud" if confirmed else None)
         if name == "run_macro":
-            return self.run_macro(args.get("name", ""), confirmed=confirmed)
+            return self.run_macro(args.get("name", ""), confirmed=via or False)
         tool = self.tools.tools.get(name)
         if tool is None:
             return {"reply": f"I don't have a {name} tool.", "kind": "error"}
-        if tool.needs_confirmation(args) and not confirmed:
+        if tool.needs_confirmation(args) and not via:
             self._set_pending([(name, args)], tool.describe(args))
             return {"reply": f"Confirm: {tool.describe(args)}? Say yes or cancel.", "kind": "pending"}
-        result = self.tools.run(name, args)
+        result = self.tools.run(name, args, confirmed_by=via)
         self.svc.bus.publish("tool", {"name": name, "args": args, "result": result})
         reply = summarize(name, args, result, self.svc.tz, hints)
         if name == "run_routine" and result.get("close_candidates"):
@@ -270,25 +304,64 @@ class Assistant:
         return {"reply": reply, "kind": "tool", "tool": name, "data": result}
 
     def _set_pending(self, calls: list[tuple[str, dict]], text: str) -> None:
-        self.pending = {"calls": calls, "text": text, "expires": time.time() + 90}
-        self.svc.bus.publish("pending", {"text": text})
+        tier = max([self._tier_of(n, a) for n, a in calls] or [0])
+        self.pending = {"id": uuid.uuid4().hex[:10], "calls": calls, "text": text, "tier": tier,
+                        "expires": time.time() + 90}
+        self.svc.bus.publish("pending", self.pending_view())
+        if self.on_pending:
+            self.on_pending(self.pending_view())
 
-    def confirm(self) -> str:
+    def confirm(self, pending_id: str | None = None, via: str | None = None) -> str:
+        """Run what's waiting on a yes. ``pending_id`` (HUD, toast) must match what's waiting now,
+        so a slow click can never confirm a different action that replaced it."""
         with self._lock:
-            pending, self.pending = self.pending, None
-            self.svc.bus.publish("pending", None)
+            pending = self.pending
             if not pending or pending["expires"] < time.time():
+                self.pending = None
+                self.svc.bus.publish("pending", None)
                 return "Nothing waiting on a yes."
-            replies = [self.run_tool(name, args, confirmed=True)["reply"] for name, args in pending["calls"]]
+            if pending_id and pending_id != pending["id"]:
+                return "That confirmation is out of date; nothing ran."
+            via = via or ("voice" if self._ctx.get("source") == "voice" else "hud")
+            if via == "voice" and pending["tier"] >= 3 and self._ctx.get("owner") == "mismatch":
+                # LOG mode lets other voices through; an irreversible action still needs yours.
+                return "That one needs your voice. Press the talk hotkey and say yes, or click Confirm."
+            self.pending = None
+            self.svc.bus.publish("pending", None)
+            replies = [self.run_tool(name, args, confirmed=via)["reply"] for name, args in pending["calls"]]
             if self.history:  # let Claude know the parked action happened
                 self.history.append({"role": "user", "content": f"[system note] User confirmed; executed: {pending['text']}. "
                                                                  f"Result: {' '.join(replies)}"})
                 self.history.append({"role": "assistant", "content": "Done."})
             return " ".join(r for r in replies if r) or "Done."
 
-    def cancel(self) -> None:
+    def cancel(self, pending_id: str | None = None) -> None:
+        if pending_id and (not self.pending or self.pending["id"] != pending_id):
+            return  # a stale "No" must not cancel something newer
         self.pending = None
         self.svc.bus.publish("pending", None)
+
+    # ---- kill switch -------------------------------------------------------
+    def stop_everything(self, source: str = "hotkey") -> None:
+        """Hands off: no more actions (reads still work), nothing waiting on a yes, nothing still talking."""
+        self.tools.guard.stop(source)
+        self.cancel()
+        self.tools.audit.write(tool="kill_switch", tier=0, source=source, outcome="stopped")
+        if self.on_kill:
+            try:
+                self.on_kill()
+            except Exception:
+                log.exception("kill switch hook failed")
+        self.svc.bus.publish("pc_control", self.control_status(), sticky=True)
+
+    def resume_control(self, source: str = "voice") -> None:
+        if self.tools.guard.hands_off:
+            self.tools.audit.write(tool="resume_control", tier=0, source=source, outcome="resumed")
+        self.tools.guard.resume()
+        self.svc.bus.publish("pc_control", self.control_status(), sticky=True)
+
+    def control_status(self) -> dict:
+        return {**self.tools.guard.status(), "recent": self.tools.audit.tail(40)}
 
     def reset(self) -> None:
         with self._lock:
@@ -327,6 +400,8 @@ class Assistant:
         if on_text is not None:
             with self.client.beta.messages.stream(**kwargs) as stream:
                 for delta in stream.text_stream:
+                    if self.tools.guard.hands_off:
+                        raise _Stopped  # leaving the with-block closes the connection
                     on_text(delta)
                 return stream.get_final_message()
         return self.client.beta.messages.create(**kwargs)
@@ -362,6 +437,13 @@ class Assistant:
                 if resp.stop_reason != "tool_use":
                     break
                 self.history.append({"role": "user", "content": self._run_tool_calls(resp.content)})
+                guard = self.tools.guard
+                if guard.hands_off or guard.exhausted:  # don't ask Claude to carry on
+                    why = ("Stopped. PC control is paused." if guard.hands_off else
+                           guard.check(1) or "Stopped.")
+                    self.history.append({"role": "assistant", "content": why})
+                    self._streamed = False
+                    return why
             texts = [b.text for b in resp.content if getattr(b, "type", "") == "text"] if resp else []
             reply = " ".join(t.strip() for t in texts if t.strip())
             return reply or "Done."
@@ -382,6 +464,10 @@ class Assistant:
             del self.history[checkpoint:]
             self._streamed = False
             return "I can't reach Claude right now. Local commands still work."
+        except _Stopped:
+            del self.history[checkpoint:]
+            self._streamed = False
+            return "Stopped. PC control is paused."
 
     def _run_tool_calls(self, content) -> list[dict]:
         results = []
@@ -409,6 +495,8 @@ class Assistant:
             else:
                 payload = self.tools.run(block.name, args)
                 self.svc.bus.publish("tool", {"name": block.name, "args": args, "result": payload})
+                if payload.get("blocked") and self.tools.guard.hands_off:
+                    payload = {**payload, "note": "The user stopped all actions. Don't retry; say you've stopped."}
             results.append({
                 "type": "tool_result", "tool_use_id": block.id, "content": compact(payload),
                 **({"is_error": True} if payload.get("ok") is False else {}),

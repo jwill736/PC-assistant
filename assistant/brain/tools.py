@@ -1,5 +1,9 @@
 """Every action the assistant can take, described once and used twice: by the
 fast-path voice router and by Claude as tool definitions.
+
+Each tool has a risk tier (see ``policy.py``). ``ToolBox.run`` is the one door
+every action goes through: it checks the kill switch and the step budget,
+refuses a T2/T3 action nobody confirmed, and writes the audit log.
 """
 
 from __future__ import annotations
@@ -10,9 +14,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from ..integrations import desktop
+from ..integrations import controls, desktop
 from ..integrations.calendars import free_blocks
 from ..services import Services
+from .policy import CONFIRM_FROM, AuditLog, Guard
 
 
 @dataclass
@@ -21,12 +26,15 @@ class Tool:
     description: str
     schema: dict
     handler: Callable[..., dict]
-    # True, or a predicate over the args, when the action needs a spoken "yes".
-    confirm: bool | Callable[[dict], bool] = False
+    # Risk tier 0-3, or a function of the args ("lock" is T1, "shutdown" T3). T2+ needs a "yes".
+    tier: int | Callable[[dict], int] = 0
     confirm_text: Callable[[dict], str] | None = None
 
+    def tier_for(self, args: dict | None) -> int:
+        return int(self.tier(args or {}) if callable(self.tier) else self.tier)
+
     def needs_confirmation(self, args: dict) -> bool:
-        return self.confirm(args) if callable(self.confirm) else bool(self.confirm)
+        return self.tier_for(args) >= CONFIRM_FROM
 
     def describe(self, args: dict) -> str:
         if self.confirm_text:
@@ -51,23 +59,53 @@ def day_bounds(svc: Services, day: str | None) -> datetime:
 
 
 class ToolBox:
-    def __init__(self, svc: Services):
+    def __init__(self, svc: Services, guard: Guard | None = None, audit: AuditLog | None = None,
+                 context: Callable[[], dict] | None = None):
         self.svc = svc
+        pc = svc.cfg.get("pc_control") or {}
+        self.guard = guard or Guard(int(pc.get("max_steps", 25)), int(pc.get("max_failures", 3)))
+        if audit is None:
+            try:
+                audit = AuditLog(svc.cfg.data_dir / "logs")
+            except (OSError, AttributeError, KeyError):
+                audit = AuditLog(None)
+        self.audit = audit
+        self.context = context or (lambda: {})  # who asked: source, utterance, turn, owner
         self.tools: dict[str, Tool] = {t.name: t for t in self._build()}
 
     def definitions(self) -> list[dict]:
         return [t.definition() for t in self.tools.values()]
 
-    def run(self, name: str, args: dict | None = None) -> dict:
+    def run(self, name: str, args: dict | None = None, *, confirmed_by: str | None = None,
+            context: dict | None = None) -> dict:
+        """Run one action through the policy: kill switch, step budget, confirmation, audit."""
+        args = args or {}
         tool = self.tools.get(name)
         if not tool:
             return {"ok": False, "error": f"Unknown tool {name}"}
+        tier = tool.tier_for(args)
+        ctx = context if context is not None else (self.context() or {})
+        base = {"tool": name, "args": args, "tier": tier, "source": ctx.get("source"), "utterance": ctx.get("utterance"),
+                "turn": ctx.get("turn"), "owner": ctx.get("owner")}
+        refused = self.guard.check(tier)
+        if refused is None and tier >= CONFIRM_FROM and not confirmed_by:
+            refused = f"{tool.describe(args)} needs a yes first."  # a caller skipped the confirmation step
+        if refused:
+            self.audit.write(**base, outcome="blocked", error=refused)
+            return {"ok": False, "error": refused, "blocked": True}
+        t0 = time.perf_counter()
         try:
-            return tool.handler(**(args or {}))
+            result = tool.handler(**args)
         except TypeError as exc:
-            return {"ok": False, "error": f"Bad arguments for {name}: {exc}"}
+            result = {"ok": False, "error": f"Bad arguments for {name}: {exc}"}
         except Exception as exc:  # integration failures become answers, not crashes
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        ok = not (isinstance(result, dict) and result.get("ok") is False)
+        self.guard.record(ok)
+        self.audit.write(**base, confirmed_by=confirmed_by or ("auto" if tier else None),
+                         outcome="ok" if ok else "failed", error=None if ok else result.get("error"),
+                         ms=round((time.perf_counter() - t0) * 1000))
+        return result
 
     # ------------------------------------------------------------------
     def _build(self) -> list[Tool]:
@@ -75,51 +113,68 @@ class ToolBox:
         profiles = list(s.cfg["profiles"].keys())
         return [
             Tool("open_app", "Launch a desktop program or game by name (e.g. 'discord', 'obs', 'photoshop', 'spotify').",
-                 obj({"name": {"type": "string"}}, ["name"]), lambda name: s.launcher.launch(name)),
+                 obj({"name": {"type": "string"}}, ["name"]), lambda name: s.launcher.launch(name), tier=1),
             Tool("close_app", "Close every window/process of a running program by name.",
-                 obj({"name": {"type": "string"}}, ["name"]), self._close_app, confirm=True,
+                 obj({"name": {"type": "string"}}, ["name"]), self._close_app, tier=2,
                  confirm_text=lambda a: f"close {a.get('name')}"),
             Tool("focus_window", "Bring an already-open window to the front, matched by app or title text.",
-                 obj({"query": {"type": "string"}}, ["query"]), lambda query: desktop.focus_window(query)),
+                 obj({"query": {"type": "string"}}, ["query"]), lambda query: desktop.focus_window(query), tier=1),
             Tool("where_am_i", "Report the active window and every open app/window — what the user is looking at.",
                  obj(), lambda: desktop.where_am_i()),
             Tool("open_urls", "Open one or more websites or saved site aliases (e.g. 'gmail', 'youtube') as Chrome tabs.",
                  obj({"targets": {"type": "array", "items": {"type": "string"}},
                       "new_window": {"type": "boolean"}}, ["targets"]),
-                 lambda targets, new_window=False: s.browser.open(targets, new_window)),
+                 lambda targets, new_window=False: s.browser.open(targets, new_window), tier=1),
             Tool("web_search", "Open a search in the browser. engine: google, youtube, github, twitch, maps, amazon, reddit.",
                  obj({"query": {"type": "string"}, "engine": {"type": "string"}}, ["query"]),
-                 lambda query, engine="google": s.browser.search(query, engine)),
+                 lambda query, engine="google": s.browser.search(query, engine), tier=1),
             Tool("media_control", "System media keys: play_pause, next, previous, volume_up, volume_down, mute.",
                  obj({"action": {"type": "string", "enum": list(desktop.MEDIA_KEYS)},
                       "times": {"type": "integer", "description": "repeat count, for volume steps (2% each)"}}, ["action"]),
-                 lambda action, times=1: desktop.media_key(action, times)),
+                 lambda action, times=1: desktop.media_key(action, times), tier=1),
+            Tool("set_volume", "Master volume: level 0-100 sets it exactly, change moves it (e.g. -10), mute true/false. "
+                               "No arguments reports the current level.",
+                 obj({"level": {"type": "integer"}, "change": {"type": "integer"}, "mute": {"type": "boolean"}}),
+                 lambda level=None, change=None, mute=None: controls.volume(level, change, mute), tier=1),
+            Tool("app_volume", "One app's volume (0-100) or mute, e.g. quieter Discord or mute Spotify. Only apps "
+                               "currently making sound can be changed.",
+                 obj({"app": {"type": "string"}, "level": {"type": "integer"}, "mute": {"type": "boolean"}}, ["app"]),
+                 self._app_volume, tier=1),
+            Tool("set_brightness", "Screen brightness 0-100 (level) or relative (change). No arguments reports it.",
+                 obj({"level": {"type": "integer"}, "change": {"type": "integer"}}),
+                 lambda level=None, change=None: controls.brightness(level, change), tier=1),
+            Tool("open_settings", f"Open a Windows Settings page: {', '.join(sorted(controls.SETTINGS_PAGES))}.",
+                 obj({"page": {"type": "string"}}, ["page"]), lambda page: controls.open_settings(page), tier=1),
+            Tool("virtual_desktop", "Switch virtual desktops: action next, previous, go (with number, 1-based) or status.",
+                 obj({"action": {"type": "string", "enum": ["next", "previous", "go", "status"]},
+                      "number": {"type": "integer"}}, ["action"]),
+                 lambda action, number=None: controls.virtual_desktop(action, number), tier=1),
             Tool("power", "Lock, sleep, restart or shut down the PC.",
                  obj({"action": {"type": "string", "enum": ["lock", "sleep", "restart", "shutdown"]}}, ["action"]),
                  lambda action: desktop.power_action(action),
-                 confirm=lambda a: a.get("action") != "lock", confirm_text=lambda a: f"{a.get('action')} the PC"),
+                 tier=lambda a: 1 if a.get("action") == "lock" else 3, confirm_text=lambda a: f"{a.get('action')} the PC"),
             Tool("system_status", "Live CPU, GPU, RAM, disk, network and the heaviest processes.",
                  obj(), self._system_status),
             Tool("optimize_pc", "Analyze the PC and return concrete optimization findings with suggested actions.",
                  obj({"streaming": {"type": "boolean"}}), lambda streaming=False: s.system.analyze(streaming)),
             Tool("clean_temp", "Delete temp files older than a day to free disk space.",
-                 obj(), lambda: s.system.clean_temp(), confirm=True, confirm_text=lambda a: "clear out old temp files"),
+                 obj(), lambda: s.system.clean_temp(), tier=3, confirm_text=lambda a: "delete temp files older than a day"),
             Tool("set_power_plan", "Switch the Windows power plan: high, balanced, saver.",
                  obj({"plan": {"type": "string", "enum": ["high", "balanced", "saver"]}}, ["plan"]),
-                 lambda plan: s.system.set_power_plan(plan)),
+                 lambda plan: s.system.set_power_plan(plan), tier=1),
             Tool("obs_status", "OBS state: current scene, scene list, live/recording status, dropped frames, bitrate, FPS.",
                  obj(), lambda: s.obs.status()),
             Tool("obs_switch_scene", "Switch the OBS program scene (fuzzy-matched by name).",
-                 obj({"scene": {"type": "string"}}, ["scene"]), lambda scene: s.obs.switch_scene(scene)),
+                 obj({"scene": {"type": "string"}}, ["scene"]), lambda scene: s.obs.switch_scene(scene), tier=1),
             Tool("obs_control", "Start/stop the stream, recording, replay buffer or virtual cam; save a replay clip.",
                  obj({"action": {"type": "string", "enum": list(s.obs.ACTIONS)}}, ["action"]),
                  lambda action: s.obs.control(action),
-                 confirm=lambda a: a.get("action") in {"start_stream", "stop_stream", "stop_recording"},
+                 tier=lambda a: 3 if a.get("action") in {"start_stream", "stop_stream", "stop_recording"} else 1,
                  confirm_text=lambda a: {"start_stream": "go live", "stop_stream": "end the stream",
                                           "stop_recording": "stop recording"}.get(a.get("action"), a.get("action"))),
             Tool("obs_set_mute", "Mute, unmute or toggle an OBS audio source (e.g. 'mic', 'desktop audio'). muted omitted = toggle.",
                  obj({"source": {"type": "string"}, "muted": {"type": "boolean"}}, ["source"]),
-                 lambda source, muted=None: s.obs.set_mute(source, muted)),
+                 lambda source, muted=None: s.obs.set_mute(source, muted), tier=1),
             Tool("twitch_status", "Twitch channel live status, viewers, title, uptime.", obj(), lambda: s.twitch.status()),
             Tool("calendar", "Events across all of the user's calendars. days=1 is today. profile filters to one area.",
                  obj({"days": {"type": "integer"}, "profile": {"type": "string"}}), self._calendar),
@@ -133,18 +188,20 @@ class ToolBox:
             Tool("add_task", f"Add a task. profile: {', '.join(profiles)} or personal. priority 1 (urgent) to 3.",
                  obj({"title": {"type": "string"}, "profile": {"type": "string"}, "priority": {"type": "integer"},
                       "due": {"type": "string", "description": "YYYY-MM-DD"}}, ["title"]),
-                 lambda title, profile="work", priority=2, due=None: {"ok": True, "task": s.storage.add_task(title, profile, priority, due)}),
+                 lambda title, profile="work", priority=2, due=None: {"ok": True, "task": s.storage.add_task(title, profile, priority, due)},
+                 tier=1),
             Tool("complete_task", "Mark a task done by id or by (fuzzy) title.",
-                 obj({"id": {"type": "integer"}, "title": {"type": "string"}}), self._complete_task),
+                 obj({"id": {"type": "integer"}, "title": {"type": "string"}}), self._complete_task, tier=1),
             Tool("remember", "Save a note the user wants remembered; notes feed future briefings.",
-                 obj({"text": {"type": "string"}}, ["text"]), lambda text: {"ok": True, "note": s.storage.add_note(text)}),
+                 obj({"text": {"type": "string"}}, ["text"]), lambda text: {"ok": True, "note": s.storage.add_note(text)},
+                 tier=1),
             Tool("run_routine", f"Set up a whole workspace in one go: {', '.join(profiles)}. Opens its apps, tabs and OBS scene.",
-                 obj({"profile": {"type": "string", "enum": profiles}}, ["profile"]), self._run_routine),
+                 obj({"profile": {"type": "string", "enum": profiles}}, ["profile"]), self._run_routine, tier=1),
             Tool("start_job", "Run work in the background while the user does something else. kind=claude_code runs "
                               "Claude Code headless inside a repo (needs project); kind=research does web research and writes a brief.",
                  obj({"kind": {"type": "string", "enum": ["claude_code", "research"]}, "prompt": {"type": "string"},
                       "project": {"type": "string"}, "title": {"type": "string"}}, ["kind", "prompt"]),
-                 self._start_job, confirm=lambda a: a.get("kind") == "claude_code",
+                 self._start_job, tier=lambda a: 3 if a.get("kind") == "claude_code" else 1,
                  confirm_text=lambda a: f"have Claude Code work on '{a.get('prompt', '')[:60]}' in {a.get('project')}"),
             Tool("list_jobs", "Background jobs and their status/output.", obj(),
                  lambda: {"jobs": [dict(j, output=(j.get("output") or "")[:600]) for j in s.storage.list_jobs(10)]}),
@@ -154,6 +211,13 @@ class ToolBox:
     def _close_app(self, name: str) -> dict:
         names = self.svc.launcher.process_names_for(name)
         return desktop.close_processes(names, set(self.svc.cfg["optimizer"]["protected_processes"]))
+
+    def _app_volume(self, app: str, level: int | None = None, mute: bool | None = None) -> dict:
+        try:
+            names = set(self.svc.launcher.process_names_for(app))
+        except Exception:
+            names = set()
+        return controls.app_volume(app, level, mute, names)
 
     def _system_status(self) -> dict:
         snap = self.svc.system.snapshot()

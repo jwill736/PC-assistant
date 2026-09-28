@@ -51,6 +51,16 @@ voice:
     # output_device: null       # speakers/headphones by index or name; default = Windows default
     # voice_hint: David         # pyttsx3 only: part of a SAPI voice name, e.g. "David", "Zira"
 
+# What it may do on its own. Every action has a risk tier: T0 read-only and T1 reversible
+# (volume, opening apps, switching scenes) just run; T2 (closing apps) and T3 (shutting down,
+# going live or ending the stream, deleting, running code) wait for your "yes". Every action is
+# logged to data/logs/actions-YYYY-MM.jsonl and shown in the HUD (Setup → PC control).
+pc_control:
+  kill_hotkey: ctrl+alt+k       # stop talking, drop what's waiting, cancel jobs, refuse actions until resumed
+  max_steps: 25                 # actions Claude may take for one request
+  max_failures: 3               # ...and failed ones in a row before it stops
+  toast_confirm: true           # Windows: also ask with a Yes/No notification
+
 # Profiles drive activity tracking (which apps/sites count as what),
 # "start <profile> mode" routines, and the Work / Stream dashboard views.
 profiles:

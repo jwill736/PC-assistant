@@ -44,16 +44,31 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 
 ## Quick start (Windows)
 
-1. Install **Python 3.12** from python.org, ideally [3.12.10](https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe),
-   the last 3.12 with a Windows installer (tick *Add python.exe to PATH*). Step by step, with every click:
-   the [setup guide](docs/SETUP.md).
+Open PowerShell (no need for administrator) and paste:
+
+```
+irm https://raw.githubusercontent.com/jwill736/PC-assistant/main/install.ps1 | iex
+```
+
+[`install.ps1`](install.ps1) checks Windows lets desktop apps use the microphone, installs Python 3.12.10 if
+there's no usable Python (from python.org, signature checked, per-user, no admin), downloads Vesper into
+`%USERPROFILE%\Vesper`, installs the packages, and asks three things: what to call you, your main goal, and
+which model answers (one on this PC, your Llama on another PC on your network, a Claude key, or later). It
+then puts Vesper on the desktop and in the Start menu and starts it. **Update Vesper** in the Start menu (or
+the same line again) updates it and never touches `config.yaml`, `.env` or `data\`. Every click: the
+[setup guide](docs/SETUP.md). Then: Setup tab → **Calibrate my voice**
+(see [Voice](#voice)), and say *"Vesper, good morning."*
+
+**By hand** (or to work on the code):
+1. Install **Python 3.12**, ideally [3.12.10](https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe),
+   the last 3.12 with a Windows installer (tick *Add python.exe to PATH*), and clone this repo.
 2. Double-click **`setup.bat`**. It creates `.venv`, installs everything, and copies
    `config.example.yaml` to `config.yaml` and `.env.example` to `.env`.
-3. Edit **`.env`**. Add `ANTHROPIC_API_KEY` for the Claude brain and your calendar links.
-4. Edit **`config.yaml`**. Set your name and your **goals**. Apps, games, OBS scenes and repos are found automatically (see below).
-5. Double-click **`start.bat`**. On first launch it scans the PC, then the HUD opens as a Chrome app window.
+3. Run `.venv\Scripts\python -m assistant.firstrun` for the three questions, or edit **`config.yaml`** (your
+   name, **goals**, `brain.local.url` for a model on another PC) and **`.env`** (`ANTHROPIC_API_KEY` for Claude,
+   calendar links) yourself. Apps, games, OBS scenes and repos are found automatically (see below).
+4. Double-click **`start.bat`**. On first launch it scans the PC, then the HUD opens as a Chrome app window.
    Open the **Setup** tab to see what's connected and what still needs you.
-6. In the Setup tab, click **Calibrate my voice** (about a minute; see [Voice](#voice)). Then say *"Vesper, good morning."*
 
 To start it every time you sign in, run
 `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`. It launches with `pythonw`: no
@@ -63,7 +78,8 @@ second copy just opens the HUD of the one already running.
 
 Command-line flags: `python -m assistant --no-voice --no-window --no-tray --port 8765 --debug --config path\to\config.yaml`,
 plus `--scan` (scan the PC and exit), `--doctor` (scan, run a live health check of every connection, and exit)
-and `--calibrate` (voice calibration in the console, then exit).
+`--calibrate` (voice calibration in the console, then exit) and `--quit` (close the copy that's running;
+the installer uses it before an update).
 
 ## PC scan & health check
 
@@ -132,11 +148,14 @@ Out of the box it answers with whatever it finds (Setup → **Brain** shows whic
   found by themselves, rechecked every minute. With Ollama: install it from ollama.com, then `ollama pull llama3.1:8b`.
   Vesper picks a model that can call tools (Ollama reports it), preferring 3-14B, which is fast enough to talk to.
   Pick another in Setup → Brain, or pin one with `brain.local.model`.
+- **Your model on another PC**, e.g. Vesper on a laptop and the Llama on your main PC: `brain.local.url:
+  http://GAMING-PC:11434` (the installer asks and checks it). On that PC run `setx OLLAMA_HOST 0.0.0.0` and
+  restart Ollama (LM Studio: **Serve on Local Network**). It's tried first, then this PC's own servers.
 - **Claude**, when `ANTHROPIC_API_KEY` is in `.env`. `brain.provider: auto` prefers Claude when there's a key;
   `local` never sends anything to the cloud.
 
-What to expect from a local model: a 3-8B model answers questions, uses one tool at a time and writes a decent
-morning plan. Multi-step requests ("check my calendar, then move the stream and tell chat") are where Claude is
+What to expect from a local model: a 3-8B model answers questions and uses one tool at a time. Its morning plan
+is the weak spot: Llama 3.2 3B's came out generic in CI, so use an 8B model or Claude for plans. Multi-step requests ("check my calendar, then move the stream and tell chat") are where Claude is
 much stronger. Everyday commands ("volume 30", "switch to BRB", "clip that") never touch a model either way. A local
 model's tool calls go through the same risk tiers, "yes" confirmations and kill switch as Claude's. It gets a
 shorter tool list (`brain.local.tools`) because small models choose better from fewer options.
@@ -455,7 +474,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 328 tests, 7 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another installs Ollama, pulls Llama 3.2 3B and has Vesper answer a question, use a tool, answer from memory and write the morning plan with it. Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, the local brain (model detection and choice, streamed and text-written tool calls, the tool loop behind the same tiers, briefings) and memory recall, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 353 tests, 8 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another installs Ollama, pulls Llama 3.2 3B and has Vesper answer a question, use a tool, answer from memory and write the morning plan with it. Another pastes the one-line installer into Windows PowerShell 5.1 (fresh Python from python.org, the code from GitHub's zip of the commit), updates over it and checks the settings survived, then boots the installed copy. Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, the local brain (model detection and choice, streamed and text-written tool calls, the tool loop behind the same tiers, briefings) and memory recall, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the

@@ -122,3 +122,53 @@ jobs:
         # can't connect must show up as a message, not take the app down.
         shell: cmd
         run: .venv\Scripts\python scripts\smoke_boot.py
+
+  installer:
+    # The one-line install a new user pastes, in Windows PowerShell 5.1 as they have it: Python 3.12 from
+    # python.org (signature checked, per-user), Vesper from GitHub's zip of this commit, setup.bat, the
+    # questions, shortcuts. Then the same again as an update (settings must survive), then the installed
+    # copy boots the way its desktop shortcut starts it.
+    name: install.ps1 (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      REF: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install like the pasted line (fresh Python, code from GitHub)
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'Vesper'
+          & ([scriptblock]::Create((Get-Content .\install.ps1 -Raw))) -Dir $dir -Ref $env:REF -InstallPython -Unattended -NoStart -Name 'CI' -Goal 'Ship it by Friday' -BrainUrl 'http://127.0.0.1:9'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Check what it made
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'Vesper'
+          $py = Join-Path $dir '.venv\Scripts\python.exe'
+          & $py -c "import sys, sysconfig, assistant, sherpa_onnx, sounddevice, pynput, livekit.wakeword; print(sys.version, sysconfig.get_platform())"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & $py -c "from assistant.config import load_config; c = load_config(r'$dir\config.yaml'); print(c['assistant']['user_name'], c['goals']['north_star'], c['brain']['local']['url']); assert (c['assistant']['user_name'], c['goals']['north_star'], c['brain']['local']['url']) == ('CI', 'Ship it by Friday', 'http://127.0.0.1:9')"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $programs = [Environment]::GetFolderPath('Programs')
+          foreach ($f in "$dir\data\vesper.ico", "$([Environment]::GetFolderPath('Desktop'))\Vesper.lnk", "$programs\Vesper.lnk", "$programs\Update Vesper.lnk", "$dir\.env") {
+            if (-not (Test-Path $f)) { Write-Host "missing: $f"; exit 1 }
+          }
+          if (-not ((Get-Content "$dir\setup.bat" -Raw) -match "`r`n")) { Write-Host 'setup.bat lost its CRLF line endings'; exit 1 }
+      - name: Update over it (the same line again, as a file); settings kept
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'Vesper'
+          Add-Content "$dir\config.yaml" "`n# a note of my own"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Dir $dir -Ref $env:REF -Unattended -NoStart
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Select-String -Path "$dir\config.yaml" -Pattern 'a note of my own' -Quiet)) { Write-Host 'the update replaced config.yaml'; exit 1 }
+          & "$dir\.venv\Scripts\python.exe" -c "from assistant.config import load_config; assert load_config(r'$dir\config.yaml')['assistant']['user_name'] == 'CI'"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\Vesper\data\models
+          key: installer-models-${{ hashFiles('assistant/voice/models.py') }}
+      - name: Boot the installed copy
+        shell: cmd
+        run: '"%RUNNER_TEMP%\Vesper\.venv\Scripts\python.exe" "%RUNNER_TEMP%\Vesper\scripts\smoke_boot.py"'

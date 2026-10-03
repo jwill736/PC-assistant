@@ -35,6 +35,24 @@ def already_running(host: str, port: int) -> bool:
     return r.status_code == 200 and "HUD</title>" in r.text
 
 
+def quit_running(host: str, port: int, data_dir, wait: float = 20.0) -> bool:
+    """Ask the copy serving this port to close (the installer, before updating). True once nothing answers."""
+    if not already_running(host, port):
+        return True
+    token_file = data_dir / "api_token"
+    token = token_file.read_text().strip() if token_file.exists() else ""
+    try:
+        httpx.post(f"http://{host}:{port}/api/quit", headers={"x-assistant-token": token}, timeout=5)
+    except httpx.HTTPError:
+        pass
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        if not already_running(host, port):
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def open_hud(url: str) -> None:
     if not Browser().app_window(url):
         webbrowser.open(url)
@@ -89,6 +107,7 @@ def main() -> None:
     parser.add_argument("--bench-voice", action="store_true",
                         help="record 10 commands and compare speech engines on your voice and PC, then exit")
     parser.add_argument("--apply", action="store_true", help="with --bench-voice: switch to the best engine")
+    parser.add_argument("--quit", action="store_true", help="close the copy that's running, then exit")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -101,6 +120,13 @@ def main() -> None:
         pass
 
     cfg = load_config(args.config)
+    host = cfg["server"]["host"]
+    port = args.port or cfg["server"]["port"]
+    local_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    if args.quit:
+        closed = quit_running(local_host, port, cfg.data_dir)
+        print("Vesper is closed." if closed else "Vesper is still running: quit it from the tray icon.")
+        sys.exit(0 if closed else 1)
     log_path = setup_logging(cfg.data_dir, args.debug, console=not headless)
     log = logging.getLogger("assistant")
 
@@ -128,10 +154,8 @@ def main() -> None:
             sys.exit(1)
         sys.exit(0 if report["best"] else 1)
 
-    host = cfg["server"]["host"]
-    port = args.port or cfg["server"]["port"]
-    url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}/"
-    if already_running("127.0.0.1" if host in ("0.0.0.0", "::") else host, port):
+    url = f"http://{local_host}:{port}/"
+    if already_running(local_host, port):
         log.info("Already running — opening the HUD instead of starting a second copy.")
         open_hud(url)
         return
@@ -155,6 +179,7 @@ def main() -> None:
     runtime = Runtime(cfg)
     app = create_app(runtime)
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_config=None, log_level="warning"))
+    app.state.on_quit = lambda: setattr(server, "should_exit", True)
 
     tray = None
     if cfg.get("tray", {}).get("enabled", True) and not args.no_tray:

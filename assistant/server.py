@@ -131,6 +131,15 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def control_resume():
         return runtime.resume_control("hud")
 
+    @app.post("/api/quit")
+    async def quit_app():
+        """Close Vesper: the installer does this before updating (``python -m assistant --quit``)."""
+        stop = getattr(app.state, "on_quit", None)
+        if stop is None:
+            raise HTTPException(503, "this copy can't be closed from the API")
+        stop()
+        return {"ok": True}
+
     @app.post("/api/briefing/{kind}")
     async def make_briefing(kind: str):
         if kind not in {"morning", "recap"}:

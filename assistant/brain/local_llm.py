@@ -59,10 +59,15 @@ def pick_model(models: list[dict]) -> str | None:
     return min(usable, key=score)["name"]
 
 
-def detect(http: httpx.Client | None = None, extra_url: str | None = None, timeout: float = 0.8) -> dict | None:
-    """The first local model server that answers, with its models: {kind, url, models: [{name, size_b, tools}]}."""
-    http = http or httpx.Client(timeout=timeout, trust_env=False)  # never send localhost through a proxy
-    servers = ([("custom", extra_url.rstrip("/"))] if extra_url else []) + list(SERVERS)
+def detect(http: httpx.Client | None = None, extra_url: str | None = None, timeout: float = 0.8,
+           defaults: bool = True) -> dict | None:
+    """The first model server that answers, with its models: {kind, url, models: [{name, size_b, tools}]}.
+
+    ``extra_url`` (brain.local.url) is tried first: a non-default port, or the model on another PC on the
+    home network. ``defaults=False`` checks only that one.
+    """
+    http = http or httpx.Client(timeout=timeout, trust_env=False)  # never send home-network calls through a proxy
+    servers = ([("custom", extra_url.rstrip("/"))] if extra_url else []) + (list(SERVERS) if defaults else [])
     for kind, url in servers:
         try:
             if kind in ("ollama", "custom"):

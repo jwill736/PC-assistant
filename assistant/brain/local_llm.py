@@ -30,7 +30,8 @@ log = logging.getLogger(__name__)
 # (kind, base URL): the default ports. Anything else goes in brain.local.url.
 SERVERS = (("ollama", "http://127.0.0.1:11434"), ("lmstudio", "http://127.0.0.1:1234"),
            ("llamacpp", "http://127.0.0.1:8080"), ("jan", "http://127.0.0.1:1337"))
-LABELS = {"ollama": "Ollama", "lmstudio": "LM Studio", "llamacpp": "llama.cpp", "jan": "Jan", "custom": "Local server"}
+LABELS = {"ollama": "Ollama", "lmstudio": "LM Studio", "llamacpp": "llama.cpp", "jan": "Jan", "custom": "Model server"}
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 # Families whose chat templates handle tool calls, best first. Used when the server can't tell us.
 TOOL_FAMILIES = ("llama3.3", "llama3.1", "qwen3", "qwen2.5", "llama3.2", "mistral-nemo", "mistral-small", "mistral",
                  "command-r", "hermes3", "granite3", "phi4-mini", "llama4", "gpt-oss")
@@ -78,7 +79,7 @@ def detect(http: httpx.Client | None = None, extra_url: str | None = None, timeo
                         details = m.get("details") or {}
                         models.append({"name": m["name"], "size_b": _size_b(details.get("parameter_size", "")),
                                        "family": details.get("family"), "tools": _ollama_tools(http, url, m["name"])})
-                    return {"kind": "ollama" if kind == "ollama" else kind, "url": url, "models": models}
+                    return {"kind": "ollama", "url": url, "models": models}  # /api/tags answered: it's Ollama
             r = http.get(f"{url}/v1/models", timeout=timeout)
             if r.status_code == 200:
                 data = r.json().get("data") or []
@@ -87,6 +88,18 @@ def detect(http: httpx.Client | None = None, extra_url: str | None = None, timeo
         except (httpx.HTTPError, ValueError):
             continue
     return None
+
+
+def server_label(kind: str | None, url: str | None) -> str | None:
+    """'Ollama', or 'Ollama at GAMING-PC' when the server is another PC on the network."""
+    if not kind:
+        return None
+    label = LABELS.get(kind, kind)
+    host = httpx.URL(url).host if url else ""
+    if not host or host in LOOPBACK:
+        return label
+    # Windows shows PC names in capitals (GAMING-PC); IP addresses stay as they are
+    return f"{label} at {host.upper() if re.fullmatch(r'[A-Za-z0-9-]+', host) else host}"
 
 
 def _ollama_tools(http: httpx.Client, url: str, name: str) -> bool | None:
@@ -109,7 +122,7 @@ class LocalLLM:
 
     @property
     def label(self) -> str:
-        return f"{self.model} on {LABELS.get(self.kind, self.kind)}"
+        return f"{self.model} on {server_label(self.kind, self.url)}"
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, on_text: Callable[[str], None] | None = None,
              temperature: float = 0.3, max_tokens: int = 700, json_schema: dict | None = None,
@@ -240,6 +253,8 @@ class LocalBrain:
 
     def status(self) -> dict:
         f = self.found or {}
-        return {"ready": self.llm is not None, "server": LABELS.get(f.get("kind", ""), f.get("kind")),
+        return {"ready": self.llm is not None, "server": server_label(f.get("kind"), f.get("url")),
                 "url": f.get("url"), "model": self.llm.model if self.llm else None,
-                "models": [m["name"] for m in f.get("models") or []]}
+                "models": [m["name"] for m in f.get("models") or []],
+                # brain.local.url (e.g. the main PC): shown when it can't be reached
+                "configured_url": (self.cfg.get("url") or "").rstrip("/") or None}

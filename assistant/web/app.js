@@ -877,7 +877,10 @@ render.brain = function brain() {
         h('span', { class: 'k' }, 'Answering with'), h('span', {}, answering),
         h('span', { class: 'k' }, 'Use'), h('span', {}, modes),
         h('span', { class: 'k' }, 'Local model'), picker || h('span', { class: 'muted' },
-          local.server ? `${local.server} is running with no models.` : 'None found. Install Ollama (ollama.com), then run: ollama pull llama3.1:8b'),
+          local.server ? `${local.server} is running with no models.`
+          : local.configured_url ? `Can't reach ${local.configured_url}. On that PC: setx OLLAMA_HOST 0.0.0.0, then restart Ollama `
+            + '(LM Studio: Serve on Local Network). Setup guide, step 19.'
+          : 'None found. Install Ollama (ollama.com), then run: ollama pull llama3.1:8b'),
         h('span', { class: 'k' }, 'Claude'), h('span', {}, claude.ready ? status('good', 'API key set') : status('idle', 'no key (optional)'))),
       h('div', { class: 'controls' },
         h('button', { class: 'btn primary', disabled: !br.active, onclick: async () => {

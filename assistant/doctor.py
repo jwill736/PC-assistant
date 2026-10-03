@@ -80,16 +80,19 @@ def check_brain(cfg, brain=None) -> Check:
     local = brain if brain is not None else local_llm.LocalBrain(lcfg)
     llm = local.refresh(force=True) if lcfg.get("enabled", True) else None
     provider = (cfg.get("brain") or {}).get("provider", "auto")
+    url = (lcfg.get("url") or "").rstrip("/")
+    # brain.local.url is usually the main PC: say which address failed and what to do on that PC
+    fix = (f"Can't reach {url}. On that PC run setx OLLAMA_HOST 0.0.0.0 and restart Ollama (LM Studio: Serve on "
+           "Local Network); setup guide step 19." if url and not llm else
+           "Start Ollama or LM Studio with a Llama model downloaded.")
     if provider == "local":
         return (Check("Brain", PASS, f"local: {llm.label}") if llm else
-                Check("Brain", FAIL, "set to local, but no local model server is running",
-                      "Start Ollama or LM Studio (with a model downloaded)."))
+                Check("Brain", FAIL, "set to local, but no model server answers", fix))
     if has_key:
         return Check("Brain", PASS, "Claude" + (f"; {llm.label} also found" if llm else ""))
     if llm:
         return Check("Brain", PASS, f"local: {llm.label} (no Claude key)")
-    return Check("Brain", WARN, "no model: only built-in commands work",
-                 "Start Ollama/LM Studio with a Llama model, or add ANTHROPIC_API_KEY to .env.")
+    return Check("Brain", WARN, "no model: only built-in commands work", fix + " Or add ANTHROPIC_API_KEY to .env.")
 
 
 def check_obs(cfg, obs=None) -> Check:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from datetime import datetime, tzinfo
 
 
@@ -271,13 +273,21 @@ def _recall_summary(args: dict, result: dict) -> str:
     return line[0].upper() + line[1:] + (f" And {more} more on the HUD." if more else "")
 
 
+def _host(url: str) -> str:
+    m = re.match(r"^\w+://([^:/]+)", url or "")
+    return m.group(1) if m else url
+
+
 def _connections_summary(result: dict) -> str:
     findings = result.get("findings") or []
     brain = result.get("brain") or {}
     active = brain.get("active")
     local = brain.get("local") or {}
+    remote = local.get("configured_url")
     head = ("I'm thinking with Claude." if active == "claude" else
             f"I'm thinking with {local.get('model')} on {local.get('server')}." if active == "local" else
+            f"I can't reach your model at {_host(remote)}, so only built-in commands work. On that PC, share "
+            "Ollama on your network: step 19 of the setup guide." if remote else
             "No AI model is connected, so only built-in commands work.")
     if not findings:
         return head + " Run the PC scan on the Setup tab to see the rest."

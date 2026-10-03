@@ -150,6 +150,26 @@ def test_llama_on_the_main_pc_by_name(root):
     assert brain.refresh().url == "http://GAMING-PC:11434" and brain.llm.model == "llama3.1:8b"
 
 
+def test_the_hud_and_health_check_name_the_main_pc(root, cfg):
+    """Connected: 'llama3.1:8b on Ollama at GAMING-PC'. Not reachable: the address and what to do on that PC."""
+    from assistant.doctor import WARN, check_brain
+
+    net = FakeNetwork({("gaming-pc", 11434): "ollama"})
+    up = local_llm.LocalBrain({"url": "http://gaming-pc:11434"}, http=client(net))
+    assert up.refresh().label == "llama3.1:8b on Ollama at GAMING-PC"
+    assert up.status()["server"] == "Ollama at GAMING-PC"
+    down = local_llm.LocalBrain({"url": "http://gaming-pc:11434/"}, http=client(FakeNetwork()))
+    assert down.refresh() is None
+    assert down.status()["configured_url"] == "http://gaming-pc:11434" and down.status()["server"] is None
+    from assistant.brain.speech import _connections_summary
+
+    spoken = _connections_summary({"brain": {"active": None, "local": down.status()}})
+    assert spoken.startswith("I can't reach your model at gaming-pc") and "step 19" in spoken
+    cfg["brain"] = {"provider": "auto", "local": {"enabled": True, "url": "http://gaming-pc:11434"}}
+    check = check_brain(cfg, brain=down)
+    assert check.status == WARN and "Can't reach http://gaming-pc:11434" in check.fix and "OLLAMA_HOST" in check.fix
+
+
 def test_lm_studio_on_the_main_pc(root):
     net = FakeNetwork({("192.168.1.20", 1234): "lmstudio"}, models=["meta-llama-3.1-8b-instruct"])
     assert setup(root, net, "", "", "1", "192.168.1.20").run()["brain"] == "remote"

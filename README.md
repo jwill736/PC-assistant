@@ -22,6 +22,7 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 |---|---|
 | Brain | Claude, or a Llama (or Qwen, Mistral…) already on your PC through Ollama, LM Studio, llama.cpp or Jan: found by itself, no key needed, nothing leaves the machine. Both use the same tools and the same "yes" rules |
 | Second brain | "Remember that…" and it does: notes, tasks and every conversation are searchable. "What did I say about the overlay?", "do you remember when I stream?" answer from memory, and the model checks memory before answering questions about your own plans |
+| Your documents | Reads the Word, PDF, PowerPoint, Excel, Markdown and text files in your Documents, Desktop, OneDrive and Google Drive (or the folders you pick) on your PC and keeps them searchable. "What are Acme's support hours? Check my documents" answers from the file and says which one, "search my documents for MFA" reads out the passage and page, "open the Q3 plan deck" opens it. New and changed files are picked up every 30 minutes, never while you're live |
 | Voice | Local speech-to-text (Parakeet, on your PC), any wake word, follow-up window, push-to-talk hotkey (`Ctrl+Alt+J`). Replies in a natural local voice that starts about 0.2 s after the text is ready, speaks Claude's answer sentence by sentence as it arrives, and stops the instant you say "stop". Ignores its own voice coming back through your speakers |
 | Your voice only | A one-minute calibration sets the mic threshold for your room, learns how Whisper spells the name in your voice, and enrolls your voice. After that, other voices (Discord, stream audio, the TV) are ignored |
 | Trigger phrases | One phrase runs a whole sequence: "brb" switches to the BRB scene, mutes the mic and confirms. Define them in `config.yaml`, run them by voice, from the HUD, or let Claude pick one |
@@ -191,6 +192,29 @@ Everything goes into a local full-text index: notes ("remember that…"), tasks,
   "colours".
 
 "What's connected?" tells you which brain is answering, what's connected and the next thing that needs you.
+
+### Your documents (the library)
+Vesper reads your files on this PC and keeps a word index of them in `data/library.db`, so questions about your
+own work get answered from your own documents.
+- **Which folders:** by default the usual places: Documents, Desktop, OneDrive, Google Drive for desktop
+  (`G:\My Drive`) and Dropbox. HUD → **Work** → **Library** shows them; add a folder by pasting its path,
+  **Remove** takes one out (its files leave the index, the files themselves aren't touched). Saved to
+  `data/settings.yaml` (`library.folders`); `library.exclude` leaves out patterns such as `*/Archive/*`.
+- **What it reads:** Word (`.docx`), PowerPoint (`.pptx`, speaker notes too), Excel (`.xlsx`: sheet names and
+  the words in cells), PDF (text PDFs; a scan has no text to read), Markdown and text. Old `.doc`/`.ppt`/`.xls`
+  aren't read. A native Google Doc (`.gdoc`) is only a link, so it's found by name and opens in the browser.
+- **OneDrive "online only" files** (the cloud icon in File Explorer) are known by name only: reading them
+  would download the whole drive. Right-click → **Always keep on this device** for the ones you want read.
+- **Asking:** "search my documents for vendor support hours" and "find the document about hiring" read out the
+  best passage with its page or slide; "open the Q3 plan deck" / "open my document called vendor review" open
+  it. With a model connected, ask anything ("what did we decide about the Acme renewal?") and it searches,
+  answers and says which file. The HUD's **Library** panel has a search box with **Open** buttons.
+- **When:** the first read starts a minute after Vesper starts (thousands of files can take a while; it runs in
+  the background), then new and changed files every 30 minutes (`library.refresh_minutes`). It stops the moment
+  you go live, and **Read new files** runs it now.
+- **Safety:** nothing leaves your PC (with a Claude key, the passages a question needs go to Claude, like any
+  other answer). Text read from a document is treated like Twitch chat: it's information, never instructions,
+  and any action asked for after reading one waits for your "yes".
 
 ### Calendars (plural)
 Each calendar is a private iCal link. Store the link in `.env` and reference it
@@ -491,7 +515,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 393 tests, 8 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another installs Ollama, pulls Llama 3.2 3B and has Vesper answer a question, use a tool, answer from memory and write the morning plan with it; it also pulls Qwen3 0.6B, a model that thinks before answering, checks none of that reaches your ears, and runs the same model test Vesper runs on your PC. Another pastes the one-line installer into Windows PowerShell 5.1 (fresh Python from python.org, the code from GitHub's zip of the commit), updates over it while it runs (started like the desktop icon, plus a stray copy) and checks the settings survived and no old copy or log window is left, then boots the installed copy. Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, the local brain (model detection, choosing the strongest model that fits the GPU and passes the test, using the real model list from a 32 GB RTX 5090, stream-night switching, thinking text, models that can't act, streamed and text-written tool calls, the tool loop behind the same tiers, briefings) and memory recall, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 426 tests, 8 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another installs Ollama, pulls Llama 3.2 3B and has Vesper answer a question, use a tool, answer from memory and write the morning plan with it; it also pulls Qwen3 0.6B, a model that thinks before answering, checks none of that reaches your ears, and runs the same model test Vesper runs on your PC. Another pastes the one-line installer into Windows PowerShell 5.1 (fresh Python from python.org, the code from GitHub's zip of the commit), updates over it while it runs (started like the desktop icon, plus a stray copy) and checks the settings survived and no old copy or log window is left, then boots the installed copy. Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, the local brain (model detection, choosing the strongest model that fits the GPU and passes the test, using the real model list from a 32 GB RTX 5090, stream-night switching, thinking text, models that can't act, streamed and text-written tool calls, the tool loop behind the same tiers, briefings) and memory recall, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the

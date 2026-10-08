@@ -53,7 +53,8 @@ DEFAULTS: dict[str, Any] = {
             "tools": ["open_app", "close_app", "focus_window", "web_search", "set_volume", "media_control",
                       "obs_status", "obs_switch_scene", "obs_set_mute", "calendar", "list_tasks", "add_task",
                       "complete_task", "remember", "recall", "news", "activity", "projects", "system_status",
-                      "prestream_check", "twitch_status", "twitch_marker", "twitch_clip", "free_model_memory"],
+                      "prestream_check", "twitch_status", "twitch_marker", "twitch_clip", "free_model_memory",
+                      "search_library", "read_document", "open_document"],
             # Which model: "" = the strongest that passed the test on this PC (Setup → Brain → Test my models),
             # else the strongest that fits the graphics card. While you're live: stream_model ("auto" = the
             # smallest that passed; "same" = don't switch), and the big one is unloaded.
@@ -97,6 +98,15 @@ DEFAULTS: dict[str, Any] = {
     # PC control safety (see brain/policy.py): kill switch, per-request budget, toast confirmations
     "pc_control": {"kill_hotkey": "ctrl+alt+k", "max_steps": 25, "max_failures": 3, "toast_confirm": True},
     "goals": {"north_star": "", "this_week": []},
+    # The second brain's library: your documents, read on this PC and searchable by voice (see library.py)
+    "library": {
+        "enabled": True,
+        "folders": [],         # empty = the usual places: Documents, Desktop, OneDrive, Google Drive, Dropbox
+        "exclude": [],         # patterns to leave out, e.g. "*/Archive/*"
+        "max_file_mb": 25,
+        "max_files": 20000,
+        "refresh_minutes": 30,  # look for new and changed files this often (never while you're live)
+    },
     "profiles": {
         "work": {
             "label": "Work",

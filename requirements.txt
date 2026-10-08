@@ -8,6 +8,7 @@ httpx>=0.27
 websockets>=13.0  # Twitch EventSub (live follows, subs, raids, chat)
 feedparser>=6.0
 icalendar>=5.0
+pypdf>=4.2  # the second brain reads your PDFs
 recurring-ical-events>=3.0
 obsws-python>=1.7
 tzdata>=2024.1  # Windows ships no IANA timezone database

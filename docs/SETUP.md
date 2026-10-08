@@ -126,12 +126,25 @@ that will run the model: this one, or your main PC.
     say “Vesper, what's connected?” and “Vesper, remember that the new overlay colours are orange and black”, and
     a minute later “Vesper, which colours did I pick for the overlay?”.
 
-## Part 6 · Optional
+## Part 6 · Your documents (2 minutes, then it reads by itself)
 
-21. **Start at sign-in:** in the Vesper folder's address bar type `powershell`, then run
+21. **See what it reads.** HUD → **Work** tab → **Library · your documents**. Under **Folders it reads** you'll
+    see Documents, Desktop, OneDrive and Google Drive (the ones on this PC). The top line counts up while it
+    reads: “Reading your documents… 340 looked at”. The first read can take a while; Vesper works normally
+    meanwhile.
+22. **Add a work folder it missed.** In File Explorer open the folder, click the address bar, copy the path
+    (<kbd>Ctrl</kbd>+<kbd>C</kbd>), paste it into **Add a folder**, click **Add**. **Remove** takes a folder out.
+23. **Try it.** Type a few words you know are in one of your files into the search box, e.g. a client's name,
+    and press **Search**: you should see the file, the matching passage and an **Open** button. Then say
+    “Vesper, search my documents for …” or, with your model connected, ask a question about your work and
+    “check my documents”.
+
+## Part 7 · Optional
+
+24. **Start at sign-in:** in the Vesper folder's address bar type `powershell`, then run
     `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`. Vesper then lives as a ring icon
     by the clock (click <kbd>^</kbd> if hidden): right-click for **Open HUD**, **Mute microphone**, **Quit**.
-22. **Updates:** Start menu → **Update Vesper** (or paste the install line again). It closes Vesper, downloads
+25. **Updates:** Start menu → **Update Vesper** (or paste the install line again). It closes Vesper, downloads
     the new version, updates the packages and starts it again. `config.yaml`, `.env` and everything in `data`
     are kept. The old black log window closes by itself, and the HUD window you had open reloads onto the new
     version (no second window).
@@ -150,6 +163,7 @@ that will run the model: this one, or your main PC.
 | Models | `data\models\` | speech, voices, trained wake words |
 | Twitch login | `data\twitch_token.json` | delete it (or **Disconnect**) to log out |
 | Highlights | `data\highlights\` | one file per day: moments with the time into the stream |
+| Library index | `data\library.db` | the word index of your documents (delete it to start the reading over) |
 
 ## If something's off
 

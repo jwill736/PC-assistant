@@ -175,6 +175,13 @@ def deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+def goal_lines(goals: dict | None) -> list[str]:
+    """goals.north_star as a list: one goal per area ("Streaming: …", "Work: …") or a single line."""
+    value = (goals or {}).get("north_star")
+    items = value if isinstance(value, list) else [value]
+    return [str(g).strip() for g in items if g and str(g).strip()]
+
+
 def load_env_file(path: Path) -> None:
     """Minimal ``.env`` reader: KEY=VALUE lines; real env vars win."""
     if not path.exists():

@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import anthropic
 import httpx
 
+from ..config import goal_lines
 from ..integrations import desktop
 from ..services import Services
 from ..voice import neural
@@ -41,8 +42,8 @@ machine through tools: apps and windows, Chrome, OBS, media keys, calendars, new
 
 How you operate:
 - Time is money. Bias to action: if a tool can do it, call the tool instead of explaining how.
-- Everything ladders up to the goal. North star: {north_star}. This week: {this_week}.
-  When {user} asks what to do, rank by leverage toward that goal, and say plainly when something is a distraction.
+- Everything ladders up to {user}'s goals: {north_star}. This week: {this_week}.
+  When {user} asks what to do, rank by leverage toward those goals, and say plainly when something is a distraction.
 - Replies are spoken aloud: 1-3 short sentences, plain words, no markdown, no lists, no URLs, round numbers.
   If {user} asks for detail, you may go longer, still without markdown.
 - Never invent data. If a tool fails or something isn't configured, say exactly what's missing.
@@ -116,14 +117,22 @@ class Assistant:
         self.last_briefing: dict | None = None
         self._lock = threading.RLock()
         self._stream_on, self._speak_turn, self._streamed = False, None, False  # set per command in handle()
-        a = svc.cfg["assistant"]
-        self.system_prompt = SYSTEM_PROMPT.format(
-            name=a["name"], user=a["user_name"],
-            north_star=svc.cfg["goals"].get("north_star") or "(not set — ask the user to set it in config.yaml)",
-            this_week="; ".join(svc.cfg["goals"].get("this_week") or []) or "(not set)",
-            profiles=", ".join(f"{k} ({v.get('label', k)})" for k, v in svc.cfg["profiles"].items()),
-        )
+        self.system_prompt = self._build_system_prompt()
         svc.bus.on(self._track_profile)
+
+    def _build_system_prompt(self) -> str:
+        cfg = self.svc.cfg
+        a = cfg["assistant"]
+        return SYSTEM_PROMPT.format(
+            name=a["name"], user=a["user_name"],
+            north_star="; ".join(goal_lines(cfg["goals"])) or "(not set: ask the user to set them in the HUD, Command tab, Goals & tasks)",
+            this_week="; ".join(cfg["goals"].get("this_week") or []) or "(not set)",
+            profiles=", ".join(f"{k} ({v.get('label', k)})" for k, v in cfg["profiles"].items()),
+        )
+
+    def refresh_goals(self) -> None:
+        """The goals changed (HUD → Command → Goals & tasks): rank against the new ones from the next request on."""
+        self.system_prompt = self._build_system_prompt()
 
     # ------------------------------------------------------------------
     def _make_client(self) -> anthropic.Anthropic | None:

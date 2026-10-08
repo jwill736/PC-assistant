@@ -146,8 +146,20 @@ or task titles). Fast-path commands and the activity log never leave your PC.
 Out of the box it answers with whatever it finds (Setup → **Brain** shows which, and **Test** times a reply):
 - **A model on this PC.** Ollama (port 11434), LM Studio (1234), llama.cpp's server (8080) and Jan (1337) are
   found by themselves, rechecked every minute. With Ollama: install it from ollama.com, then `ollama pull llama3.1:8b`.
-  Vesper picks a model that can call tools (Ollama reports it), preferring 3-14B, which is fast enough to talk to.
-  Pick another in Setup → Brain, or pin one with `brain.local.model`.
+- **The strongest one that works, tested on your PC.** A model's name says little about whether it can drive Vesper:
+  some can't take actions, some think out loud for seconds, some don't fit the graphics card and crawl along half on
+  the CPU. So Vesper loads each of your Ollama models that can take actions and fits the card (with room left for
+  Windows, a game and OBS's encoder: the larger of 4 GB or a fifth of it), gives each the same checks with its real
+  instructions and tools (two spoken commands that must become the right action, and a question it must start
+  answering within 3 seconds), and uses the strongest that passes. Nothing is executed during the test. It runs by
+  itself a minute after the first start and again when your list of models changes, or from Setup → Brain → **Test my
+  models**; results are in `data/brain_bench.json`, and each model in the picker says how it did. Pick one yourself
+  (Setup → Brain, or `brain.local.model`) and that one is used. Untested, it takes the strongest that fits the card;
+  with no NVIDIA card it reads, a tools-capable 3-14B model.
+- **Thinking models** (Qwen3 and others) are asked not to think before answering, through Ollama's own API, so replies
+  start fast and no reasoning is ever read aloud; a `<think>` block in a reply is dropped anyway. A model Ollama says
+  can't take actions still answers, is told it can't act, and never claims it did. The **Test** button checks it takes
+  the right action, not just that it replies.
 - **Your model on another PC**, e.g. Vesper on a laptop and the Llama on your main PC: `brain.local.url:
   http://GAMING-PC:11434` (the installer asks and checks it). On that PC run `setx OLLAMA_HOST 0.0.0.0` and
   restart Ollama (LM Studio: **Serve on Local Network**). It's tried first, then this PC's own servers.
@@ -160,9 +172,12 @@ much stronger. Everyday commands ("volume 30", "switch to BRB", "clip that") nev
 model's tool calls go through the same risk tiers, "yes" confirmations and kill switch as Claude's. It gets a
 shorter tool list (`brain.local.tools`) because small models choose better from fewer options.
 
-**GPU while streaming:** the model shares the GPU with your game and OBS's encoder. An 8B model holds about 5 GB of
-video memory while loaded. If the Stream tab shows encoder or render drops, pick a smaller model (3B) in Setup →
-Brain for stream nights.
+**GPU while streaming:** the model shares the GPU with your game and OBS's encoder. When OBS goes live, Vesper
+answers with the smallest model that passed (`brain.local.stream_model: auto`; `same` keeps one model) and tells
+Ollama to unload the big one at once, giving its video memory back; when the stream ends it's back to the strongest,
+which loads on your next question. Ollama keeps a model loaded for a while after use (`brain.local.keep_alive`,
+15 minutes); the PC optimizer names any model holding RAM because it didn't fit the GPU, and "free the model memory"
+unloads it.
 
 ### Memory (the second brain)
 Everything goes into a local full-text index: notes ("remember that…"), tasks, and every conversation.
@@ -474,7 +489,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 353 tests, 8 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another installs Ollama, pulls Llama 3.2 3B and has Vesper answer a question, use a tool, answer from memory and write the morning plan with it. Another pastes the one-line installer into Windows PowerShell 5.1 (fresh Python from python.org, the code from GitHub's zip of the commit), updates over it and checks the settings survived, then boots the installed copy. Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, the local brain (model detection and choice, streamed and text-written tool calls, the tool loop behind the same tiers, briefings) and memory recall, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
+CI runs the suite on Windows (Python 3.11 and 3.12) and Linux. It has 376 tests, 8 of which only run on Windows, where they call the real window, idle-time, Start Menu, power-plan, tray-icon and system-control APIs. A separate Windows job downloads the real Silero and Parakeet models and transcribes a real recording, runs the wake-word runtime on real recordings, and speaks with both local voices and hears them back (`ASSISTANT_MODEL_TESTS=1 pytest tests/test_models_live.py` locally). Another installs Ollama, pulls Llama 3.2 3B and has Vesper answer a question, use a tool, answer from memory and write the morning plan with it; it also pulls Qwen3 0.6B, a model that thinks before answering, checks none of that reaches your ears, and runs the same model test Vesper runs on your PC. Another pastes the one-line installer into Windows PowerShell 5.1 (fresh Python from python.org, the code from GitHub's zip of the commit), updates over it and checks the settings survived, then boots the installed copy. Another runs `setup.bat` exactly as a new user would, then starts the app the way `start.bat` does on that bare machine (no mic, OBS or keys) and checks the HUD and API answer (`scripts/smoke_boot.py`); it caught a tray bug that crashed the app at startup. The suite covers the router, the local brain (model detection, choosing the strongest model that fits the GPU and passes the test, using the real model list from a 32 GB RTX 5090, stream-night switching, thinking text, models that can't act, streamed and text-written tool calls, the tool loop behind the same tiers, briefings) and memory recall, Twitch (device-code login, token refresh, every action against a fake Helix, EventSub reconnects, chat spikes, and the guard that keeps viewer chat from driving the PC), stream health (drop rates by cause, reconnects, the mic cross-check, the pre-stream check), risk tiers, the kill switch and step budget, stale-confirmation protection, the audit log, the system controls (with fake Core Audio, brightness and desktop APIs), wake-word matching, VAD and speech-engine selection, model download (including a malicious archive), the echo guard and voice check, calibration (with a fake mic), trigger phrases, the watchdog, activity math,
 calendar merging (recurring, all-day and cancelled events), feed and session
 parsing, the Claude tool loop (with a fake client), confirmation gating,
 briefings, the PC scan (against a simulated Windows folder layout), the

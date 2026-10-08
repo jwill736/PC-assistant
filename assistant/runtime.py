@@ -9,7 +9,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import httpx
+
 from . import discovery
+from .brain import local_llm, model_bench
 from .brain.assistant import Assistant
 from .brain.router import KILL, clean
 from .bus import EventBus
@@ -46,6 +49,9 @@ class Runtime:
         self.svc.speak = self.speaker.say
         # Voice commands run here, not on the mic thread, so "stop" is heard while Claude thinks or talks.
         self._commands = ThreadPoolExecutor(max_workers=1, thread_name_prefix="command")
+        self._bench_running = False  # the model test (one at a time)
+        self.svc.free_model_memory = self.free_model_memory
+        self.svc.system.extra_findings = self._model_memory_findings
         # Stream health while live, and the pre-stream check (Phase 5).
         obs_cfg = cfg["obs"]
         self.stream_health = StreamHealth()
@@ -180,6 +186,7 @@ class Runtime:
         sup.poller("news", 900, self._poll_news)
         sup.poller("morning briefing", 60, self._morning_check)
         sup.poller("pc scan", 6 * 3600, self._rescan_if_stale, delay=6 * 3600)  # startup already scanned
+        sup.poller("model test", 3600, self._auto_bench, delay=45)
         sup.start()
 
     def stop(self) -> None:
@@ -210,6 +217,7 @@ class Runtime:
     def _poll_obs(self) -> None:
         obs = self.svc.obs
         status = obs.status()
+        self._stream_brain(bool(status.get("connected") and (status.get("streaming") or {}).get("active")))
         if self.cfg["obs"].get("health_alerts", True):
             if status.get("connected"):
                 obs.ensure_events(on_meters=self.mic_watch.on_meters,
@@ -224,6 +232,19 @@ class Runtime:
                 self._stream_alert(alert)
             status["health"] = self.svc.stream_health()
         self.bus.publish("obs", status, sticky=True)
+
+    def _stream_brain(self, live: bool) -> None:
+        """Live: answer with the light model and give the big one's video memory back to the game and encoder."""
+        change = self.assistant.local.set_streaming(live)
+        if not change:
+            return
+        if live:
+            freed = f", freed {change['freed_gb']:.0f} GB of video memory" if change.get("freed_gb") else ""
+            text = f"You're live: answering with {change['to']}{freed}."
+        else:
+            text = f"Stream over: back to {change['to']} for your next question."
+        self.bus.publish("brain", self.assistant.brain_status(), sticky=True)
+        self.bus.publish("announce", {"text": text})
 
     def _stream_alert(self, alert) -> None:
         """Show it in the HUD; say it out loud if it matters and speaking is on."""
@@ -522,9 +543,18 @@ class Runtime:
         t0 = time.perf_counter()
         try:
             if brain == "local":
-                out = a.local.llm.chat([{"role": "user", "content": "Reply with exactly one word: ready"}],
-                                       temperature=0, max_tokens=5)
-                reply = out["content"]
+                llm = a.local.llm
+                out = llm.chat([{"role": "user", "content": "Reply with exactly one word: ready"}],
+                               temperature=0, max_tokens=5)
+                reply, ms = out["content"], round((time.perf_counter() - t0) * 1000)
+                # Answering isn't enough: the same tools Vesper gives it, and did it pick the right one? (Never run.)
+                acts = False
+                if llm.can_act:
+                    probe = llm.chat([{"role": "system", "content": model_bench.SYSTEM},
+                                      {"role": "user", "content": "Set the volume to 20."}],
+                                     tools=a._local_tools(), temperature=0, max_tokens=150)
+                    acts = any(c["name"] == "set_volume" for c in probe["tool_calls"])
+                return {"ok": True, "reply": reply.strip()[:60], "ms": ms, "acts": acts, **a.brain_status()}
             elif brain == "claude":
                 resp = a._create([{"role": "user", "content": "Reply with exactly one word: ready"}], max_tokens=16)
                 reply = " ".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
@@ -533,6 +563,82 @@ class Runtime:
         except Exception as exc:  # the point of a test button: say what went wrong
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300], **a.brain_status()}
         return {"ok": True, "reply": reply.strip()[:60], "ms": round((time.perf_counter() - t0) * 1000), **a.brain_status()}
+
+    def bench_brain(self) -> dict:
+        """Test every local model in the background (Setup → Brain → Test my models, or once by itself)."""
+        if self._bench_running:
+            return {"ok": True, "started": False, "running": True}
+        self._bench_running = True
+
+        def progress(p: dict) -> None:
+            self.bus.publish("brain_bench", {"running": True, **p})
+
+        def work() -> None:
+            try:
+                result = self.assistant.bench_models(on_progress=progress)
+            except Exception as exc:  # a broken server or model must not take the runtime down
+                log.exception("model test failed")
+                result = {"error": f"The model test stopped: {type(exc).__name__}: {exc}"[:300]}
+            finally:
+                self._bench_running = False
+            line = model_bench.summary(result)
+            self.bus.publish("brain_bench", {"running": False, "result": result, "summary": line}, sticky=True)
+            self.bus.publish("brain", self.assistant.brain_status(), sticky=True)
+            self.bus.publish("announce", {"text": line})
+            log.info("model test: %s", line)
+        threading.Thread(target=work, name="model test", daemon=True).start()
+        return {"ok": True, "started": True}
+
+    def _model_memory_findings(self) -> list[dict]:
+        """For the PC optimizer: a model Ollama keeps loaded can hold tens of GB, in RAM when it didn't fit the GPU."""
+        local = self.assistant.local
+        current = local.llm.model if local.llm else None
+        out = []
+        for m in local.loaded():
+            if m["ram_gb"] >= 1:
+                out.append({"severity": "high" if m["ram_gb"] >= 8 else "medium",
+                            "title": f"{m['name']} holds {m['ram_gb']:.0f} GB of RAM",
+                            "detail": f"Ollama has it loaded and {m['ram_gb']:.0f} of its {m['size_gb']:.0f} GB didn't fit "
+                                      "on the GPU. It stays until Ollama's keep-alive runs out; unloading frees it now, and "
+                                      "it loads again when used.",
+                            "action": {"tool": "free_model_memory", "args": {"keep_current": m["name"] != current}}})
+            elif m["name"] != current and m["vram_gb"] >= 4:
+                out.append({"severity": "info", "title": f"{m['name']} holds {m['vram_gb']:.0f} GB of video memory",
+                            "detail": "Loaded in Ollama but not the model Vesper answers with.",
+                            "action": {"tool": "free_model_memory", "args": {"keep_current": True}}})
+        return out
+
+    def free_model_memory(self, keep_current: bool = True) -> dict:
+        local = self.assistant.local
+        found = local.found or {}
+        if found.get("kind") != "ollama":
+            return {"ok": False, "error": "Only Ollama can be told to unload its models."}
+        current = local.llm.model if local.llm else None
+        held = local.loaded()
+        freed = [m for m in held if not (keep_current and m["name"] == current)]
+        http = local.http or (local.llm.http if local.llm else None) or httpx.Client(timeout=15, trust_env=False)
+        for m in freed:
+            local_llm.unload(http, found["url"], m["name"])
+        gb = sum(m["size_gb"] for m in freed)
+        return {"ok": True, "unloaded": [m["name"] for m in freed], "freed_gb": round(gb, 1),
+                "kept": current if keep_current and any(m["name"] == current for m in held) else None}
+
+    def _auto_bench(self) -> None:
+        """Once by itself, and again when your list of models changes: unless you picked a model yourself, Claude
+        answers instead, or you're live (loading big models then would hurt the stream)."""
+        brain = self.cfg.get("brain") or {}
+        lcfg = brain.get("local") or {}
+        local = self.assistant.local
+        if (brain.get("provider") == "claude" or not lcfg.get("enabled", True) or not lcfg.get("auto_test", True)
+                or lcfg.get("model") or local.streaming or self._bench_running):
+            return
+        local.refresh(force=True)  # a fresh list: a model you just pulled counts
+        found = local.found or {}
+        if found.get("kind") != "ollama" or len(found.get("models") or []) < 2:
+            return
+        if sorted(local.bench.get("models") or []) == sorted(m["name"] for m in found["models"]):
+            return
+        self.bench_brain()
 
     def preview_voice(self, text: str | None = None) -> dict:
         if self.speaker.engine_name == "none":

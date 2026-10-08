@@ -300,6 +300,11 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def brain_test():
         return await run_in_threadpool(runtime.test_brain)
 
+    @app.post("/api/brain/bench")
+    async def brain_bench():
+        """Test every local model in the background; progress arrives as "brain_bench" events."""
+        return runtime.bench_brain()
+
     @app.get("/api/tts")
     async def tts_status():
         return runtime.speaker.status()

@@ -120,7 +120,9 @@ that will run the model: this one, or your main PC.
     installer that PC's name? On the laptop run `.venv\Scripts\python -m assistant.firstrun` in the Vesper
     folder and choose **1**. While shared, anyone on your home network can use the model; don't share it on
     public Wi-Fi.
-20. **Check it's connected.** HUD → **Setup → Brain**: “Answering with llama3.1:8b on …”. Click **Test**. Then
+20. **Check it's connected.** HUD → **Setup → Brain**: “Answering with … on Ollama”. About a minute after the first
+    start, Vesper tests each of your models by itself (it says which one won); **Test my models** runs it again, and
+    each model in the list says how it did. Click **Test**: it should end with “took the right action”. Then
     say “Vesper, what's connected?” and “Vesper, remember that the new overlay colours are orange and black”, and
     a minute later “Vesper, which colours did I pick for the overlay?”.
 

@@ -56,8 +56,10 @@ Profiles: {profiles}."""
 LOCAL_ADDENDUM = """
 Tools: call one only when the request needs it, using the exact names given; otherwise just answer. After a tool
 returns, answer in one or two short spoken sentences from its result. Never make up a tool result."""
-# Small models sometimes repeat the bracketed context line back ("[Monday … | active window: …]"): never say it.
-CONTEXT_ECHO = re.compile(r"^\s*\[[^\]]*(?:active window|profile:)[^\]]*\]\s*")
+# Small models sometimes repeat the context line back, bracketed ("[Monday … | active window: …]") or not
+# ("Thursday October 08 2026, 1:00 PM | active window: To Do List | profile: work", llama3.2:3b in CI): never say it.
+CONTEXT_ECHO = re.compile(r"^\s*(?:Right now:\s*)?(?:\[[^\]\n]*\|\s*active window:[^\]\n]*\]"  # up to the bracket
+                          r"|[^\[\]\n]*\|\s*active window:[^\n]*(?:\n|$))\s*")  # or the whole line
 # A model Ollama says can't call tools still answers questions, but must not pretend it did something.
 NO_ACTIONS = """
 You can't take actions on this PC with the model that's answering now. If asked to do something, say so in one

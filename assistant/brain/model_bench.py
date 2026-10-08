@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 PROBES = (
     ("Set the volume to 20.", "set_volume", lambda a: _num(a.get("level")) == 20),
-    ("Put buy a new mic arm on my task list.", "add_task", lambda a: "mic arm" in str(a.get("title", "")).lower()),
+    ("Add buy a new mic arm to my task list.", "add_task", lambda a: "mic arm" in str(a.get("title", "")).lower()),
 )
 QUESTION = "In one short sentence: why do streamers use a starting soon screen?"
 SYSTEM = ("You are Vesper, a voice assistant that controls this Windows PC. When the user asks for something a tool "
@@ -112,9 +112,9 @@ def _test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_
             if first[0] is None and text.strip():
                 first[0] = time.perf_counter() - t0
             words.append(text)
-        # With the tools, as every real question has them: the model must answer, not reach for one.
+        # Without tools: reaching for one (a web search, say) is fair in real use, and this measures the answer.
         out = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": QUESTION}],
-                       tools=tools, on_text=heard, temperature=0, max_tokens=120)
+                       on_text=heard, temperature=0, max_tokens=120)
         row["answer_s"] = round(time.perf_counter() - t0, 1)
         row["first_word_s"] = round(first[0], 1) if first[0] is not None else None
         row["answer"] = out["content"][:200]

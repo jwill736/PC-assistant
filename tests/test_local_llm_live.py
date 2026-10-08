@@ -55,6 +55,7 @@ def test_it_uses_a_tool_to_do_what_was_asked(local, svc):
     out = timed(lambda: local.handle("I need to buy a new mic arm this week. Please put that on my task list."))
     titles = [t["title"].lower() for t in svc.storage.list_tasks()]
     assert any("mic arm" in t for t in titles), f"no task added; reply was {out['reply']!r}"
+    assert "active window" not in out["reply"], "the context line would have been spoken"
 
 
 def test_it_answers_from_memory(local, svc):
@@ -115,4 +116,5 @@ def test_the_model_test_against_real_models():
     assert {r["name"] for r in result["results"]} == {m["name"] for m in found["models"]}
     for r in result["results"]:
         assert r["result"] in ("pass", "fail") and "<think" not in (r.get("answer") or "")
+    assert result["best"], "no model passed: the test is too strict or the models regressed"
     assert local_llm.loaded(httpx.Client(trust_env=False), found["url"]) == []  # each one unloaded after its test

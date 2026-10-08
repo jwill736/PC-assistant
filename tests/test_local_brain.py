@@ -361,6 +361,23 @@ def test_brain_panel_endpoints(cfg, svc):
     rt._commands.shutdown()
 
 
+@pytest.mark.parametrize("echo", [
+    "[Monday September 28 2026, 01:18 AM | active window: unknown | profile: work]\nTask added: Buy a new mic arm.",
+    # llama3.2:3b on CI, once the context moved to the system message without brackets
+    "Thursday October 08 2026, 1:00 PM | active window: To Do List | profile: work\n\nYou have a new task: Buy new mic arm.",
+    "Right now: Thursday October 08 2026, 1:00 PM | active window: To Do List | profile: work\nYou have a new task: Buy new mic arm.",
+])
+def test_every_form_of_the_context_echo_is_dropped(echo):
+    from assistant.brain.assistant import CONTEXT_ECHO
+
+    said = CONTEXT_ECHO.sub("", echo)
+    assert "active window" not in said and said.startswith(("Task added", "You have a new task"))
+    assert CONTEXT_ECHO.sub("", "[Monday 01:18 AM | active window: unknown | profile: work] Done. It's on your list.") == \
+        "Done. It's on your list."  # the words after a bracketed echo are kept
+    assert CONTEXT_ECHO.sub("", "Your profile: work stays on. The active window is OBS.") == \
+        "Your profile: work stays on. The active window is OBS."  # ordinary sentences are left alone
+
+
 def test_a_repeated_context_line_is_never_said(svc):
     """llama3.2:3b on the CI run answered "[Monday September 28 2026, 01:18 AM | active window: unknown | profile: work]
     Task added: Buy a new mic arm." That first line would have been spoken."""

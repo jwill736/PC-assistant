@@ -564,6 +564,21 @@ class Runtime:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300], **a.brain_status()}
         return {"ok": True, "reply": reply.strip()[:60], "ms": round((time.perf_counter() - t0) * 1000), **a.brain_status()}
 
+    def set_goals(self, goals: list[str] | None = None, this_week: list[str] | None = None) -> dict:
+        """Goals (one per area) and this week's focus, edited in the HUD; saved to data/settings.yaml, which wins
+        over config.yaml. Every plan and answer ranks against them from the next request."""
+        def clean(items) -> list[str]:
+            return [str(x).strip()[:200] for x in items or [] if str(x).strip()][:8]
+        if goals is not None:
+            lines = clean(goals)
+            save_setting(self.cfg, "goals.north_star", lines if len(lines) > 1 else (lines[0] if lines else ""))
+        if this_week is not None:
+            save_setting(self.cfg, "goals.this_week", clean(this_week))
+        self.assistant.refresh_goals()
+        data = dict(self.cfg["goals"])
+        self.bus.publish("goals", data, sticky=True)
+        return {"ok": True, **data}
+
     def bench_brain(self) -> dict:
         """Test every local model in the background (Setup → Brain → Test my models, or once by itself)."""
         if self._bench_running:

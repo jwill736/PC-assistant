@@ -569,12 +569,7 @@ const render = {
       const profile = p.dataset.profile;
       const list = profile ? tasks.filter(t => t.profile === profile) : tasks;
       const parts = [];
-      if (!profile) {
-        parts.push(h('div', { class: 'sub-h' }, 'North star'),
-          goals.north_star ? h('div', { class: 'north' }, goals.north_star) : empty('Not set — add goals.north_star in config.yaml. Priorities are guesses without it.'));
-        if (goals.this_week?.length) parts.push(h('div', { class: 'sub-h' }, 'This week'), h('ul', { class: 'ink2', style: { margin: 0, paddingLeft: '18px' } }, goals.this_week.map(g => h('li', {}, g))));
-        parts.push(h('div', { class: 'sub-h' }, 'Tasks'));
-      }
+      if (!profile) parts.push(...goalsBlock(goals), h('div', { class: 'sub-h' }, 'Tasks'));
       const input = h('input', { placeholder: 'Add a task…', 'aria-label': 'New task' });
       const sel = h('select', { 'aria-label': 'Priority' }, [1, 2, 3].map(n => h('option', { value: n, selected: n === 2 }, `P${n}`)));
       const profSel = profile ? null : h('select', { 'aria-label': 'Profile' }, [...profiles, 'personal'].map(x => h('option', { value: x }, catLabel(x))));
@@ -917,6 +912,34 @@ render.brain = function brain() {
   }
 };
 
+// Goals, one per area ("Streaming: …", "Work: …"), and this week's focus: shown on the Command tab (Goals & tasks), edited in place.
+const goalLines = g => (Array.isArray(g.north_star) ? g.north_star : [g.north_star]).filter(x => x && String(x).trim());
+function goalsBlock(goals) {
+  const lines = goalLines(goals), week = goals.this_week || [];
+  if (S.editGoals) {
+    const goalBox = h('textarea', { class: 'field', id: 'goals-edit', rows: 4, 'aria-label': 'Goals, one per line',
+      placeholder: 'Streaming: $5k/month from streaming by June 2027\nWork: …\nLife: …' }, lines.join('\n'));
+    const weekBox = h('textarea', { class: 'field', id: 'week-edit', rows: 3, 'aria-label': 'This week, one per line',
+      placeholder: 'Stream 4 nights\nFinish the overlay' }, week.join('\n'));
+    const save = async () => {
+      const split = el => el.value.split('\n').map(x => x.trim()).filter(Boolean);
+      const r = await post('/api/goals', { goals: split(goalBox), this_week: split(weekBox) }).catch(e => ({ ok: false, error: e.message }));
+      if (!r.ok) return toast(r.error || 'Could not save the goals.');
+      S.data.goals = r; S.editGoals = false; render.tasks(); toast('Goals saved. Plans rank against them from now on.');
+    };
+    return [h('div', { class: 'sub-h' }, 'Goals · one per line, each with a number and a date'), goalBox,
+      h('div', { class: 'sub-h' }, 'This week · one per line'), weekBox,
+      h('div', { class: 'controls' }, h('button', { class: 'btn primary', onclick: save }, 'Save'),
+        h('button', { class: 'btn', onclick: () => { S.editGoals = false; render.tasks(); } }, 'Cancel'))];
+  }
+  const edit = h('button', { class: 'btn', onclick: () => { S.editGoals = true; render.tasks(); } }, lines.length ? 'Edit goals' : 'Set goals');
+  return [h('div', { class: 'sub-h' }, 'Goals'),
+    lines.length ? h('ul', { class: 'north', style: { margin: 0, paddingLeft: '18px' } }, lines.map(g => h('li', {}, g)))
+      : empty('Not set. Priorities are guesses without them: one per area, each with a number and a date.'),
+    ...(week.length ? [h('div', { class: 'sub-h' }, 'This week'), h('ul', { class: 'ink2', style: { margin: 0, paddingLeft: '18px' } }, week.map(g => h('li', {}, g)))] : []),
+    h('div', { class: 'controls' }, edit)];
+}
+
 const TIER_LABEL = ['read-only', 'reversible', 'needs a yes', "needs a yes · can't be undone"];
 const SOURCE_LABEL = { voice: 'voice', text: 'typed', hud: 'HUD', hotkey: 'hotkey', tray: 'tray' };
 let controlTimer = null;
@@ -1213,6 +1236,7 @@ function onEvent(ev) {
     case 'tts': S.data.tts = data; render.speech(); break;
     case 'brain': S.data.brain = data; render.brain(); paintOrb(); break;
     case 'brain_bench': S.data.brainBench = data; render.brain(); break;
+    case 'goals': S.data.goals = data; if (!S.editGoals) render.tasks(); break;
     case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;

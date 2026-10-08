@@ -8,6 +8,7 @@ website open in your browser can't drive your PC through this port.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import secrets
 from contextlib import asynccontextmanager
@@ -92,10 +93,17 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     svc, assistant = runtime.svc, runtime.assistant
     tools = assistant.tools
 
+    # The HUD's script and styles carry a hash of their content, so after an update the window loads the new
+    # ones instead of a copy Chrome cached (an updated Vesper was showing the old Setup → Brain panel).
+    version = hashlib.sha1(b"".join((WEB / f).read_bytes() for f in ("app.js", "styles.css"))).hexdigest()[:10]
+
     @app.get("/", response_class=HTMLResponse)
     async def index():
         html = (WEB / "index.html").read_text(encoding="utf-8")
-        return html.replace("{{TOKEN}}", token).replace("{{NAME}}", runtime.cfg["assistant"]["name"])
+        html = html.replace('/static/app.js"', f'/static/app.js?v={version}"').replace(
+            '/static/styles.css"', f'/static/styles.css?v={version}"')
+        html = html.replace("{{TOKEN}}", token).replace("{{NAME}}", runtime.cfg["assistant"]["name"])
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/state")
     async def state():
@@ -299,6 +307,11 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     @app.post("/api/brain/test")
     async def brain_test():
         return await run_in_threadpool(runtime.test_brain)
+
+    @app.post("/api/goals")
+    async def set_goals(body: dict):
+        """{"goals": ["Streaming: …", "Work: …"], "this_week": ["…"]}; either may be left out."""
+        return runtime.set_goals(body.get("goals"), body.get("this_week"))
 
     @app.post("/api/brain/bench")
     async def brain_bench():

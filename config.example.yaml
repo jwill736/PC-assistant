@@ -9,7 +9,9 @@ assistant:
   # timezone: America/New_York  # only if the PC clock zone is wrong; the dashboard uses the PC zone
   work_hours: {start: "09:00", end: "18:00"}
 
-# The whole point: everything gets ranked against this.
+# The whole point: everything gets ranked against these. Easiest: HUD → Command tab → Goals & tasks → Edit goals, one per area
+# with a number and a date (saved to data/settings.yaml, which wins over this file). Here, several goals go
+# one per line under north_star, each starting "    - ".
 goals:
   north_star: "Grow the channel to full-time income while shipping client work on time"
   this_week:

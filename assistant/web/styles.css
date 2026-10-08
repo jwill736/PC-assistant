@@ -337,6 +337,8 @@ svg.strip { width: 100%; height: 46px; display: block; }
 .addrow input:focus { border-color: var(--ink-2); }
 .addrow select { background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius); padding: 5px 6px; }
 .north { font-family: var(--display); font-size: 20px; font-weight: 400; line-height: 1.3; margin-bottom: 8px; }
+ul.north { font-size: 17px; display: grid; gap: 4px; }
+textarea.field { width: 100%; background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; font: inherit; color: inherit; resize: vertical; }
 
 /* ---------- briefing ---------- */
 .brief-head { font-family: var(--display); font-size: 22px; font-weight: 400; line-height: 1.3; margin-bottom: 10px; }

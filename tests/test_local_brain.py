@@ -300,6 +300,20 @@ def test_the_pc_scan_finds_local_ai_running_installed_or_absent(tmp_path, cfg):
     assert (f.status, f.name) == ("connected", "Local AI (Ollama)") and "Answers with llama3.1:8b" in f.detail
     f = discovery.scan_local_ai(paths, cfg, detector=lambda extra_url=None: {**running, "models": []})[0]
     assert f.status == "action" and "ollama pull" in f.fix
+    # it names the model the brain really uses: the model test's winner on this PC, else what fits the card
+    big = {"kind": "ollama", "url": "http://127.0.0.1:11434",
+           "models": [{"name": "qwen3.6:35b-a3b", "size_b": 35.0, "active_b": 3.0, "bytes": 23 * 1024**3, "tools": True},
+                      {"name": "llama3.1:8b", "size_b": 8.0, "bytes": 5 * 1024**3, "tools": True}]}
+    f = discovery.scan_local_ai(paths, cfg, detector=lambda extra_url=None: big)[0]
+    assert "Answers with llama3.1:8b" in f.detail  # no test yet and no card known: the safe pick
+    (cfg.data_dir / "brain_bench.json").write_text(json.dumps({"best": "qwen3.6:35b-a3b", "vram_gb": 31.8}))
+    f = discovery.scan_local_ai(paths, cfg, detector=lambda extra_url=None: big)[0]
+    assert "Answers with qwen3.6:35b-a3b" in f.detail
+    (cfg.data_dir / "brain_bench.json").write_text(json.dumps({"vram_gb": 31.8}))  # tested, nothing passed
+    f = discovery.scan_local_ai(paths, cfg, detector=lambda extra_url=None: big)[0]
+    assert "Answers with qwen3.6:35b-a3b" in f.detail  # the strongest that fits a 32 GB card
+    cfg["brain"]["local"]["model"] = "llama3.1"
+    assert "Answers with llama3.1:8b" in discovery.scan_local_ai(paths, cfg, detector=lambda extra_url=None: big)[0].detail
     exe = tmp_path / "Programs" / "Ollama" / "ollama.exe"
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b"")

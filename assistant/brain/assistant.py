@@ -65,7 +65,7 @@ CONTEXT_ECHO = re.compile(r"^\s*(?:Right now:\s*)?(?:\[[^\]\n]*\|\s*active windo
 NO_ACTIONS = """
 You can't take actions on this PC with the model that's answering now. If asked to do something, say so in one
 sentence and that Setup > Brain can switch to a model that can."""
-BENCH_FILE = "brain_bench.json"  # in data_dir: which of your models passed the test on this PC
+BENCH_FILE = local_llm.BENCH_FILE
 OFFLINE = ("I can't answer that one without a model. Start Ollama or LM Studio with a Llama model, "
            "or add ANTHROPIC_API_KEY to the .env file.")
 

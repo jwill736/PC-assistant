@@ -80,6 +80,9 @@ def _usable(models: list[dict]) -> list[dict]:
     return [m for m in models if not any(s in m["name"].lower() for s in SKIP)]
 
 
+BENCH_FILE = "brain_bench.json"  # in data_dir: which of your models passed the test on this PC
+
+
 def pick_model(models: list[dict], vram_mb: float | None = None) -> str | None:
     """The strongest model that can call tools and fits the graphics card. With no card known (or nothing that
     fits), a tools-capable 3-14B model, which is fast enough to talk to almost anywhere."""

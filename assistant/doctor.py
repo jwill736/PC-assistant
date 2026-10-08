@@ -77,7 +77,7 @@ def check_brain(cfg, brain=None) -> Check:
 
     has_key = bool(cfg.secret(cfg["claude"].get("api_key_env")))
     lcfg = (cfg.get("brain") or {}).get("local") or {}
-    local = brain if brain is not None else local_llm.LocalBrain(lcfg)
+    local = brain if brain is not None else local_llm.LocalBrain.for_report(lcfg, getattr(cfg, "data_dir", None))
     llm = local.refresh(force=True) if lcfg.get("enabled", True) else None
     provider = (cfg.get("brain") or {}).get("provider", "auto")
     url = (lcfg.get("url") or "").rstrip("/")

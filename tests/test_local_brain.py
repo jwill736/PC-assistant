@@ -338,6 +338,21 @@ def test_health_check_names_the_brain(cfg):
     assert doctor.check_brain(cfg, none).status == doctor.FAIL
 
 
+def test_health_check_names_the_model_the_brain_really_uses(cfg, monkeypatch, caplog):
+    """Run check in the HUD said llama3.1:8b (and logged a switch to it) while Vesper ran qwen3.6:35b-a3b."""
+    from assistant import doctor
+
+    models = [{"name": "qwen3.6:35b-a3b", "size_b": 35.0, "active_b": 3.0, "bytes": 23 * 1024**3, "tools": True},
+              {"name": "llama3.1:8b", "size_b": 8.0, "bytes": 5 * 1024**3, "tools": True}]
+    monkeypatch.setattr(local_llm, "detect", lambda http=None, extra_url=None: {
+        "kind": "ollama", "url": "http://127.0.0.1:11434", "models": models})
+    cfg["brain"]["local"]["enabled"] = True
+    (cfg.data_dir / local_llm.BENCH_FILE).write_text(json.dumps({"best": "qwen3.6:35b-a3b", "vram_gb": 31.8}))
+    with caplog.at_level("INFO", logger="assistant.brain.local_llm"):
+        assert doctor.check_brain(cfg).detail == "local: qwen3.6:35b-a3b on Ollama (no Claude key)"
+    assert "local model" not in caplog.text  # checking isn't switching
+
+
 def test_whats_connected_by_voice(svc):
     svc.connections = lambda: {"brain": {"active": "local", "local": {"model": "llama3.1:8b", "server": "Ollama"}},
                                "findings": [{"name": "OBS", "status": "connected", "detail": "", "fix": ""},

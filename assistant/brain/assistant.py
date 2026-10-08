@@ -24,7 +24,7 @@ import httpx
 from ..integrations import desktop
 from ..services import Services
 from ..voice import neural
-from . import briefing, local_llm, macros as macro_mod
+from . import briefing, local_llm, macros as macro_mod, model_bench
 from .router import Intent, RouterContext, route
 from .speech import clock, summarize
 from .tools import ToolBox, compact
@@ -58,6 +58,11 @@ Tools: call one only when the request needs it, using the exact names given; oth
 returns, answer in one or two short spoken sentences from its result. Never make up a tool result."""
 # Small models sometimes repeat the bracketed context line back ("[Monday … | active window: …]"): never say it.
 CONTEXT_ECHO = re.compile(r"^\s*\[[^\]]*(?:active window|profile:)[^\]]*\]\s*")
+# A model Ollama says can't call tools still answers questions, but must not pretend it did something.
+NO_ACTIONS = """
+You can't take actions on this PC with the model that's answering now. If asked to do something, say so in one
+sentence and that Setup > Brain can switch to a model that can."""
+BENCH_FILE = "brain_bench.json"  # in data_dir: which of your models passed the test on this PC
 OFFLINE = ("I can't answer that one without a model. Start Ollama or LM Studio with a Llama model, "
            "or add ANTHROPIC_API_KEY to the .env file.")
 
@@ -88,7 +93,8 @@ class Assistant:
     def __init__(self, svc: Services, toolbox: ToolBox | None = None, client: anthropic.Anthropic | None = None):
         self.svc = svc
         self.cfg = svc.cfg["claude"]
-        self.local = local_llm.LocalBrain((svc.cfg.get("brain") or {}).get("local") or {})
+        self.local = local_llm.LocalBrain((svc.cfg.get("brain") or {}).get("local") or {}, vram_mb=self.vram_mb,
+                                          bench_path=svc.cfg.data_dir / BENCH_FILE)
         self.local_history: list[dict] = []  # OpenAI-style turns for the local model
         self._ctx: dict = {}  # the command being handled: source, utterance, turn, owner (for the audit log)
         self._tainted = False  # this command has read text other people wrote (see Tool.untrusted)
@@ -532,6 +538,29 @@ class Assistant:
             return "Stopped. PC control is paused."
 
     # ---- a model on this PC -----------------------------------------------
+    def vram_mb(self) -> float | None:
+        """The graphics card's memory (the biggest card, from nvidia-smi), or None when it can't be read."""
+        system = getattr(self.svc, "system", None)
+        gpus = system.gpus() if system else []
+        return max((g.get("mem_total_mb") or 0 for g in gpus), default=0) or None
+
+    def bench_models(self, on_progress=None) -> dict:
+        """Load each of your models and keep the strongest that takes the right actions and answers quickly."""
+        self.local.refresh(force=True)
+        lcfg = self.local.cfg
+        result = model_bench.run(self.local.found, self._local_tools(), self.vram_mb(), http=self.local.http,
+                                 system=f"{self.system_prompt}{LOCAL_ADDENDUM}", on_progress=on_progress,
+                                 num_ctx=int(lcfg.get("context", 8192)))
+        if not result.get("error"):
+            model_bench.save(result, self.local.bench_path)
+            llm = self.local.refresh(force=True)
+            if isinstance(llm, local_llm.OllamaLLM) and not self.local.streaming:
+                try:  # the test unloaded it: load the winner now so your next question doesn't wait for it
+                    local_llm.preload(llm.http, llm.url, llm.model, keep_alive=llm.keep_alive, num_ctx=llm.num_ctx)
+                except httpx.HTTPError:
+                    pass
+        return result
+
     def _local_tools(self) -> list[dict]:
         names = ((self.svc.cfg.get("brain") or {}).get("local") or {}).get("tools") or list(self.tools.tools)
         out = []
@@ -554,9 +583,9 @@ class Assistant:
         self.last_turn = time.time()
         # The context line goes in the system message, not the user turn: a 3B model put in the user turn
         # repeated it as the first line of its answer (found by the CI run against llama3.2:3b).
-        system = f"{self.system_prompt}{LOCAL_ADDENDUM}\nRight now: {self._context_line().strip('[]')}"
+        system = f"{self.system_prompt}{LOCAL_ADDENDUM if llm.can_act else NO_ACTIONS}\nRight now: {self._context_line().strip('[]')}"
         messages = [{"role": "system", "content": system}, *self.local_history, {"role": "user", "content": text}]
-        tools = self._local_tools()
+        tools = self._local_tools() if llm.can_act else None
 
         def speak(sentence: str, final: bool) -> None:
             clean = CONTEXT_ECHO.sub("", sentence)
@@ -608,7 +637,16 @@ class Assistant:
         except httpx.HTTPStatusError as exc:
             self._streamed = False
             log.error("local model error %s: %s", exc.response.status_code, exc.response.text[:300])
-            return f"{llm.label} returned an error, status {exc.response.status_code}."
+            try:
+                detail = str(exc.response.json().get("error") or "")[:120]
+            except ValueError:
+                detail = ""
+            return (f"{llm.label} returned an error: {detail}" if detail
+                    else f"{llm.label} returned an error, status {exc.response.status_code}.")
+        except local_llm.LocalModelError as exc:
+            self._streamed = False
+            log.error("local model error: %s", exc)
+            return f"{llm.label} hit an error: {str(exc)[:120]}"
         self.local_history = [m for m in messages[1:]]  # the whole turn, tool calls and results included
         return reply.strip() or "Done."
 

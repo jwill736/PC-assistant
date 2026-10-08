@@ -10,6 +10,7 @@ import tempfile
 import time
 from collections import deque
 from pathlib import Path
+from typing import Callable
 
 import psutil
 
@@ -18,6 +19,9 @@ from .desktop import ALWAYS_PROTECTED, normalize_app
 # The local model's server is supposed to hold gigabytes: never suggest closing it as a "memory hog"
 # (the first morning plan written by llama3.2:3b told the user to deal with llama-server). Closing it on
 # request still works.
+BROWSERS = {"chrome", "msedge", "brave", "firefox", "opera"}
+BROWSER_TIP = ("In the browser, Shift+Esc lists each tab's memory; Chrome's Settings > Performance > Memory Saver "
+               "frees tabs you aren't using")
 LOCAL_AI_PROCESSES = {"ollama", "ollama_llama_server", "ollama app", "llama-server", "llama_server", "lm studio",
                       "lms", "lmstudio", "jan", "koboldcpp"}
 
@@ -40,6 +44,7 @@ class SystemMonitor:
         self._last_t = time.time()
         self._gpu_cache: tuple[float, list] = (0.0, [])
         self._nvidia_smi = shutil.which("nvidia-smi")
+        self.extra_findings: Callable[[], list[dict]] = lambda: []
         self._ncpu = psutil.cpu_count() or 1
         psutil.cpu_percent(percpu=True)  # prime the counters
 
@@ -88,7 +93,10 @@ class SystemMonitor:
         for p in psutil.process_iter(["pid", "name", "memory_info", "cpu_percent"]):
             try:
                 info = p.info
-                mem = info["memory_info"].rss if info["memory_info"] else 0
+                mi = info["memory_info"]
+                # Windows: private bytes. Adding up working sets counts the memory Chrome's 40 processes share
+                # 40 times over, which made Chrome look several times bigger than Task Manager says.
+                mem = (getattr(mi, "private", 0) or mi.rss) if mi else 0
                 procs.append({
                     "pid": info["pid"],
                     "name": normalize_app(info["name"] or "?"),
@@ -216,9 +224,11 @@ class SystemMonitor:
         heavy = [p for p in procs["by_mem"] if p["mem_mb"] * 1048576 >= self.heavy_bytes and p["name"] not in self.protected
                  and normalize_app(p["name"]) not in LOCAL_AI_PROCESSES]
         if mem["percent"] >= 85:
+            top = procs["by_mem"][0]["name"] if procs["by_mem"] else ""
             findings.append({
                 "severity": "high", "title": f"Memory at {mem['percent']}%",
-                "detail": "Biggest consumers: " + ", ".join(f"{p['name']} {p['mem_mb']/1024:.1f} GB" for p in procs["by_mem"][:3]),
+                "detail": "Biggest consumers: " + ", ".join(f"{p['name']} {p['mem_mb']/1024:.1f} GB" for p in procs["by_mem"][:3])
+                          + (f". {BROWSER_TIP}" if top in BROWSERS else ""),
                 "action": {"tool": "close_app", "args": {"name": heavy[0]["name"]}} if heavy else None,
             })
         elif heavy:
@@ -250,6 +260,10 @@ class SystemMonitor:
             findings.append({"severity": "medium", "title": f"Power plan is '{plan}'",
                              "detail": "Switch to High performance while streaming.",
                              "action": {"tool": "set_power_plan", "args": {"plan": "high"}}})
+        try:
+            findings += self.extra_findings()  # e.g. AI models Ollama is holding in memory (set by the runtime)
+        except Exception:
+            pass
         if not findings:
             findings.append({"severity": "ok", "title": "System is healthy", "detail": "Nothing worth touching right now.", "action": None})
         return {"findings": findings, "temp_gb": round(temp_bytes / 1e9, 2), "power_plan": plan,

@@ -69,6 +69,7 @@ jobs:
     timeout-minutes: 30  # CPU inference is slow; a stuck call must fail, not run for GitHub's 6-hour default
     env:
       OLLAMA_MODEL: llama3.2:3b
+      OLLAMA_THINKING_MODEL: qwen3:0.6b  # a model that thinks before answering, as Qwen3 on J's PC does
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -84,6 +85,8 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:11434/api/tags >/dev/null || (ollama serve > ollama.log 2>&1 &) ; sleep 3
           ollama pull "$OLLAMA_MODEL"
+          ollama pull "$OLLAMA_THINKING_MODEL"
+          ollama --version
           ollama list
       - name: Test
         env:

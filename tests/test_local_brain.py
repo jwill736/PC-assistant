@@ -8,18 +8,24 @@ import time
 import httpx
 import pytest
 
-from assistant.brain import local_llm
+from assistant.brain import briefing, local_llm
 from assistant.brain.assistant import OFFLINE, Assistant
 from assistant.brain.router import route
 from assistant.storage import SCHEMA, Storage
 
 
 class FakeOllama:
-    """/api/tags, /api/show and an OpenAI-compatible /v1/chat/completions scripted per request."""
+    """/api/tags, /api/show, /api/ps, /api/generate (load/unload), Ollama's own /api/chat and the OpenAI-compatible
+    /v1/chat/completions, scripted per request. Script steps are written OpenAI-style (a message, or SSE text);
+    /api/chat answers the same step in Ollama's shape. A step {"native": [chunks]} is sent as written."""
 
-    def __init__(self, models=("llama3.1:8b",), tools=("llama3.1:8b",), script=(), lmstudio=False):
+    def __init__(self, models=("llama3.1:8b",), tools=("llama3.1:8b",), script=(), lmstudio=False, sizes=None,
+                 thinking=(), host="127.0.0.1"):
         self.models, self.tools, self.script, self.lmstudio = list(models), set(tools), list(script), lmstudio
+        self.sizes, self.thinking, self.host = dict(sizes or {}), set(thinking), host
         self.bodies: list[dict] = []
+        self.loaded: dict[str, int] = {}  # name -> bytes on the GPU
+        self.unloaded: list[str] = []
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
@@ -28,22 +34,76 @@ class FakeOllama:
                 raise httpx.ConnectError("refused", request=req)
             if path == "/v1/models":
                 return httpx.Response(200, json={"data": [{"id": m} for m in self.models]})
-        elif req.url.port != 11434:
+        elif req.url.port != 11434 or req.url.host != self.host:
             raise httpx.ConnectError("refused", request=req)
         if path == "/api/tags":
             return httpx.Response(200, json={"models": [
-                {"name": m, "details": {"parameter_size": m.split(":")[-1].upper() if ":" in m else ""}} for m in self.models]})
+                {"name": m, "size": self.sizes.get(m), "details": {"parameter_size": m.split(":")[-1].split("-")[0].upper()
+                                                                   if ":" in m else ""}} for m in self.models]})
         if path == "/api/show":
             name = json.loads(req.content)["model"]
-            return httpx.Response(200, json={"capabilities": ["completion", "tools"] if name in self.tools else ["completion"]})
-        if path == "/v1/chat/completions":
+            caps = ["completion"] + (["tools"] if name in self.tools else []) + (["thinking"] if name in self.thinking else [])
+            return httpx.Response(200, json={"capabilities": caps})
+        if path == "/api/ps":
+            return httpx.Response(200, json={"models": [{"name": n, "size": b, "size_vram": b} for n, b in self.loaded.items()]})
+        if path == "/api/generate":
+            body = json.loads(req.content)
+            if body.get("keep_alive") == 0:
+                self.loaded.pop(body["model"], None)
+                self.unloaded.append(body["model"])
+            else:
+                self.loaded[body["model"]] = self.sizes.get(body["model"]) or 1
+            return httpx.Response(200, json={"done": True})
+        if path in ("/v1/chat/completions", "/api/chat"):
             body = json.loads(req.content)
             self.bodies.append(body)
+            if path == "/api/chat":
+                self.loaded.setdefault(body["model"], self.sizes.get(body["model"]) or 1)
             step = self.script.pop(0)
+            if path == "/api/chat":
+                return self._native(step, body.get("stream", True))
             if body.get("stream"):
                 return httpx.Response(200, text=step, headers={"content-type": "text/event-stream"})
             return httpx.Response(200, json={"choices": [{"message": step}]})
         return httpx.Response(404)
+
+    @staticmethod
+    def _native(step, stream: bool) -> httpx.Response:
+        if isinstance(step, dict) and "native" in step:
+            chunks = step["native"]
+        elif isinstance(step, str):  # SSE: one chunk per text delta, tool-call fragments joined into whole calls
+            chunks, parts = [], {}
+            for line in step.splitlines():
+                if not line.startswith("data:") or line.strip() == "data: [DONE]":
+                    continue
+                delta = json.loads(line[5:])["choices"][0].get("delta") or {}
+                if delta.get("content"):
+                    chunks.append({"message": {"role": "assistant", "content": delta["content"]}, "done": False})
+                for tc in delta.get("tool_calls") or []:
+                    p = parts.setdefault(tc.get("index", 0), {"name": "", "args": ""})
+                    p["name"] += (tc.get("function") or {}).get("name") or ""
+                    p["args"] += (tc.get("function") or {}).get("arguments") or ""
+            if parts:
+                chunks.append({"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"function": {"name": p["name"], "arguments": json.loads(p["args"] or "{}")}} for p in parts.values()]},
+                    "done": False})
+        else:
+            msg = {"role": "assistant", "content": step.get("content") or ""}
+            if step.get("tool_calls"):
+                msg["tool_calls"] = [{"id": c.get("id"), "function": {"name": c["function"]["name"],
+                                                                      "arguments": json.loads(c["function"]["arguments"])}}
+                                     for c in step["tool_calls"]]
+            chunks = [{"message": msg, "done": False}]
+        if not stream:
+            errors = [c["error"] for c in chunks if c.get("error")]
+            if errors:  # Ollama answers a failed non-streamed request with an error status
+                return httpx.Response(500, json={"error": errors[0]})
+            content = "".join((c.get("message") or {}).get("content") or "" for c in chunks)
+            calls = [tc for c in chunks for tc in (c.get("message") or {}).get("tool_calls") or []]
+            msg = {"role": "assistant", "content": content, **({"tool_calls": calls} if calls else {})}
+            return httpx.Response(200, json={"message": msg, "done": True})
+        lines = chunks + [{"message": {"role": "assistant", "content": ""}, "done": True}]
+        return httpx.Response(200, text="".join(json.dumps(c) + "\n" for c in lines))
 
 
 def http(fake) -> httpx.Client:
@@ -171,7 +231,7 @@ def test_no_model_at_all_says_how_to_get_one(svc):
 def test_local_model_down_mid_session_is_said_plainly(svc):
     class Down(FakeOllama):
         def __call__(self, req):
-            if req.url.path == "/v1/chat/completions":
+            if req.url.path in ("/v1/chat/completions", "/api/chat"):
                 raise httpx.ConnectError("refused", request=req)
             return super().__call__(req)
     a = local_assistant(svc, Down())
@@ -185,7 +245,7 @@ def test_morning_plan_from_the_local_model(svc):
     a = local_assistant(svc, fake)
     b = a.briefing("morning")
     assert b["generated_by"] == "local" and b["model"] == "llama3.1:8b" and b["spoken"] == plan["spoken"]
-    assert fake.bodies[0]["response_format"]["type"] == "json_schema"
+    assert fake.bodies[0]["format"]["required"] == briefing.BRIEFING_SCHEMA["required"]  # Ollama's JSON-schema output
 
 
 # ---- memory ------------------------------------------------------------------------------------
@@ -283,7 +343,7 @@ def test_brain_panel_endpoints(cfg, svc):
 
     rt = Runtime(cfg, services=svc)
     fake = FakeOllama(models=["llama3.2:3b", "llama3.1:8b"], tools=["llama3.2:3b", "llama3.1:8b"],
-                      script=[{"role": "assistant", "content": "ready"}])
+                      script=[{"role": "assistant", "content": "ready"}, tool_msg("set_volume", {"level": 20})])
     cfg["brain"]["local"]["enabled"] = True
     rt.assistant.local = local_llm.LocalBrain(cfg["brain"]["local"], http=http(fake))
     app = create_app(rt, start_background=False)
@@ -296,6 +356,7 @@ def test_brain_panel_endpoints(cfg, svc):
         assert "provider: local" in (cfg.data_dir / "settings.yaml").read_text()  # remembered across restarts
         t = c.post("/api/brain/test", headers=h).json()
         assert t["ok"] and t["reply"] == "ready" and t["ms"] >= 0
+        assert t["acts"] is True  # it also picked the right action for "set the volume to 20" (never run)
         assert c.post("/api/brain", json={"provider": "gpt"}, headers=h).json()["ok"] is False
     rt._commands.shutdown()
 

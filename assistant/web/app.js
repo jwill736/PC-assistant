@@ -865,12 +865,28 @@ render.brain = function brain() {
     const modes = h('span', { class: 'seg' }, [['auto', 'Auto', 'Claude when there is a key, else your local model'],
       ['claude', 'Claude', 'Always Claude (needs ANTHROPIC_API_KEY)'], ['local', 'Local only', 'Never send anything to the cloud']]
       .map(([id, label, note]) => h('button', { 'aria-pressed': String(br.provider === id), title: note, onclick: () => set({ provider: id }) }, label)));
-    const models = local.models || [];
-    const picker = models.length ? h('select', { class: 'field', 'aria-label': 'Local model', onchange: e => set({ model: e.target.value }) },
-      models.map(m => h('option', { value: m, selected: m === local.model }, m))) : null;
+    const choices = local.choices || [];
+    const tag = c => c.result === 'pass' ? ` · passed, first word ${c.first_word_s} s`
+      : c.result === 'fail' ? ' · failed the test' : c.result === 'error' ? ' · error in the test'
+      : c.result === 'no_actions' || c.tools === false ? " · can't take actions"
+      : c.result === 'too_big' || c.fits === false ? ' · too big for your GPU' : '';
+    const best = (local.bench || {}).best;
+    const picker = choices.length ? h('select', { class: 'field', 'aria-label': 'Local model', onchange: e => set({ model: e.target.value }) },
+      [h('option', { value: '', selected: !local.pinned }, best ? `Auto: strongest that passed (${best})` : 'Auto: strongest that fits your GPU'),
+        ...choices.map(c => h('option', { value: c.name, selected: local.pinned === c.name }, `${c.name}${c.size_gb ? ` (${c.size_gb} GB)` : ''}${tag(c)}`))]) : null;
     const answering = br.active === 'claude' ? status('good', `Claude ${claude.model}`)
-      : br.active === 'local' ? status('good', `${local.model} on ${local.server}`)
+      : br.active === 'local' ? (local.can_act === false ? status('warning', `${local.model} on ${local.server} · can't take actions`)
+        : status('good', `${local.model} on ${local.server}`))
       : status('warning', 'No model: built-in commands only');
+    const bench = S.data.brainBench;
+    const benchLine = bench && bench.running
+      ? (bench.testing ? `Testing ${bench.testing} (${bench.done + 1} of ${bench.total})… each one loads, so this takes a minute or two.` : 'Testing your models…')
+      : (bench && bench.summary) || ((local.bench || {}).at ? `Models last tested ${new Date(local.bench.at).toLocaleString()}.`
+        : 'Test my models loads each one and checks it takes the right actions and answers quickly; the strongest that passes is used.');
+    const light = (local.bench || {}).light;
+    const onStream = local.streaming ? status('good', `Live: answering with ${local.model}`)
+      : local.stream_model === 'same' ? h('span', { class: 'muted' }, 'Same model')
+      : h('span', { class: 'muted' }, `${light || 'The smallest model that can act'}, and the big one is unloaded`);
     const result = h('span', { class: 'muted' });
     fill(b,
       h('div', { class: 'kv' },
@@ -881,15 +897,23 @@ render.brain = function brain() {
           : local.configured_url ? `Can't reach ${local.configured_url}. On that PC: setx OLLAMA_HOST 0.0.0.0, then restart Ollama `
             + '(LM Studio: Serve on Local Network). Setup guide, step 19.'
           : 'None found. Install Ollama (ollama.com), then run: ollama pull llama3.1:8b'),
+        h('span', { class: 'k' }, 'While live'), onStream,
         h('span', { class: 'k' }, 'Claude'), h('span', {}, claude.ready ? status('good', 'API key set') : status('idle', 'no key (optional)'))),
       h('div', { class: 'controls' },
         h('button', { class: 'btn primary', disabled: !br.active, onclick: async () => {
           result.textContent = 'Asking…';
           const r = await post('/api/brain/test').catch(e => ({ ok: false, error: e.message }));
-          result.textContent = r.ok ? `Answered “${r.reply}” in ${(r.ms / 1000).toFixed(1)} s` : r.error;
-        } }, 'Test'), result),
-      h('div', { class: 't2' }, 'Local models run on your GPU. While you stream, a big one competes with the game and OBS for it: '
-        + 'if the Stream tab shows encoder or render drops, pick a smaller model here.'));
+          result.textContent = !r.ok ? r.error : `Answered “${r.reply}” in ${(r.ms / 1000).toFixed(1)} s`
+            + (r.acts === undefined ? '' : r.acts ? ' · took the right action' : " · didn't take the action");
+        } }, 'Test'),
+        h('button', { class: 'btn', disabled: !!(bench && bench.running) || !choices.length, onclick: async () => {
+          const r = await post('/api/brain/bench').catch(e => ({ ok: false, error: e.message }));
+          if (r && r.ok) { S.data.brainBench = { running: true, done: 0, total: choices.length }; render.brain(); } else toast(r.error);
+        } }, 'Test my models'),
+        result),
+      h('div', { class: 't2' }, benchLine),
+      h('div', { class: 't2' }, 'Models run on your GPU. While you’re live, Vesper answers with the light model and unloads the big '
+        + 'one, so the game and OBS’s encoder keep the video memory.'));
   }
 };
 
@@ -1188,6 +1212,7 @@ function onEvent(ev) {
     case 'speak_stop': if ('speechSynthesis' in window) speechSynthesis.cancel(); break;
     case 'tts': S.data.tts = data; render.speech(); break;
     case 'brain': S.data.brain = data; render.brain(); paintOrb(); break;
+    case 'brain_bench': S.data.brainBench = data; render.brain(); break;
     case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;

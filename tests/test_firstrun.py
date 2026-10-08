@@ -85,7 +85,7 @@ def test_edits_change_only_their_lines_and_keep_every_comment():
     data = yaml.safe_load(text)
     assert data["assistant"]["user_name"] == "Jay O'Neil"
     assert data["goals"]["north_star"] == '$5k/month from streaming by June 2027 # "for real"'
-    assert data["brain"]["local"] == {"model": "", "url": "http://GAMING-PC:11434"}
+    assert data["brain"]["local"] == {"model": "", "stream_model": "auto", "url": "http://GAMING-PC:11434"}
     assert data["goals"]["this_week"] == yaml.safe_load(EXAMPLE)["goals"]["this_week"]
 
 

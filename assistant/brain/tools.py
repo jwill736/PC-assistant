@@ -169,6 +169,11 @@ class ToolBox:
                  obj(), self._system_status),
             Tool("optimize_pc", "Analyze the PC and return concrete optimization findings with suggested actions.",
                  obj({"streaming": {"type": "boolean"}}), lambda streaming=False: s.system.analyze(streaming)),
+            Tool("free_model_memory", "Unload the AI models Ollama is keeping in memory, freeing RAM and video memory "
+                                      "now (they load again when next used). keep_current keeps the one answering you.",
+                 obj({"keep_current": {"type": "boolean"}}),
+                 lambda keep_current=True: s.free_model_memory(keep_current) if s.free_model_memory
+                 else {"ok": False, "error": "no local model server"}, tier=1),
             Tool("clean_temp", "Delete temp files older than a day to free disk space.",
                  obj(), lambda: s.system.clean_temp(), tier=3, confirm_text=lambda a: "delete temp files older than a day"),
             Tool("set_power_plan", "Switch the Windows power plan: high, balanced, saver.",

@@ -28,7 +28,10 @@ claude:
 brain:
   provider: auto
   local:
-    model: ""                   # empty = the best tools-capable model it finds, e.g. llama3.1:8b
+    model: ""                   # empty = the strongest that passed the test on this PC (Setup → Brain →
+                                # Test my models), else the strongest that fits your GPU. A name pins it.
+    stream_model: auto          # while you're live: auto = the smallest that passed (the big one is unloaded);
+                                # same = don't switch; or a model name
     # url: http://GAMING-PC:11434   # your model on another PC, or a non-default port
 
 voice:

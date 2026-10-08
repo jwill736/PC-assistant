@@ -47,13 +47,20 @@ DEFAULTS: dict[str, Any] = {
         "local": {
             "enabled": True,
             "url": "",        # only for a non-default server, e.g. http://127.0.0.1:11500
-            "model": "",      # empty = the best tools-capable model it finds (3-14B preferred)
+            "model": "",      # empty = automatic (see stream_model below); a name pins that model
             "temperature": 0.3,
             # Small models choose better from a short list; Claude always gets every tool.
             "tools": ["open_app", "close_app", "focus_window", "web_search", "set_volume", "media_control",
                       "obs_status", "obs_switch_scene", "obs_set_mute", "calendar", "list_tasks", "add_task",
                       "complete_task", "remember", "recall", "news", "activity", "projects", "system_status",
-                      "prestream_check", "twitch_status", "twitch_marker", "twitch_clip"],
+                      "prestream_check", "twitch_status", "twitch_marker", "twitch_clip", "free_model_memory"],
+            # Which model: "" = the strongest that passed the test on this PC (Setup → Brain → Test my models),
+            # else the strongest that fits the graphics card. While you're live: stream_model ("auto" = the
+            # smallest that passed; "same" = don't switch), and the big one is unloaded.
+            "stream_model": "auto",
+            "auto_test": True,     # test your models once by itself, and again when the list changes
+            "context": 8192,       # Ollama context size: room for the instructions, the tool list and the chat
+            "keep_alive": "15m",   # how long Ollama keeps the model loaded after a question
         },
     },
     "voice": {

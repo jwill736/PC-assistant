@@ -133,7 +133,8 @@ that will run the model: this one, or your main PC.
     by the clock (click <kbd>^</kbd> if hidden): right-click for **Open HUD**, **Mute microphone**, **Quit**.
 22. **Updates:** Start menu → **Update Vesper** (or paste the install line again). It closes Vesper, downloads
     the new version, updates the packages and starts it again. `config.yaml`, `.env` and everything in `data`
-    are kept.
+    are kept. The old black log window closes by itself, and the HUD window you had open reloads onto the new
+    version (no second window).
 
 ## Where everything lives
 

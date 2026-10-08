@@ -35,6 +35,8 @@ param(
 
 $VesperRepo = 'jwill736/PC-assistant'
 $VesperPythonVersion = '3.12.10'   # the last 3.12 with a Windows installer; what Vesper is tested on
+# One spelling of the folder: "Update Vesper" passes C:\Users\<you>\Vesper\. and a relative -Dir is allowed
+$Dir = [System.IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dir)).TrimEnd('\')
 
 function Write-Step([string]$Text) { Write-Host ''; Write-Host "== $Text" -ForegroundColor Cyan }
 function Write-Note([string]$Text) { Write-Host "   $Text" }
@@ -122,16 +124,52 @@ function Test-VesperFolder([string]$Path) {
     return (Test-Path (Join-Path $Path 'assistant\__init__.py')) -and (Test-Path (Join-Path $Path 'start.bat'))
 }
 
+function Get-VesperProcesses {
+    # Vesper started from this folder: the .venv python.exe (a small launcher), the Python it started, and the
+    # start.bat log window around them, which stays open when Vesper didn't exit cleanly.
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $found = @{}
+    foreach ($p in $all) {
+        $cmd = [string]$p.CommandLine
+        if ($cmd -match '-m\s+assistant(\s|"|$)' -and $cmd -notmatch '--quit' -and $p.ExecutablePath -and
+            $p.ExecutablePath.StartsWith("$Dir\", [StringComparison]::OrdinalIgnoreCase)) { $found[$p.ProcessId] = $p }
+    }
+    foreach ($p in $all) {
+        $cmd = [string]$p.CommandLine
+        if ($found.ContainsKey($p.ParentProcessId) -and $cmd -match '-m\s+assistant(\s|"|$)') { $found[$p.ProcessId] = $p }
+    }
+    $parents = @($found.Values | ForEach-Object { $_.ParentProcessId })
+    foreach ($p in $all) {
+        $cmd = ([string]$p.CommandLine).Replace('\.\', '\')
+        if ($p.Name -eq 'cmd.exe' -and $cmd -match 'start\.bat' -and ($parents -contains $p.ProcessId -or
+            $cmd.IndexOf("$Dir\start.bat", [StringComparison]::OrdinalIgnoreCase) -ge 0)) { $found[$p.ProcessId] = $p }
+    }
+    return @($found.Values)
+}
+
 function Stop-RunningVesper([string]$VenvPython) {
-    if (-not (Test-Path $VenvPython)) { return }
-    Push-Location $Dir
-    try {
-        & $VenvPython -m assistant --quit | Out-Null   # closes a running copy so its files can be replaced
-        if ($LASTEXITCODE -ne 0) { throw 'not closed' }
-    } catch {
+    if (Test-Path $VenvPython) {
+        Push-Location $Dir
+        try {
+            & $VenvPython -m assistant --quit | Out-Null   # closes a running copy so its files can be replaced
+        } catch { } finally { Pop-Location }
+    }
+    # Older copies' --quit only waited for the HUD to close, so a copy that hung on after it kept running (and its
+    # log window open) beside the new one. Give what's left 10 seconds, then end it and close its window.
+    $left = @(Get-VesperProcesses)
+    if ($left.Count) {
+        $ids = @($left | Where-Object { $_.Name -ne 'cmd.exe' } | ForEach-Object { $_.ProcessId })
+        for ($i = 0; $i -lt 20 -and $ids.Count -and @(Get-Process -Id $ids -ErrorAction SilentlyContinue).Count; $i++) {
+            Start-Sleep -Milliseconds 500
+        }
+        foreach ($p in $left) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Seconds 1
+        Write-Note 'Closed the Vesper that was running.'
+    }
+    if (@(Get-VesperProcesses | Where-Object { $_.Name -ne 'cmd.exe' }).Count) {
         Write-Warn 'If Vesper is running, quit it now: right-click the ring icon by the clock > Quit.'
         if (-not $Unattended) { Read-Host '   Press Enter when it is closed' | Out-Null }
-    } finally { Pop-Location }
+    }
 }
 
 function Get-VesperCode {

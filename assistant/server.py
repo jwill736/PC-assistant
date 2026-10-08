@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -102,12 +103,14 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         html = (WEB / "index.html").read_text(encoding="utf-8")
         html = html.replace('/static/app.js"', f'/static/app.js?v={version}"').replace(
             '/static/styles.css"', f'/static/styles.css?v={version}"')
-        html = html.replace("{{TOKEN}}", token).replace("{{NAME}}", runtime.cfg["assistant"]["name"])
+        html = html.replace("{{TOKEN}}", token).replace("{{NAME}}", runtime.cfg["assistant"]["name"]).replace(
+            "{{VERSION}}", version)
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/state")
     async def state():
-        return await run_in_threadpool(runtime.state)
+        # hud_version: a HUD window left open across an update reloads itself when this changes
+        return {**await run_in_threadpool(runtime.state), "hud_version": version}
 
     @app.post("/api/command")
     async def command(body: Command):
@@ -146,7 +149,7 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         if stop is None:
             raise HTTPException(503, "this copy can't be closed from the API")
         stop()
-        return {"ok": True}
+        return {"ok": True, "pid": os.getpid()}  # so --quit can wait for this process to end, not just the port
 
     @app.post("/api/briefing/{kind}")
     async def make_briefing(kind: str):

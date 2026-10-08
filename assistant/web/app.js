@@ -3,6 +3,8 @@
    titles, calendar events and headlines are untrusted strings. */
 
 const TOKEN = document.querySelector('meta[name="token"]').content;
+// '' when the page wasn't served by Vesper (placeholder left in), so it never reloads in a loop
+const HUD_VERSION = (document.querySelector('meta[name="hud-version"]')?.content || '').replace(/^\{\{.*/, '');
 const S = { data: {}, log: [], view: 'command', procSort: 'cpu', optimizer: null, openJobs: new Set(), newsTopic: null };
 
 // ---------------------------------------------------------------- helpers
@@ -1274,13 +1276,14 @@ function connect() {
   socket.onclose = () => {
     document.body.classList.add('stale');
     $('#voice-status').textContent = 'Reconnecting to the assistant…';
-    setTimeout(connect, Math.min(10000, 500 * 2 ** retry++));
+    setTimeout(connect, Math.min(2000, 500 * 2 ** retry++));  // back within seconds after an update restarts Vesper
   };
 }
 
 async function load() {
   try {
     const st = await api('/api/state');
+    if (st.hud_version && HUD_VERSION && st.hud_version !== HUD_VERSION) return location.reload();  // Vesper was updated
     S.data = { ...S.data, ...st };
     S.log = (st.log || []).map(l => ({ role: l.role, text: l.text, source: l.source, ts: l.ts }));
     orbState.voice = st.voice?.state || 'off';

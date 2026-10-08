@@ -529,10 +529,7 @@ def scan_local_ai(paths: SystemPaths, cfg: dict, detector=None) -> list[Finding]
     if found and found["models"]:
         # the same choice the brain makes: your pin, else the model test's winner on this PC, else the strongest
         # that fits the card the test measured
-        data_dir = getattr(cfg, "data_dir", None)
-        brain = local_llm.LocalBrain(lcfg, bench_path=data_dir / local_llm.BENCH_FILE if data_dir else None)
-        brain.vram_mb = lambda: (brain.bench.get("vram_gb") or 0) * 1024 or None
-        pick = brain.choose(found["models"])
+        pick = local_llm.LocalBrain.for_report(lcfg, getattr(cfg, "data_dir", None)).choose(found["models"])
         names = [m["name"] for m in found["models"]]
         label = local_llm.LABELS.get(found["kind"], found["kind"])
         return [Finding("ai", f"Local AI ({label})", CONNECTED,

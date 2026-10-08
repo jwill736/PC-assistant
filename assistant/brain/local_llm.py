@@ -446,6 +446,16 @@ class LocalBrain:
         self.streaming = False
         self._probed = -1e9
         self._lock = threading.Lock()
+        self.quiet = False  # a brain made for a report: its choice isn't a switch, so it isn't logged
+
+    @classmethod
+    def for_report(cls, cfg: dict, data_dir=None) -> "LocalBrain":
+        """For the PC scan and the health check: makes the same choice the running brain does, from the model
+        test's results on this PC (data/brain_bench.json) and the card size that test measured."""
+        brain = cls(cfg, bench_path=Path(data_dir) / BENCH_FILE if data_dir else None)
+        brain.vram_mb = lambda: (brain.bench.get("vram_gb") or 0) * 1024 or None
+        brain.quiet = True
+        return brain
 
     @property
     def bench(self) -> dict:
@@ -502,7 +512,7 @@ class LocalBrain:
                 return None
             model = self.choose(found["models"])
             self.llm = self._make(found, model) if model else None
-            if self.llm:
+            if self.llm and not self.quiet:
                 log.info("local model: %s", self.llm.label)
             return self.llm
 

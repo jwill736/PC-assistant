@@ -66,6 +66,23 @@ def test_it_answers_from_memory(local, svc):
     assert "orange" in out["reply"].lower(), f"didn't use memory; reply was {out['reply']!r}"
 
 
+def test_it_answers_from_your_documents(local, svc, tmp_path):
+    """The second brain: a fact that's only in a Word file on this PC (hours nobody would guess)."""
+    from library_docs import docx
+
+    from assistant.library import Library
+
+    (tmp_path / "Docs").mkdir()
+    docx(tmp_path / "Docs" / "Vendor review - Acme.docx",
+         ["Acme support hours are 7am to 3pm Pacific, weekdays only.", "The renewal is due March 31."])
+    svc.library = Library(tmp_path / "library.db", [tmp_path / "Docs"], pause=0)
+    svc.library.index()
+    svc.cfg["brain"]["local"]["tools"] = ["search_library", "read_document", "recall", "add_task"]
+    out = timed(lambda: local.handle("What are Acme's support hours? Check my documents."))
+    reply = out["reply"].lower()
+    assert "7" in reply and "3" in reply, f"didn't answer from the document; reply was {out['reply']!r}"
+
+
 def test_it_writes_the_morning_plan(local):
     b = timed(lambda: local.briefing("morning"))
     assert b["generated_by"] in ("local", None) or b.get("spoken")

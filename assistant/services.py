@@ -50,6 +50,7 @@ class Services:
     connections: Callable[[], dict] | None = None  # the PC scan's findings + which brain answers
     free_model_memory: Callable[[bool], dict] | None = None  # unload what Ollama is holding (set by the runtime)
     highlights: Callable[[], list] | None = None
+    library: Any = None  # your documents (library.Library), or None when turned off
 
     @property
     def name(self) -> str:
@@ -93,4 +94,12 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
                                  cfg["tracking"]["idle_seconds"],
                                  on_change=lambda seg: bus.publish("activity_now", seg, sticky=True)),
     )
+    lib = cfg.get("library") or {}
+    if lib.get("enabled", True):
+        from .library import Library, default_folders
+
+        svc.library = Library(cfg.data_dir / "library.db",
+                              folders=lambda: cfg["library"].get("folders") or default_folders(),
+                              exclude=lib.get("exclude") or [], max_file_mb=float(lib.get("max_file_mb", 25)),
+                              max_files=int(lib.get("max_files", 20000)))
     return svc

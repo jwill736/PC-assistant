@@ -110,6 +110,10 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
         return result.get("spoken") or "Checked."
     if tool == "recall":
         return _recall_summary(args, result)
+    if tool == "search_library":
+        return _library_summary(args, result)
+    if tool == "open_document":
+        return f"Opening {result.get('opened', args.get('name'))}."
     if tool == "connections":
         return _connections_summary(result)
     if tool.startswith("twitch_") and tool != "twitch_status":
@@ -271,6 +275,19 @@ def _recall_summary(args: dict, result: dict) -> str:
     line = f"{day + ', ' if day else ''}{verb.get(top['kind'], 'you said')}: {top['text'].rstrip('.')}."
     more = len(hits) - 1
     return line[0].upper() + line[1:] + (f" And {more} more on the HUD." if more else "")
+
+
+def _library_summary(args: dict, result: dict) -> str:
+    hits = result.get("hits") or []
+    if not hits:
+        return result.get("note") or f"Nothing in your documents about {args.get('query')}."
+    top = hits[0]
+    where = f", {top['where']}" if top.get("where") else ""
+    passage = re.sub(r"[\[\]]", "", top.get("passage") or "").strip(" .…")
+    said = f"{top['title']}{where}: {passage[:180].rsplit(' ', 1)[0] if len(passage) > 180 else passage}." if passage \
+        else f"{top['title']}, {top.get('note') or 'modified ' + top['modified']}."
+    more = len(hits) - 1
+    return said + (f" And {more} more on the HUD." if more else "")
 
 
 def _host(url: str) -> str:

@@ -118,6 +118,14 @@ sites:
   claude: https://claude.ai
   chatgpt: https://chatgpt.com
 
+# Your documents, read on this PC and searchable by voice (HUD: Work tab, Library). No folders = the usual
+# places: Documents, Desktop, OneDrive, Google Drive, Dropbox. Folders picked in the HUD go to data/settings.yaml.
+library:
+  enabled: true
+  folders: []
+  exclude: []            # e.g. "*/Archive/*"
+  refresh_minutes: 30
+
 # Any number of calendars, any provider, merged into one agenda.
 # Put each private iCal link in .env and reference it with url_env.
 calendars:

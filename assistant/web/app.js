@@ -1019,6 +1019,87 @@ function renderFindings(res) {
       } }, 'Fix') : null))));
 }
 
+// ---------------------------------------------------------------- library (the second brain's documents)
+render.library = function library() {
+  const st = S.data.library;
+  for (const p of panels('library')) {
+    const b = body(p);
+    if (!st || st.enabled === false) {
+      b._lib = null;
+      fill(b, empty(st ? 'The library is turned off (library: enabled in config.yaml).' : 'Loading…'));
+      continue;
+    }
+    if (!b._lib) {  // built once, so typing in the search box survives the progress updates
+      const q = h('input', { placeholder: 'Search your documents, e.g. vendor support hours', 'aria-label': 'Search your documents' });
+      const results = h('div', { class: 'lib-results' });
+      const form = h('form', { class: 'addrow', onsubmit: e => { e.preventDefault(); libSearch(q.value, results); } },
+        q, h('button', { class: 'btn small', type: 'submit' }, 'Search'));
+      b._lib = { stat: h('div', { class: 'lib-status muted' }), folders: h('div', {}), results };
+      fill(b, b._lib.stat, form, results, h('div', { class: 'sub-h' }, 'Folders it reads'), b._lib.folders);
+    }
+    fill(b._lib.stat, libStatusLine(st));
+    fill(b._lib.folders, libFolders(st));
+  }
+};
+
+function libStatusLine(st) {
+  const pr = st.progress || {};
+  if (st.running) {
+    const read = (pr.added || 0) + (pr.updated || 0);
+    return `Reading your documents… ${(pr.seen || 0).toLocaleString()} looked at, ${read.toLocaleString()} read${pr.current ? ` · ${pr.current}` : ''}`;
+  }
+  const last = st.last || {};
+  if (!st.files && !last.at) return 'Not read yet. The first read starts a minute after Vesper starts, or press Read new files.';
+  const by = st.by_status || {};
+  const notes = [by.online && `${by.online} online only (names only)`, by.link && `${by.link} Google docs (names only)`,
+    by.empty && `${by.empty} with no text (scans)`, by.error && `${by.error} couldn't be read`, by.too_big && `${by.too_big} too big`].filter(Boolean);
+  return [`${(st.files || 0).toLocaleString()} documents`, last.at ? `read ${ago(last.at)}` : null,
+    last.capped ? 'stopped at the file limit (library.max_files)' : null, ...notes].filter(Boolean).join(' · ');
+}
+
+function libFolders(st) {
+  const folders = st.folders || [];
+  const save = async list => {
+    const r = await post('/api/library/folders', { folders: list }).catch(e => ({ ok: false, error: e.message }));
+    if (!r.ok) return toast(r.error || 'Could not save the folders.');
+    S.data.library = r; render.library(); toast('Saved. Reading the folders now.');
+  };
+  const input = h('input', { placeholder: 'Add a folder: paste its path, e.g. C:\\Users\\you\\Work', 'aria-label': 'Folder to add' });
+  const add = h('form', { class: 'addrow', onsubmit: e => {
+    e.preventDefault();
+    const path = input.value.trim().replace(/^"|"$/g, '');
+    if (path) save([...folders.map(f => f.path), path]);
+  } }, input, h('button', { class: 'btn small', type: 'submit' }, 'Add'));
+  return [
+    folders.length ? h('div', { class: 'list' }, folders.map(f => h('div', { class: 'item' },
+      h('div', { class: 'main' }, h('div', { class: 't1' }, f.path), h('div', { class: 't2' }, `${(f.files || 0).toLocaleString()} documents`)),
+      h('button', { class: 'btn small', 'aria-label': `Stop reading ${f.path}`, onclick: () => {
+        if (confirm(`Stop reading ${f.path}? Its files leave the library (the files themselves aren't touched).`)) save(folders.filter(x => x.path !== f.path).map(x => x.path));
+      } }, 'Remove')))) : empty('No folders found. Add one below.'),
+    add,
+    st.custom ? h('button', { class: 'btn small', onclick: () => save([]) }, 'Go back to the usual places') :
+      h('div', { class: 't3 muted' }, 'These are the usual places on this PC. Add or remove folders to choose your own.'),
+  ];
+}
+
+async function libSearch(query, box) {
+  fill(box, h('div', { class: 'muted' }, 'Searching…'));
+  const r = await post('/api/library/search', { query, limit: 8 }).catch(e => ({ ok: false, error: e.message }));
+  if (r.ok === false) return fill(box, empty(r.error || 'Search failed.'));
+  if (!r.hits.length) return fill(box, empty(query.trim() ? `Nothing matches “${query}”. Try other words.` : 'No documents yet.'));
+  fill(box, h('div', { class: 'list' }, r.hits.map(hit => h('div', { class: 'item' }, h('div', { class: 'main' },
+    h('div', { class: 't1' }, hit.title),
+    h('div', { class: 't2' }, [hit.file, hit.where, `modified ${hit.modified}`, hit.folder, hit.note].filter(Boolean).join(' · ')),
+    hit.passage ? h('div', { class: 't3' }, marked(hit.passage)) : null),
+    h('button', { class: 'btn small', onclick: async () => {
+      const o = await post('/api/library/open', { path: hit.path }).catch(e => ({ ok: false, error: e.message }));
+      toast(o.ok ? `Opening ${o.opened}.` : o.error);
+    } }, 'Open')))));
+}
+
+/* "Acme [support] [hours] are…" -> the bracketed words highlighted (still text nodes, never HTML). */
+function marked(text) { return text.split(/(\[[^\]]*\])/).map(part => part.startsWith('[') && part.endsWith(']') ? h('mark', {}, part.slice(1, -1)) : part); }
+
 function renderAll() { for (const fn of Object.values(render)) { try { fn(); } catch (err) { console.error(err); } } }
 
 // ---------------------------------------------------------------- actions
@@ -1101,6 +1182,9 @@ document.addEventListener('click', async e => {
       S.data[action === 'rescan' ? 'discovery' : 'doctor'] = res;
       render[action === 'rescan' ? 'connections' : 'doctor']();
     } catch (err) { toast(`Failed: ${err.message}`); } finally { btn.disabled = false; btn.textContent = label; }
+  } else if (action === 'library-index') {
+    const r = await post('/api/library/index').catch(e => ({ ok: false, error: e.message }));
+    toast(r.ok === false ? r.error : r.running ? 'Already reading.' : 'Reading new and changed files…');
   } else if (action === 'new-research') {
     const prompt = window.prompt('Research topic — Claude will search the web and write a brief in the background:');
     if (prompt) { const r = await post('/api/jobs', { kind: 'research', prompt }); toast(r.ok ? `Research job ${r.job_id} started.` : r.error); }
@@ -1239,6 +1323,7 @@ function onEvent(ev) {
     case 'brain': S.data.brain = data; render.brain(); paintOrb(); break;
     case 'brain_bench': S.data.brainBench = data; render.brain(); break;
     case 'goals': S.data.goals = data; if (!S.editGoals) render.tasks(); break;
+    case 'library': S.data.library = data; render.library(); break;
     case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;

@@ -187,6 +187,9 @@ class Runtime:
         sup.poller("morning briefing", 60, self._morning_check)
         sup.poller("pc scan", 6 * 3600, self._rescan_if_stale, delay=6 * 3600)  # startup already scanned
         sup.poller("model test", 3600, self._auto_bench, delay=45)
+        if self.svc.library is not None:
+            minutes = max(5.0, float((self.cfg.get("library") or {}).get("refresh_minutes", 30)))
+            sup.poller("library", minutes * 60, self._index_library, delay=60)
         sup.start()
 
     def stop(self) -> None:
@@ -218,6 +221,9 @@ class Runtime:
         obs = self.svc.obs
         status = obs.status()
         self._stream_brain(bool(status.get("connected") and (status.get("streaming") or {}).get("active")))
+        lib = self.svc.library
+        if lib is not None and lib.running and (status.get("streaming") or {}).get("active"):
+            lib.stop()  # reading documents is never worth a dropped frame: the next pass picks up from here
         if self.cfg["obs"].get("health_alerts", True):
             if status.get("connected"):
                 obs.ensure_events(on_meters=self.mic_watch.on_meters,
@@ -783,6 +789,78 @@ class Runtime:
         svc.projects.scan_dirs = new["projects"].get("scan_dirs") or []
         svc.projects._repos_scanned = 0.0
 
+    # ---- the library: your documents ---------------------------------------
+    def _index_library(self, force: bool = False) -> dict:
+        """Read what's new or changed in your folders (the "library" poller, or Index now in the HUD)."""
+        lib = self.svc.library
+        if lib is None:
+            return {"ok": False, "error": "The library is turned off."}
+        if not force and self._live()[0]:
+            return {"ok": True, "skipped": "live"}
+
+        def progress(p: dict) -> None:
+            self.supervisor.beat("library")  # a first read can take longer than the stall timeout
+            self.bus.publish("library", {**self.library_status(), "progress": p}, sticky=True)
+        self.bus.publish("library", self.library_status(), sticky=True)
+        result = lib.index(on_progress=progress)
+        self.bus.publish("library", self.library_status(), sticky=True)
+        return result
+
+    def library_status(self) -> dict:
+        lib = self.svc.library
+        if lib is None:
+            return {"enabled": False}
+        return {**lib.status(), "enabled": True, "custom": bool((self.cfg.get("library") or {}).get("folders"))}
+
+    def index_library(self) -> dict:
+        """Index now: in the background, progress as "library" events."""
+        lib = self.svc.library
+        if lib is None:
+            return {"ok": False, "error": "The library is turned off (library: enabled in config.yaml)."}
+        if lib.running:
+            return {"ok": True, "started": False, "running": True}
+        threading.Thread(target=self._index_library, kwargs={"force": True}, name="library", daemon=True).start()
+        return {"ok": True, "started": True}
+
+    def set_library_folders(self, folders: list[str] | None) -> dict:
+        """The folders to read, from the HUD; an empty list goes back to the usual places. Saved to
+        data/settings.yaml; files from a folder that's no longer listed leave the index on the next pass."""
+        lib = self.svc.library
+        if lib is None:
+            return {"ok": False, "error": "The library is turned off (library: enabled in config.yaml)."}
+        clean, bad = [], []
+        for f in folders or []:
+            path = Path(str(f).strip().strip('"')).expanduser()
+            if not str(f).strip():
+                continue
+            if path.is_dir():
+                clean.append(str(path))
+            else:
+                bad.append(str(f).strip())
+        if bad:
+            return {"ok": False, "error": "Not a folder on this PC: " + ", ".join(bad)}
+        save_setting(self.cfg, "library.folders", clean)
+        if lib.running:
+            lib.stop()
+        self.index_library()
+        return {"ok": True, **self.library_status()}
+
+    def search_library(self, query: str, limit: int = 8) -> dict:
+        lib = self.svc.library
+        if lib is None:
+            return {"ok": False, "error": "The library is turned off."}
+        return {"ok": True, "query": query, "hits": lib.search(query, limit)}
+
+    def open_document(self, path: str) -> dict:
+        """Open a search result (the HUD's Open button): only files the library has indexed."""
+        from .library import open_path
+
+        lib = self.svc.library
+        doc = lib.find(path) if lib is not None and path else None
+        if not doc or doc["path"] != path:
+            return {"ok": False, "error": "That file isn't in your library."}
+        return open_path(doc)
+
     def discovery_report(self) -> dict | None:
         latest = self.bus.latest.get("discovery")
         return latest["data"] if latest else discovery.load_report(self.cfg.data_dir)
@@ -812,6 +890,7 @@ class Runtime:
             "doctor": latest.get("doctor"),
             "health": self.supervisor.snapshot(),
             "voice_profile": self.voice_status(),
+            "library": latest.get("library") or self.library_status(),
             "tts": self.speaker.status(),
             "pc_control": self.assistant.control_status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},

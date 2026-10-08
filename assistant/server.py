@@ -316,6 +316,30 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         """{"goals": ["Streaming: …", "Work: …"], "this_week": ["…"]}; either may be left out."""
         return runtime.set_goals(body.get("goals"), body.get("this_week"))
 
+    @app.get("/api/library")
+    async def library_status():
+        return await run_in_threadpool(runtime.library_status)
+
+    @app.post("/api/library/search")
+    async def library_search(body: dict):
+        """{"query": "vendor support hours", "limit": 8}"""
+        return await run_in_threadpool(runtime.search_library, str(body.get("query") or ""), int(body.get("limit") or 8))
+
+    @app.post("/api/library/index")
+    async def library_index():
+        """Read new and changed documents now, in the background; progress arrives as "library" events."""
+        return runtime.index_library()
+
+    @app.post("/api/library/folders")
+    async def library_folders(body: dict):
+        """{"folders": ["C:\\Users\\you\\Documents", …]}; [] = the usual places."""
+        return await run_in_threadpool(runtime.set_library_folders, body.get("folders"))
+
+    @app.post("/api/library/open")
+    async def library_open(body: dict):
+        """{"path": "<a path from a search result>"}"""
+        return await run_in_threadpool(runtime.open_document, str(body.get("path") or ""))
+
     @app.post("/api/brain/bench")
     async def brain_bench():
         """Test every local model in the background; progress arrives as "brain_bench" events."""

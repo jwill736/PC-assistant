@@ -445,3 +445,8 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .stamp { font-variant-numeric: tabular-nums; color: var(--ink-2); margin-right: 8px; }
 
+
+/* Library: the passage that matched, with the searched words marked */
+.lib-status { font-size: 12px; margin-bottom: 8px; }
+.lib-results { margin: 6px 0 4px; }
+.lib-results mark { background: color-mix(in srgb, var(--accent) 28%, transparent); color: inherit; padding: 0 1px; }

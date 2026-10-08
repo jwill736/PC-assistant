@@ -279,6 +279,19 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
                   r"what (?:were|are) my notes (?:on|about) )(.+)$", t)
     if m:
         return Intent("tool", "recall", {"query": m.group(1)})
+    # --- your documents (the library): before web search and "open <app>", which would take these
+    # ("notes" is left to the model: they may be Vesper's notes or a file. "open sticky notes" and "open google
+    # slides" are apps, so neither word marks a document here.)
+    docs = r"(?:documents?|docs?|files?|library|drive|onedrive|google drive|dropbox|folders?)"
+    kinds = r"(?:document|doc|file|pdf|deck|presentation|spreadsheet|sheet)"
+    m = re.search(rf"^(?:search|look|check) (?:in |through )?(?:my |the )?{docs} (?:for|about|on) (.+)$"
+                  rf"|^find (?:me )?(?:my |the |a )?{kinds}s? (?:about|on|for|called|named|with|that mentions?) (.+)$", t)
+    if m:
+        return Intent("tool", "search_library", {"query": m.group(1) or m.group(2)})
+    m = re.search(rf"^(?:open|pull up|bring up|show me) (?:my |the )?{kinds} (?:called|named|about|on) (.+)$"
+                  r"|^(?:open|pull up|bring up|show me) (?:my |the )?(.+?) (?:document|doc|pdf|deck|presentation|spreadsheet)$", t)
+    if m:
+        return Intent("tool", "open_document", {"name": m.group(1) or m.group(2)})
     if re.search(r"^(?:what'?s|what is) (?:connected|set up|hooked up)$|^(?:connection|setup) status$"
                  r"|^what (?:do|does) (?:i|vesper|it) (?:still )?need(?: to set up| to connect)?$|^what'?s missing$", t):
         return Intent("tool", "connections")

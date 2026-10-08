@@ -13,8 +13,10 @@ import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 import httpx
+import psutil
 import uvicorn
 
 from . import discovery
@@ -35,22 +37,106 @@ def already_running(host: str, port: int) -> bool:
     return r.status_code == 200 and "HUD</title>" in r.text
 
 
-def quit_running(host: str, port: int, data_dir, wait: float = 20.0) -> bool:
-    """Ask the copy serving this port to close (the installer, before updating). True once nothing answers."""
-    if not already_running(host, port):
-        return True
-    token_file = data_dir / "api_token"
-    token = token_file.read_text().strip() if token_file.exists() else ""
+HUD_WAS_OPEN = "hud_was_open"  # in data/: written on quit while a HUD window is connected
+
+
+def vesper_processes(root: Path) -> list[psutil.Process]:
+    """Other copies of Vesper started from this folder ("python -m assistant", from start.bat, the tray shortcut
+    or the desktop icon), whether or not they still serve the HUD. Never this process or another --quit."""
+    root = Path(root).resolve()
+    me, found = os.getpid(), []
+    for p in psutil.process_iter(["pid", "cmdline", "cwd", "exe"]):
+        try:
+            cmd = p.info["cmdline"] or []
+            if p.info["pid"] == me or "--quit" in cmd or "-m" not in cmd:
+                continue
+            i = cmd.index("-m")
+            if cmd[i + 1:i + 2] != ["assistant"]:
+                continue
+            if any(_inside(x, root) for x in (p.info["cwd"], p.info["exe"])):
+                found.append(p)
+        except (psutil.Error, OSError, ValueError):
+            continue
+    return found
+
+
+def _inside(path: str | None, root: Path) -> bool:
+    if not path:
+        return False
+    path, root_s = os.path.normcase(str(Path(path).resolve())), os.path.normcase(str(root))
+    return path == root_s or path.startswith(root_s.rstrip(os.sep) + os.sep)
+
+
+def quit_running(host: str, port: int, data_dir, root: Path | None = None, wait: float = 20.0) -> bool:
+    """Close the copy that's running (the installer does this before updating). True once none is left.
+
+    Waits for its process to end, not just for the HUD to stop answering: on Windows a voice or tray thread
+    could keep the old copy alive (and listening) after its HUD closed, so an update ended with two. Anything
+    still running after the wait, or started from this folder and no longer serving the HUD, is ended.
+    """
+    pid = None
+    if already_running(host, port):
+        token_file = data_dir / "api_token"
+        token = token_file.read_text().strip() if token_file.exists() else ""
+        try:
+            r = httpx.post(f"http://{host}:{port}/api/quit", headers={"x-assistant-token": token}, timeout=5)
+            pid = r.json().get("pid") if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError, AttributeError):
+            pass
+    others = vesper_processes(root) if root else []
+    asked = []
+    if pid:
+        try:
+            # its parents too: on Windows the .venv python.exe is a small launcher that started the real one, and
+            # ending the launcher early would cut the real one off mid-shutdown
+            me = psutil.Process(pid)
+            asked = [me] + [p for p in others if p.pid in {x.pid for x in me.parents()}]
+        except psutil.Error:
+            pass
+    elif already_running(host, port):  # an older copy that doesn't say its process: give them all time
+        asked, others = others, []
+    strays = [p for p in others if p.pid not in {x.pid for x in asked}]
+    for p in strays:  # not serving the HUD any more: stuck, so no point waiting
+        _end(p)
+    _, alive = psutil.wait_procs(asked, timeout=wait)
+    for p in alive:
+        _end(p)
+    _, alive = psutil.wait_procs(alive + strays, timeout=5)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(alive, timeout=3)
+    deadline = time.monotonic() + (5 if asked else wait)
+    while already_running(host, port) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    return not already_running(host, port) and not (vesper_processes(root) if root else [])
+
+
+def _end(p: psutil.Process) -> None:
     try:
-        httpx.post(f"http://{host}:{port}/api/quit", headers={"x-assistant-token": token}, timeout=5)
-    except httpx.HTTPError:
+        p.terminate()
+    except psutil.Error:
         pass
+
+
+def open_hud_unless_one_reconnects(bus, url: str, ready=lambda: True, wait: float = 6.0,
+                                   startup: float = 120.0) -> bool:
+    """Open the HUD once the server is up. After an update (``wait`` > 0: a HUD window was open when the last copy
+    quit) that window reconnects by itself and reloads onto the new version, so open a second one only if it
+    hasn't within ``wait`` seconds. True when one was opened."""
+    deadline = time.monotonic() + startup
+    while not ready() and time.monotonic() < deadline:
+        time.sleep(0.25)
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
-        if not already_running(host, port):
-            return True
-        time.sleep(0.5)
-    return False
+        if bus.client_count:
+            logging.getLogger("assistant").info("The HUD window that was open came back; not opening another.")
+            return False
+        time.sleep(0.25)
+    open_hud(url)
+    return True
 
 
 def open_hud(url: str) -> None:
@@ -124,7 +210,7 @@ def main() -> None:
     port = args.port or cfg["server"]["port"]
     local_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     if args.quit:
-        closed = quit_running(local_host, port, cfg.data_dir)
+        closed = quit_running(local_host, port, cfg.data_dir, cfg.root)
         print("Vesper is closed." if closed else "Vesper is still running: quit it from the tray icon.")
         sys.exit(0 if closed else 1)
     log_path = setup_logging(cfg.data_dir, args.debug, console=not headless)
@@ -176,21 +262,37 @@ def main() -> None:
     if args.no_voice:
         cfg["voice"]["enabled"] = False
 
+    hud_was_open = cfg.data_dir / HUD_WAS_OPEN
+    reuse = hud_was_open.exists() and time.time() - hud_was_open.stat().st_mtime < 600
+    hud_was_open.unlink(missing_ok=True)
     runtime = Runtime(cfg)
     app = create_app(runtime)
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_config=None, log_level="warning"))
-    app.state.on_quit = lambda: setattr(server, "should_exit", True)
+    # timeout_graceful_shutdown: an open HUD socket must not hold the shutdown up
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_config=None, log_level="warning",
+                                           timeout_graceful_shutdown=3))
+
+    def quit_now() -> None:
+        if runtime.bus.client_count:  # the HUD window stays open and reconnects to the next start: reuse it then
+            hud_was_open.write_text(str(time.time()), encoding="utf-8")
+        server.should_exit = True
+        # Last resort: if a voice, tray or worker thread still holds the process 15 s later, end it anyway, so
+        # an update never leaves an old copy listening alongside the new one.
+        timer = threading.Timer(15, lambda: os._exit(0))
+        timer.daemon = True  # a clean exit doesn't wait for it
+        timer.start()
+    app.state.on_quit = quit_now
 
     tray = None
     if cfg.get("tray", {}).get("enabled", True) and not args.no_tray:
         from .tray import Tray
 
-        tray = Tray(runtime, url, on_quit=lambda: setattr(server, "should_exit", True))
+        tray = Tray(runtime, url, on_quit=quit_now)
         if not tray.start():
             tray = None
 
     if cfg["server"].get("open_window", True) and not args.no_window:
-        threading.Thread(target=lambda: (time.sleep(1.5), open_hud(url)), daemon=True).start()
+        threading.Thread(target=open_hud_unless_one_reconnects, args=(runtime.bus, url, lambda: server.started,
+                                                                      6.0 if reuse else 0.0), daemon=True).start()
 
     name = cfg["assistant"]["name"]
     log.info("%s online at %s — say “%s, good morning”. Log: %s", name, url, name, log_path)

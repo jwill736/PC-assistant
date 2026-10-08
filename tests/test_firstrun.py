@@ -2,6 +2,7 @@
 the home network, Claude, or later), written into config.yaml without losing its comments."""
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -261,7 +262,7 @@ def test_quit_endpoint_needs_the_token_and_closes_the_app(cfg, svc):
         headers = {"X-Assistant-Token": app.state.token}
         assert c.post("/api/quit", headers=headers).status_code == 503  # no server to stop (tests)
         app.state.on_quit = lambda: calls.append(1)
-        assert c.post("/api/quit", headers=headers).json() == {"ok": True}
+        assert c.post("/api/quit", headers=headers).json() == {"ok": True, "pid": os.getpid()}
     assert calls == [1]
 
 

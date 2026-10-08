@@ -158,13 +158,31 @@ jobs:
             if (-not (Test-Path $f)) { Write-Host "missing: $f"; exit 1 }
           }
           if (-not ((Get-Content "$dir\setup.bat" -Raw) -match "`r`n")) { Write-Host 'setup.bat lost its CRLF line endings'; exit 1 }
-      - name: Update over it (the same line again, as a file); settings kept
+      - name: Start it like the desktop icon, plus a stray copy without the HUD
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'Vesper'
+          Start-Process -FilePath "$dir\start.bat" -ArgumentList '--no-voice', '--no-window', '--no-tray' -WorkingDirectory $dir
+          function Wait-Hud([int]$Port) {
+            for ($i = 0; $i -lt 90; $i++) {
+              try { if ((Invoke-WebRequest "http://127.0.0.1:$Port/" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { return } } catch { }
+              Start-Sleep -Seconds 2
+            }
+            Write-Host "Vesper never answered on $Port"; exit 1
+          }
+          Wait-Hud 8765
+          # a copy that hung on after its HUD went away: it isn't on the port the update asks to close
+          Start-Process -FilePath "$dir\.venv\Scripts\python.exe" -ArgumentList '-m', 'assistant', '--no-voice', '--no-window', '--no-tray', '--port', '8766' -WorkingDirectory $dir
+          Wait-Hud 8766
+      - name: Update over it (the same line again, as a file); settings kept, the old copies closed
         shell: powershell
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'Vesper'
           Add-Content "$dir\config.yaml" "`n# a note of my own"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Dir $dir -Ref $env:REF -Unattended -NoStart
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          $left = @(Get-CimInstance Win32_Process | Where-Object { ([string]$_.CommandLine) -match '-m\s+assistant(\s|"|$)' -or ($_.Name -eq 'cmd.exe' -and ([string]$_.CommandLine) -match 'start\.bat') })
+          if ($left.Count) { Write-Host 'still running after the update:'; $left | Format-Table ProcessId, Name, CommandLine -AutoSize | Out-String -Width 400 | Write-Host; exit 1 }
           if (-not (Select-String -Path "$dir\config.yaml" -Pattern 'a note of my own' -Quiet)) { Write-Host 'the update replaced config.yaml'; exit 1 }
           & "$dir\.venv\Scripts\python.exe" -c "from assistant.config import load_config; assert load_config(r'$dir\config.yaml')['assistant']['user_name'] == 'CI'"
           if ($LASTEXITCODE -ne 0) { exit 1 }

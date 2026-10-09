@@ -13,6 +13,7 @@ import hmac
 import os
 import secrets
 from contextlib import asynccontextmanager
+from html import escape
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -85,7 +86,8 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def guard(request: Request, call_next):
         if not host_ok(request.headers.get("host")):
             return JSONResponse({"error": "bad host"}, status_code=403)
-        if request.url.path.startswith("/api"):
+        # Google's sign-in sends the browser back here with no token header; a single-use state guards it instead
+        if request.url.path.startswith("/api") and request.url.path != "/api/google/callback":
             supplied = request.headers.get("x-assistant-token", "")
             if not hmac.compare_digest(supplied, token):
                 return JSONResponse({"error": "missing or bad token"}, status_code=401)
@@ -349,6 +351,46 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def library_open(body: dict):
         """{"path": "<a path from a search result>"}"""
         return await run_in_threadpool(runtime.open_document, str(body.get("path") or ""))
+
+    @app.get("/api/google")
+    async def google_status():
+        return await run_in_threadpool(runtime.google_status)
+
+    @app.post("/api/google/client")
+    async def google_client(body: dict):
+        """{"client_id": "….apps.googleusercontent.com", "client_secret": "GOCSPX-…"}: saved to .env."""
+        return await run_in_threadpool(runtime.set_google_client, str(body.get("client_id") or ""),
+                                       str(body.get("client_secret") or ""))
+
+    @app.post("/api/google/connect")
+    async def google_connect(request: Request, body: dict | None = None):
+        """Opens Google's sign-in page in the browser for one more account."""
+        return await run_in_threadpool(runtime.google_connect, str(request.base_url),
+                                       str((body or {}).get("login_hint") or ""))
+
+    @app.get("/api/google/callback", response_class=HTMLResponse)
+    async def google_callback(state: str = "", code: str = "", error: str = ""):
+        ok, said = await run_in_threadpool(runtime.google_finish, state, code, error)
+        title = f"Connected {said}" if ok else "Google sign-in didn't finish"
+        line = ("Vesper can read this account's Google Docs and calendars now. You can close this tab."
+                if ok else f"{said} Go back to Vesper → Setup → Google accounts and try again.")
+        page = (f"<!doctype html><meta charset=utf-8><title>{escape(title)}</title><body style='font:16px system-ui;"
+                f"background:#111;color:#eee;padding:48px'><h2>{escape(title)}</h2><p>{escape(line)}</p></body>")
+        return HTMLResponse(page, status_code=200 if ok else 400)
+
+    @app.post("/api/google/remove")
+    async def google_remove(body: dict):
+        return await run_in_threadpool(runtime.google_remove, str(body.get("email") or ""))
+
+    @app.get("/api/google/calendars")
+    async def google_calendars():
+        return await run_in_threadpool(runtime.google_calendar_choices)
+
+    @app.post("/api/google/calendars")
+    async def google_set_calendars(body: dict):
+        """{"calendars": [{"account", "id", "name", "profile"}], "drop_ical": true}"""
+        return await run_in_threadpool(runtime.set_google_calendars, body.get("calendars") or [],
+                                       bool(body.get("drop_ical")))
 
     @app.post("/api/brain/bench")
     async def brain_bench():

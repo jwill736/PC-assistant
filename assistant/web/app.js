@@ -1052,7 +1052,7 @@ function libStatusLine(st) {
   const last = st.last || {};
   if (!st.files && !last.at) return 'Not read yet. The first read starts a minute after Vesper starts, or press Read new files.';
   const by = st.by_status || {};
-  const notes = [by.online && `${by.online} online only (names only)`, by.link && `${by.link} Google docs (names only)`,
+  const notes = [by.online && `${by.online} online only (names only)`, by.link && `${by.link} Google docs (names only: Setup → Google accounts)`,
     by.empty && `${by.empty} with no text (scans)`, by.error && `${by.error} couldn't be read`, by.too_big && `${by.too_big} too big`].filter(Boolean);
   return [`${(st.files || 0).toLocaleString()} documents`, last.at ? `read ${ago(last.at)}` : null,
     last.capped ? 'stopped at the file limit (library.max_files)' : null, ...notes].filter(Boolean).join(' · ');
@@ -1134,6 +1134,96 @@ async function libSearch(query, box) {
 
 /* "Acme [support] [hours] are…" -> the bracketed words highlighted (still text nodes, never HTML). */
 function marked(text) { return text.split(/(\[[^\]]*\])/).map(part => part.startsWith('[') && part.endsWith(']') ? h('mark', {}, part.slice(1, -1)) : part); }
+
+// ---------------------------------------------------------------- Google accounts (work + personal)
+render.google = function google() {
+  const st = S.data.google;
+  for (const p of panels('google')) {
+    const b = body(p);
+    meta(p, st?.accounts?.length ? `${st.accounts.length} connected` : '');
+    if (!st) { fill(b, empty('Loading…')); continue; }
+    if (!b._g) {  // built once: the calendar list you're ticking survives updates
+      b._g = { top: h('div', {}), cals: h('div', { style: { marginTop: '10px' } }) };
+      fill(b, b._g.top, b._g.cals);
+    }
+    if (!st.configured || b._g.editKey) { fill(b._g.top, googleKeyForm(b._g)); fill(b._g.cals); continue; }
+    const docs = st.docs || {};
+    const broken = (st.ical || []).filter(c => !c.ok);
+    fill(b._g.top,
+      h('div', { class: 'lib-status muted' }, [
+        `${(docs.read || 0).toLocaleString()} Google docs read`,
+        docs.names_only ? `${docs.names_only.toLocaleString()} still names only` : null,
+        `${(st.calendars || []).length} Google calendars on the agenda`,
+        broken.length ? `${broken.length} old iCal link${broken.length === 1 ? '' : 's'} failing` : null,
+      ].filter(Boolean).join(' · ')),
+      (st.accounts || []).length ? h('div', { class: 'list' }, st.accounts.map(a => h('div', { class: 'item' },
+        h('div', { class: 'main' }, h('div', { class: 't1' }, status(...(a.error ? ['critical', 'Signed out'] : a.missing?.length ? ['warning', 'Partly'] : ['good', 'Connected'])), ' ', a.email),
+          h('div', { class: 't2' }, a.error || (a.missing?.length ? `You didn't allow ${a.missing.join(' or ')}: click Reconnect and tick every box on Google's page.` :
+            `connected ${ago(a.connected_at)} · reads Docs, Sheets, Slides and calendars (never changes them)`))),
+        h('button', { class: 'btn small', onclick: () => googleConnect(a.email) }, 'Reconnect'),
+        h('button', { class: 'btn small', onclick: () => googleRemove(a.email) }, 'Disconnect')))) :
+        empty('No account yet. Connect your work account, then your personal one.'),
+      h('div', { class: 'controls', style: { marginTop: '8px' } },
+        h('button', { class: 'btn primary', onclick: () => googleConnect('') }, 'Connect a Google account'),
+        (st.accounts || []).length ? h('button', { class: 'btn', onclick: () => googleCalendars(b._g.cals) }, 'Choose calendars') : null,
+        h('button', { class: 'btn small', onclick: () => { b._g.editKey = true; render.google(); } }, 'Change sign-in key')),
+      h('div', { class: 't3 muted', style: { marginTop: '6px' } }, 'Each Connect opens Google in your browser: pick the account, allow, then close that tab.'));
+  }
+};
+
+function googleKeyForm(g) {
+  const id = h('input', { placeholder: 'Client ID: ….apps.googleusercontent.com', 'aria-label': 'Google client ID', autocomplete: 'off' });
+  const secret = h('input', { placeholder: 'Client secret: GOCSPX-…', 'aria-label': 'Google client secret', type: 'password', autocomplete: 'off' });
+  return [
+    h('div', { class: 't2', style: { marginBottom: '6px' } }, 'Sign in with Google so Vesper reads your Google Docs, Sheets and Slides and your Google calendars. First paste the sign-in key you made in Google Cloud (docs/SETUP.md, Part 7).'),
+    h('form', { class: 'addrow', onsubmit: async e => {
+      e.preventDefault();
+      const r = await post('/api/google/client', { client_id: id.value, client_secret: secret.value }).catch(err => ({ ok: false, error: err.message }));
+      if (!r.ok) return toast(r.error || 'Could not save it.');
+      g.editKey = false; S.data.google = r; render.google(); toast('Saved. Now connect your accounts.');
+    } }, id, secret, h('button', { class: 'btn small', type: 'submit' }, 'Save')),
+    g.editKey ? h('button', { class: 'btn small', onclick: () => { g.editKey = false; render.google(); } }, 'Cancel') : null,
+  ];
+}
+
+async function googleConnect(hint) {
+  const r = await post('/api/google/connect', { login_hint: hint || '' }).catch(e => ({ ok: false, error: e.message }));
+  toast(r.ok ? 'Google sign-in opened in your browser.' : r.error);
+}
+
+async function googleRemove(email) {
+  if (!confirm(`Disconnect ${email}? Vesper stops reading its Google Docs and calendars (nothing in your Google account changes).`)) return;
+  const r = await post('/api/google/remove', { email }).catch(e => ({ ok: false, error: e.message }));
+  if (r.configured !== undefined) { S.data.google = r; render.google(); }
+  toast(r.ok ? `Disconnected ${email}.` : (r.error || 'It was already disconnected.'));
+}
+
+/* Every calendar the accounts can see: tick the ones for the agenda and say whose area each is. */
+async function googleCalendars(box) {
+  fill(box, h('div', { class: 'muted' }, 'Asking Google for your calendars…'));
+  const r = await api('/api/google/calendars').catch(e => ({ ok: false, error: e.message }));
+  if (r.ok === false) return fill(box, empty(r.error || 'Could not list them.'));
+  const areas = [...new Set([...Object.keys(S.data.profiles || {}), 'personal'])];
+  const rows = (r.calendars || []).map(c => {
+    const on = h('input', { type: 'checkbox', 'aria-label': `Show ${c.name}` }); on.checked = c.on;
+    const area = h('select', { 'aria-label': `Area for ${c.name}` }, areas.map(x => h('option', { value: x }, catLabel(x)))); area.value = areas.includes(c.profile) ? c.profile : 'personal';
+    return { c, on, area, el: h('label', { class: 'item', style: { cursor: 'pointer' } }, on,
+      h('div', { class: 'main' }, h('div', { class: 't1' }, c.name, c.primary ? h('span', { class: 'muted' }, ' · main') : null), h('div', { class: 't2' }, c.account)), area) };
+  });
+  const failing = (S.data.google?.ical || []);
+  const drop = h('input', { type: 'checkbox' }); drop.checked = failing.some(c => !c.ok);
+  fill(box, h('div', { class: 'sub-h' }, 'Calendars · tick the ones for your agenda'),
+    Object.entries(r.errors || {}).map(([email, err]) => h('div', { class: 't3' }, `${email}: ${err}`)),
+    rows.length ? h('div', { class: 'list' }, rows.map(x => x.el)) : empty('No calendars came back.'),
+    failing.length ? h('label', { class: 't2', style: { display: 'block', margin: '8px 0' } }, drop,
+      ` Turn off the old calendar links (${failing.map(c => c.name).join(', ')}): the Google ones replace them`) : null,
+    h('div', { class: 'controls' }, h('button', { class: 'btn primary', onclick: async () => {
+      const chosen = rows.filter(x => x.on.checked).map(x => ({ account: x.c.account, id: x.c.id, name: x.c.name, profile: x.area.value }));
+      const s = await post('/api/google/calendars', { calendars: chosen, drop_ical: failing.length ? drop.checked : false }).catch(e => ({ ok: false, error: e.message }));
+      if (!s.ok) return toast(s.error || 'Could not save.');
+      S.data.google = s; render.google(); fill(box); toast(`Saved: ${chosen.length} calendar${chosen.length === 1 ? '' : 's'} on the agenda.`);
+    } }, 'Save calendars'), h('button', { class: 'btn', onclick: () => fill(box) }, 'Cancel')));
+}
 
 function renderAll() { for (const fn of Object.values(render)) { try { fn(); } catch (err) { console.error(err); } } }
 
@@ -1359,6 +1449,7 @@ function onEvent(ev) {
     case 'brain_bench': S.data.brainBench = data; render.brain(); break;
     case 'goals': S.data.goals = data; if (!S.editGoals) render.tasks(); break;
     case 'library': S.data.library = data; render.library(); break;
+    case 'google': S.data.google = data; render.google(); break;
     case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;

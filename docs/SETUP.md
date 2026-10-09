@@ -143,12 +143,50 @@ that will run the model: this one, or your main PC.
     “Vesper, search my documents for …” or, with your model connected, ask a question about your work and
     “check my documents”.
 
-## Part 7 · Optional
+## Part 7 · Google accounts: Docs and calendars (15 minutes, once)
 
-25. **Start at sign-in:** in the Vesper folder's address bar type `powershell`, then run
+Do this once for each Google account (work and personal). Vesper then reads the words in your Google Docs, Sheets
+and Slides (until then they're found by name only) and shows your Google calendars without iCal links, which a
+Workspace admin can switch off. It can only read, never change anything. Google gives every app its own sign-in
+key, so steps 25–29 make yours in Google Cloud (free); do them signed in as your **personal** Gmail.
+
+25. **Make a project.** Open [console.cloud.google.com/projectcreate](https://console.cloud.google.com/projectcreate).
+    First time? Pick your country, tick the terms → **Agree and continue**. **Project name** `Vesper` →
+    **Create**. Wait for the bell to say it's made, then click **Select project** in that message.
+26. **Turn on Drive and Calendar.** Open
+    [the Google Drive API page](https://console.cloud.google.com/apis/library/drive.googleapis.com) → check the top
+    bar says **Vesper** → **Enable**. Then
+    [the Google Calendar API page](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com) →
+    **Enable**.
+27. **Name the sign-in.** Open [Google Auth Platform](https://console.cloud.google.com/auth/overview) →
+    **Get started**. **App name** `Vesper`, **User support email** your Gmail → **Next** → **External** →
+    **Next** → your Gmail again → **Next** → tick the policy → **Continue** → **Create**.
+28. **Make the key.** Left menu **Clients** → **+ Create client** → **Application type** **Desktop app** → **Name**
+    `Vesper on my PC` → **Create**. A box shows the **Client ID** and **Client secret**: keep it open (click
+    **Download JSON** too: Google may not show the secret again).
+29. **Stop the weekly sign-out.** Left menu **Audience** → **Publish app** → **Confirm**. (Left in “Testing”,
+    Google ends the sign-in every 7 days.)
+30. **Give Vesper the key.** HUD → **Setup** → **Google accounts**. Paste the Client ID into the first box and the
+    Client secret into the second → **Save**. It's kept in `.env`.
+31. **Connect your work account.** Click **Connect a Google account**. Your browser opens Google: pick
+    **jon@talent-sdk.com**. “Google hasn't verified this app” is expected (it's your own app): **Advanced** →
+    **Go to Vesper (unsafe)**. Tick **every box** (Drive and Calendar) → **Continue**. The tab says
+    “Connected …”; close it. A box left unticked shows **Partly** in the HUD: **Reconnect** and tick it.
+    “Access blocked” or “admin_policy_enforced” instead means the company's Google admin blocks apps it hasn't
+    approved: the admin adds the Client ID in **admin.google.com → Security → Access and data control → API
+    controls → Manage third-party app access** as **Trusted**.
+32. **Connect your personal account.** **Connect a Google account** again, pick your Gmail, same as step 31.
+    Both now show **Connected**, and the top line counts “Google docs read” up as it reads them.
+33. **Pick your calendars.** Click **Choose calendars**. Tick the ones for your agenda and set each one's area
+    (**Work**, **Personal**, **Stream**). Leave **Turn off the old calendar links** ticked → **Save calendars**.
+    Then say “Vesper, what's on my calendar today?”.
+
+## Part 8 · Optional
+
+34. **Start at sign-in:** in the Vesper folder's address bar type `powershell`, then run
     `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`. Vesper then lives as a ring icon
     by the clock (click <kbd>^</kbd> if hidden): right-click for **Open HUD**, **Mute microphone**, **Quit**.
-26. **Updates:** Start menu → **Update Vesper** (or paste the install line again). It closes Vesper, downloads
+35. **Updates:** Start menu → **Update Vesper** (or paste the install line again). It closes Vesper, downloads
     the new version, updates the packages and starts it again. `config.yaml`, `.env` and everything in `data`
     are kept. The old black log window closes by itself, and the HUD window you had open reloads onto the new
     version (no second window).
@@ -167,6 +205,7 @@ that will run the model: this one, or your main PC.
 | Models | `data\models\` | speech, voices, trained wake words |
 | Twitch login | `data\twitch_token.json` | delete it (or **Disconnect**) to log out |
 | Highlights | `data\highlights\` | one file per day: moments with the time into the stream |
+| Google sign-ins | `data\google_tokens.json` | delete it (or **Disconnect**) to sign Vesper out of Google |
 | Library index | `data\library.db` | the word index of your documents (delete it to start the reading over) |
 
 ## If something's off
@@ -189,4 +228,7 @@ that will run the model: this one, or your main PC.
   after `setx`; the firewall allowed on **Private** networks; `http://<main PC name>:11434` opens on the
   laptop (else use the IP). **Setup → Brain** shows the address it's trying. Away from home, Vesper falls back
   to Claude if you added a key, else to the commands that need no model.
+- **Google Docs still say “names only”:** **Setup → Google accounts** shows which account is **Signed out** or
+  **Partly** connected: **Reconnect**. A doc shared with someone else's account is read through whichever of your
+  accounts can open it.
 - **“Windows protected your PC”** on a `.bat` you downloaded by hand: **More info → Run anyway**.

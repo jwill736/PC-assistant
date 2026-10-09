@@ -119,16 +119,47 @@ def check_calendars(cfg, hub=None) -> list[Check]:
         from .integrations.calendars import CalendarHub
 
         hub = CalendarHub(cfg["calendars"], cfg["assistant"].get("timezone"))
-    if not hub.sources:
+    if not hub.sources and not hub.google_sources():
         return [Check("Calendars", WARN, "none connected",
-                      "Paste each calendar's private iCal link into .env and list it under calendars: in config.yaml.")]
+                      "Setup → Google accounts: connect your Google account and tick the calendars to show.")]
     hub.refresh(force=True)
     out = []
     for c in hub.status():
+        fix = ("Setup → Google accounts: click Reconnect for " + c.get("account", "this account") + "."
+               if c.get("kind") == "google" else
+               "Re-copy the Secret iCal address, or better: Setup → Google accounts (a Workspace admin can switch "
+               "iCal links off), then tick \"turn off the old calendar links\".")
         out.append(Check(f"Calendar · {c['name']}", PASS if c["ok"] else FAIL, "loads" if c["ok"] else c["error"] or "failed",
-                         "" if c["ok"] else "Re-copy the Secret iCal address (Workspace admins can disable it — "
-                                            "then use Google sign-in, issue #18)."))
+                         "" if c["ok"] else fix))
     return out
+
+
+def check_google(cfg, google=None) -> Check:
+    """The signed-in Google accounts (Docs text for the library, Google calendars)."""
+    if google is None:
+        from .integrations.google import GoogleAccounts
+
+        g = cfg.get("google") or {}
+        google = GoogleAccounts(cfg.secret(g.get("client_id_env", "GOOGLE_CLIENT_ID")),
+                                cfg.secret(g.get("client_secret_env", "GOOGLE_CLIENT_SECRET")),
+                                cfg.data_dir / "google_tokens.json")
+    if not google.configured:
+        return Check("Google accounts", SKIP, "not set up",
+                     "Optional: Setup → Google accounts lets Vesper read your Google Docs and calendars.")
+    accounts = google.accounts()
+    if not accounts:
+        return Check("Google accounts", WARN, "sign-in key saved, no account connected",
+                     "Setup → Google accounts → Connect a Google account (once for work, once for personal).")
+    broken = [a for a in accounts if a.get("error")]
+    if broken:
+        return Check("Google accounts", FAIL, "; ".join(f"{a['email']}: {a['error']}" for a in broken),
+                     "Setup → Google accounts → Reconnect next to each one.")
+    partial = [a for a in accounts if a.get("missing")]
+    if partial:
+        return Check("Google accounts", WARN, "; ".join(f"{a['email']} didn't allow {' or '.join(a['missing'])}"
+                                                        for a in partial),
+                     "Setup → Google accounts → Reconnect, and tick every box on Google's page.")
+    return Check("Google accounts", PASS, ", ".join(a["email"] for a in accounts))
 
 
 def check_news(cfg, feed=None) -> Check:
@@ -292,6 +323,7 @@ def run_doctor(cfg, svc=None, *, test_mic: bool = True, load_model: bool = True,
     checks.append(_guard("Brain", lambda: check_brain(cfg)))
     checks.append(_guard("OBS", lambda: check_obs(cfg, svc.obs if svc else None)))
     if network:
+        checks.append(_guard("Google accounts", lambda: check_google(cfg, svc.google if svc else None)))
         checks += _guard_list("Calendars", lambda: check_calendars(cfg, svc.calendars if svc else None))
         checks.append(_guard("News feeds", lambda: check_news(cfg, svc.news if svc else None)))
     checks.append(_guard("Chrome", check_browser))

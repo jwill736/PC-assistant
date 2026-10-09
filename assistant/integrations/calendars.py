@@ -12,6 +12,7 @@ import threading
 import time
 from datetime import date, datetime, time as dtime, timedelta, tzinfo
 from pathlib import Path
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -42,8 +43,13 @@ def _to_dt(value, tz: tzinfo) -> tuple[datetime, bool]:
 
 
 class CalendarHub:
-    def __init__(self, sources: list[dict], tz_name: str | None = None, refresh_minutes: int = 10):
+    def __init__(self, sources: list[dict], tz_name: str | None = None, refresh_minutes: int = 10,
+                 google=None, google_sources: Callable[[], list[dict]] | None = None):
         self.tz = local_tz(tz_name)
+        # Google calendars read through a signed-in account (integrations/google.py): {account, id, name, profile}
+        self.google = google
+        self._google_sources = google_sources or (lambda: [])
+        self._gevents: dict[str, list[dict]] = {}
         self.sources = []
         for i, src in enumerate(sources or []):
             if not src.get("url") and not src.get("url_env"):
@@ -60,6 +66,48 @@ class CalendarHub:
         self._errors: dict[str, str] = {}
         self._fetched = 0.0
         self._lock = threading.Lock()
+
+    def set_sources(self, sources: list[dict]) -> None:
+        """The iCal calendars changed (the HUD turned the failing links off)."""
+        with self._lock:
+            self.sources = [s for s in CalendarHub(sources).sources]
+            for name in list(self._cals):
+                if name not in {s["name"] for s in self.sources}:
+                    self._cals.pop(name, None)
+                    self._errors.pop(name, None)
+            self._fetched = 0.0
+
+    def google_sources(self) -> list[dict]:
+        out = []
+        try:
+            chosen = self._google_sources() or []
+        except Exception:
+            chosen = []
+        for i, src in enumerate(chosen):
+            if src.get("account") and src.get("id"):
+                out.append({"name": src.get("name") or src["id"], "account": src["account"], "id": src["id"],
+                            "profile": src.get("profile", "personal"),
+                            "color": src.get("color") or PALETTE[(len(self.sources) + i) % len(PALETTE)],
+                            "key": f"google:{src['account']}:{src['id']}"})
+        return out
+
+    def _refresh_google(self) -> None:
+        if self.google is None:
+            return
+        now = datetime.now(self.tz)
+        start, end = now - timedelta(days=8), now + timedelta(days=62)  # yesterday's recap to two months out
+        keep = set()
+        for src in self.google_sources():
+            keep.add(src["key"])
+            try:
+                self._gevents[src["key"]] = self.google.events(src["account"], src["id"], start, end, self.tz)
+                self._errors.pop(src["key"], None)
+            except Exception as exc:
+                self._errors[src["key"]] = f"{type(exc).__name__}: {exc}"[:200]
+                log.warning("google calendar %s failed: %s", src["name"], type(exc).__name__)
+        for key in list(self._gevents):
+            if key not in keep:
+                self._gevents.pop(key, None)
 
     def _source_url(self, src: dict) -> str:
         import os
@@ -89,6 +137,7 @@ class CalendarHub:
                     # Never log the URL: Google's secret iCal address is a credential.
                     self._errors[src["name"]] = type(exc).__name__ + (f": {exc}" if not url.startswith("http") else "")
                     log.warning("calendar %s failed: %s", src["name"], type(exc).__name__)
+            self._refresh_google()
             self._fetched = time.time()
 
     def events(self, start: datetime, end: datetime, profile: str | None = None) -> list[dict]:
@@ -130,6 +179,15 @@ class CalendarHub:
                     "location": str(ev.get("LOCATION", "") or ""),
                     "description": str(ev.get("DESCRIPTION", "") or "")[:280],
                 })
+        for src in self.google_sources():
+            if profile and src["profile"] != profile:
+                continue
+            for ev in self._gevents.get(src["key"], []):
+                if ev["end"] <= start or ev["start"] >= end:
+                    continue
+                out.append({"calendar": src["name"], "profile": src["profile"], "color": src["color"],
+                            "title": ev["title"], "start": ev["start"].isoformat(), "end": ev["end"].isoformat(),
+                            "all_day": ev["all_day"], "location": ev["location"], "description": ev["description"]})
         out.sort(key=lambda x: (x["start"], not x["all_day"]))
         return out
 
@@ -140,10 +198,13 @@ class CalendarHub:
 
     def status(self) -> list[dict]:
         """``missing``: the .env name to fill in when the link isn't there yet (not an error: just not connected)."""
-        return [{"name": s["name"], "profile": s["profile"], "color": s["color"],
+        return [{"name": s["name"], "profile": s["profile"], "color": s["color"], "kind": "ical",
                  "ok": s["name"] in self._cals and s["name"] not in self._errors,
                  "error": self._errors.get(s["name"]),
-                 "missing": (s.get("url_env") or "url") if not self._source_url(s) else None} for s in self.sources]
+                 "missing": (s.get("url_env") or "url") if not self._source_url(s) else None} for s in self.sources] + [
+            {"name": g["name"], "profile": g["profile"], "color": g["color"], "kind": "google", "account": g["account"],
+             "ok": g["key"] in self._gevents and g["key"] not in self._errors, "error": self._errors.get(g["key"]),
+             "missing": None} for g in self.google_sources()]
 
 
 def free_blocks(events: list[dict], day: date, tz: tzinfo, start: str = "09:00", end: str = "18:00",

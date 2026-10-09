@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import fnmatch
 import html
-import json
 import logging
 import os
 import re
@@ -442,12 +441,16 @@ class Library:
     def __init__(self, path: Path | str, folders: Callable[[], list[Path]] | list[Path] | None = None,
                  exclude: list[str] | None = None, max_file_mb: float = 25, max_files: int = 20_000,
                  pause: float = 0.002, whole_pc: Callable[[], bool] | bool = False,
-                 drives: Callable[[], list[Path]] = local_drives, skip_paths: list[Path] | None = None):
+                 drives: Callable[[], list[Path]] = local_drives, skip_paths: list[Path] | None = None,
+                 cloud: Callable[[dict, str], str | None] | None = None):
         self.path = str(path)
         self._folders = folders if callable(folders) else (lambda f=list(folders or []): f)
         self._whole_pc = whole_pc if callable(whole_pc) else (lambda w=bool(whole_pc): w)
         self._drives = drives
         self.skip_paths = [_norm(p) for p in skip_paths or []]  # Vesper's own folder: its docs aren't yours
+        # The text behind a Google Docs/Sheets/Slides link (integrations/google.py), or None when no Google
+        # account is connected: then the link is known by name only.
+        self.cloud = cloud
         self.exclude = [e.lower() for e in exclude or []]
         self.max_bytes = int(max_file_mb * 1024 * 1024)
         self.max_files = max_files
@@ -567,7 +570,7 @@ class Library:
         seen: set[str] = set()
         folders, drives = self.folders(), self.drives()
         roots = [(f, False) for f in folders] + ([(d, True) for d in drives] if scope == "all" else [])
-        known = {r["path"]: r for r in self._query("SELECT path, size, mtime, folder, priority FROM files")}
+        known = {r["path"]: r for r in self._query("SELECT path, size, mtime, folder, priority, ext, indexed FROM files")}
         capped = False
         try:
             for root, strict in roots:
@@ -580,7 +583,8 @@ class Library:
                     key = str(path)
                     seen.add(key)
                     old = known.get(key)
-                    if old and old["size"] == st.st_size and abs(old["mtime"] - st.st_mtime) < 1:
+                    stale_link = old and old["ext"] in LINKS and time.time() - old["indexed"] > FULL_EVERY_S
+                    if old and old["size"] == st.st_size and abs(old["mtime"] - st.st_mtime) < 1 and not stale_link:
                         counts["unchanged"] += 1
                         if old["folder"] != str(root) or old["priority"] != int(not strict):  # a folder you added
                             with self._lock:
@@ -626,11 +630,17 @@ class Library:
         if attrs & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS):
             status = "online"
         elif ext in LINKS:
-            status = "link"
-            try:
-                url = json.loads(path.read_text(encoding="utf-8", errors="replace")).get("url")
-            except (OSError, ValueError, AttributeError):
-                url = None
+            from .integrations.google import read_link
+
+            status, link = "link", read_link(path)
+            url = link.get("url") or None
+            if self.cloud and link.get("doc_id"):
+                try:
+                    text = self.cloud(link, ext)
+                    if text and text.strip():
+                        sections, status = [Section("", text)], "ok"
+                except Exception as exc:  # not shared with a connected account, blocked by an admin, offline
+                    log.debug("library: no text for %s: %s", path.name, exc)
         elif st.st_size > self.max_bytes:
             status = "too_big"
         else:
@@ -708,7 +718,7 @@ class Library:
         if r["status"] == "online":
             out["note"] = "online only: not downloaded to this PC, so only its name is known"
         elif r["status"] == "link":
-            out["note"] = "an online Google document: only its name is known"
+            out["note"] = "a Google document only known by name: connect its Google account (Setup) to read it"
         elif r["status"] in ("empty", "too_big", "error"):
             out["note"] = {"empty": "no text in it (a scan or images)", "too_big": "too big to read",
                            "error": "couldn't be read"}[r["status"]]
@@ -768,6 +778,21 @@ class Library:
         return {"ok": True, "title": title_of(path), "file": path.name, "path": str(path), "folder": path.parent.name,
                 "where": "", "passage": "", "text": text[:max_chars], "truncated": len(text) > max_chars,
                 "note": "read from disk: it isn't in the library"}
+
+    def reread_links(self) -> int:
+        """A Google account was connected or removed: read every Google Docs/Sheets/Slides link again."""
+        with self._lock:
+            n = self._db.execute(f"UPDATE files SET mtime=0 WHERE ext IN ({','.join('?' * len(LINKS))})",
+                                 tuple(sorted(LINKS))).rowcount
+            self._db.commit()
+        return n
+
+    def google_counts(self) -> dict:
+        """Google Docs/Sheets/Slides: how many are read, and how many only known by name."""
+        rows = self._query(f"SELECT status, COUNT(*) AS n FROM files WHERE ext IN ({','.join('?' * len(LINKS))}) "
+                           "GROUP BY status", tuple(sorted(LINKS)))
+        by = {r["status"]: r["n"] for r in rows}
+        return {"read": by.get("ok", 0), "names_only": by.get("link", 0)}
 
     def count(self) -> int:
         return self._query("SELECT COUNT(*) AS n FROM files")[0]["n"]

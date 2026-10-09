@@ -127,6 +127,13 @@ library:
   exclude: []            # e.g. "*/Archive/*"
   refresh_minutes: 30
 
+# Google sign-in (HUD: Setup → Google accounts): the text of your Google Docs for the library, and your Google
+# calendars. The key (a Google Cloud "Desktop app" client) is saved to .env by the HUD; calendars are ticked there.
+google:
+  client_id_env: GOOGLE_CLIENT_ID
+  client_secret_env: GOOGLE_CLIENT_SECRET
+  calendars: []          # filled in by Choose calendars: {account, id, name, profile}
+
 # Any number of calendars, any provider, merged into one agenda.
 # Put each private iCal link in .env and reference it with url_env.
 calendars:

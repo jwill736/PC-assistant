@@ -176,6 +176,52 @@ def test_the_usual_folders_without_one_inside_another(tmp_path):
     assert default_folders(env={}, home=tmp_path / "nobody") == []
 
 
+def test_finds_every_onedrive_and_each_google_account(tmp_path, monkeypatch):
+    """J's PC: Documents and Desktop live in OneDrive (with Provyn beside them) and two Google accounts each have
+    a drive letter. The first version only found OneDrive\\Documents and OneDrive\\Desktop."""
+    home, onedrive = tmp_path / "jwill", tmp_path / "jwill" / "OneDrive"
+    for d in ("Documents", "Desktop", "Provyn"):
+        (onedrive / d).mkdir(parents=True)
+    work, personal = tmp_path / "K" / "My Drive", tmp_path / "J" / "My Drive"
+    work.mkdir(parents=True)
+    personal.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("OneDrive", raising=False)  # not every process gets it: OneDrive's own settings do
+    monkeypatch.setattr(libmod, "_shell_folders", lambda: {"Personal": onedrive / "Documents", "Desktop": onedrive / "Desktop"})
+    monkeypatch.setattr(libmod, "_onedrive_roots", lambda: [onedrive])
+    monkeypatch.setattr(libmod, "google_drives", lambda: [personal, work])
+    libmod._cache.clear()
+    assert default_folders() == [onedrive.resolve(), personal.resolve(), work.resolve()]
+    libmod._cache.clear()
+
+
+def test_a_drive_that_hangs_is_left_out_quickly(tmp_path, monkeypatch):
+    """A disconnected network drive (L:, M:) can take many seconds to answer: never wait on it."""
+    ok, dead = tmp_path / "ok", tmp_path / "dead"
+    ok.mkdir()
+    real = libmod._is_dir
+    monkeypatch.setattr(libmod, "_is_dir", lambda p: time.sleep(30) if p == dead else real(p))
+    started = time.time()
+    assert libmod._dirs_within([dead, ok], timeout=0.5) == [ok]
+    assert time.time() - started < 2
+    monkeypatch.setattr(libmod, "drive_letters", lambda: ["J", "L"])
+    monkeypatch.setattr(libmod, "_dirs_within", lambda paths, timeout=2.0: [p for p in paths if str(p).startswith("J")])
+    assert libmod.google_drives() == [Path("J:/My Drive")]
+
+
+def test_suggests_pinned_work_folders_but_not_drives_media_or_whats_read(tmp_path):
+    home = tmp_path / "jwill"
+    onedrive = home / "OneDrive"
+    for d in ("OneDrive/Provyn", "Assured Space", "Downloads", "Music", "Leadership_JDs_Sept2026"):
+        (home / d).mkdir(parents=True)
+    pinned = [home / "Assured Space", onedrive / "Provyn", home / "Music", Path(tmp_path.anchor), home,
+              home / "Leadership_JDs_Sept2026", home / "Gone"]
+    out = libmod.suggestions([onedrive], home=home, pinned=pinned)
+    assert [(Path(x["path"]).name, x["why"]) for x in out] == [
+        ("Assured Space", "pinned in File Explorer"), ("Leadership_JDs_Sept2026", "pinned in File Explorer"),
+        ("Downloads", "Downloads")]
+
+
 # ---- asking it ------------------------------------------------------------------------------------
 
 def test_search_quotes_the_passage_with_where_it_is(lib):
@@ -305,6 +351,13 @@ def test_hud_endpoints(cfg, svc, docs, monkeypatch):
         assert c.post("/api/library/open", json={"path": str(docs.parent / "setup.exe")}, headers=h).json()["ok"] is False
         assert opened == [hits[0]["path"]]
         assert c.get("/api/state", headers=h).json()["library"]["files"] == 5
+        work = docs.parent / "Assured Space"
+        work.mkdir()
+        monkeypatch.setattr(libmod, "quick_access", lambda: [work, docs / "Work"])
+        monkeypatch.setattr(Path, "home", lambda: docs.parent / "home")  # not the runner's own Downloads
+        libmod._cache.clear()
+        assert c.get("/api/library/suggestions", headers=h).json()["suggested"] == [
+            {"path": str(work), "why": "pinned in File Explorer"}]  # Work is inside a folder it reads already
 
 
 def test_never_reads_while_live_unless_asked(cfg, svc, docs, monkeypatch):

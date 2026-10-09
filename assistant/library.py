@@ -88,17 +88,27 @@ class Section:
 # Which folders
 # ---------------------------------------------------------------------------
 def default_folders(env: dict | None = None, home: Path | None = None) -> list[Path]:
-    """The usual places your documents live on this PC, the ones that exist, without one inside another."""
+    """The usual places your documents live on this PC, the ones that exist, without one inside another:
+    Documents and Desktop (wherever Windows has moved them), every OneDrive you're signed in to, Google Drive for
+    desktop's My Drive for each account (its own drive letter: J:\\My Drive, K:\\My Drive), Dropbox."""
+    real = env is None and home is None
+    if real and _cache.get("folders") and time.time() - _cache["folders"][0] < CACHE_S:
+        return list(_cache["folders"][1])
     env = dict(os.environ) if env is None else env
     home = home or Path.home()
-    shell = _shell_folders() if env is os.environ or env == dict(os.environ) else {}
-    found: list[Path] = [shell.get("Personal") or home / "Documents", shell.get("Desktop") or home / "Desktop"]
-    for var in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
-        if env.get(var):
-            found.append(Path(env[var]))
+    shell = _shell_folders() if real else {}
+    found: list[Path] = [shell.get("Personal"), shell.get("Desktop"), home / "Documents", home / "Desktop"]
+    found += [Path(env[v]) for v in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer") if env.get(v)]
+    found += _onedrive_roots() if real else []
     found += [home / "Dropbox", home / "Google Drive", home / "My Drive"]
-    found += [Path(f"{d}:/My Drive") for d in _local_drives()]  # Google Drive for desktop: G:\My Drive
-    return _outermost([p for p in found if _is_dir(p)])
+    out = _outermost([p for p in found if p is not None and _is_dir(p)] + (google_drives() if real else []))
+    if real:
+        _cache["folders"] = (time.time(), out)
+    return out
+
+
+CACHE_S = 600  # where the folders are doesn't change often; finding them can take a second or two
+_cache: dict[str, tuple[float, list]] = {}
 
 
 def _shell_folders() -> dict[str, Path]:
@@ -121,19 +131,116 @@ def _shell_folders() -> dict[str, Path]:
         return {}
 
 
-def _local_drives() -> list[str]:
-    """Drive letters on this PC that aren't network drives (a disconnected one can hang for seconds)."""
+def _onedrive_roots() -> list[Path]:
+    """Every OneDrive signed in on this PC (personal and work), from OneDrive's own settings."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+
+        out = []
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\OneDrive\Accounts") as accounts:
+            for i in range(64):
+                try:
+                    name = winreg.EnumKey(accounts, i)
+                except OSError:
+                    break
+                try:
+                    with winreg.OpenKey(accounts, name) as account:
+                        out.append(Path(winreg.QueryValueEx(account, "UserFolder")[0]))
+                except OSError:
+                    continue
+        return out
+    except OSError:
+        return []
+
+
+def drive_letters() -> list[str]:
     if sys.platform != "win32":
         return []
     try:
         import ctypes
 
-        k32 = ctypes.windll.kernel32
-        mask = k32.GetLogicalDrives()
-        letters = [c for i, c in enumerate(string.ascii_uppercase) if mask >> i & 1 and c not in "AB"]
-        return [c for c in letters if k32.GetDriveTypeW(f"{c}:\\") in (2, 3)]  # removable, fixed
+        mask = ctypes.windll.kernel32.GetLogicalDrives()
+        return [c for i, c in enumerate(string.ascii_uppercase) if mask >> i & 1 and c not in "AB"]
     except (AttributeError, OSError):
         return []
+
+
+def google_drives() -> list[Path]:
+    """Google Drive for desktop gives each account a drive letter with My Drive in it. A disconnected network
+    drive can take many seconds to answer, so every letter is asked at once and a slow one is left out."""
+    return [p for p in _dirs_within([Path(f"{d}:/My Drive") for d in drive_letters()])]
+
+
+def _dirs_within(paths: list[Path], timeout: float = 2.0) -> list[Path]:
+    """The paths that are folders, asking in parallel and giving up on any that hangs (a dead network drive)."""
+    answers: dict[int, bool] = {}
+
+    def ask(i: int, p: Path) -> None:
+        answers[i] = _is_dir(p)
+    threads = [threading.Thread(target=ask, args=(i, p), daemon=True) for i, p in enumerate(paths)]
+    for t in threads:
+        t.start()
+    deadline = time.time() + timeout
+    for t in threads:
+        t.join(max(0.0, deadline - time.time()))
+    return [p for i, p in enumerate(paths) if answers.get(i)]
+
+
+MEDIA = {"music", "videos", "pictures", "photos", "saved games", "3d objects", "camera roll", "screenshots",
+         "obs recordings", "recordings"}
+
+
+def quick_access() -> list[Path]:
+    """The folders pinned in File Explorer's Quick access (Home): where you actually keep things."""
+    if sys.platform != "win32":
+        return []
+    import subprocess
+
+    ps = ("(New-Object -ComObject Shell.Application).Namespace('shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}')"
+          ".Items() | ForEach-Object { $_.Path }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
+                             text=True, timeout=20, creationflags=0x08000000).stdout  # CREATE_NO_WINDOW
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [Path(line.strip()) for line in out.splitlines() if re.match(r"^[A-Za-z]:\\", line.strip())]
+
+
+def suggestions(current: list[Path], home: Path | None = None, pinned: list[Path] | None = None) -> list[dict]:
+    """Folders worth adding that the library doesn't read yet: your pinned folders, Downloads, and the Shared
+    drives of a Google account. Never a whole drive, your user folder, or a folder of photos or video."""
+    real = pinned is None
+    key = "suggest:" + "|".join(map(str, current))
+    if real and _cache.get(key) and time.time() - _cache[key][0] < CACHE_S:
+        return list(_cache[key][1])
+    home = home or Path.home()
+    pinned = quick_access() if real else pinned
+    candidates = [(p, "pinned in File Explorer") for p in pinned]
+    candidates += [(home / "Downloads", "Downloads")]
+    candidates += [(Path(str(c)[:2] + "/Shared drives"), "Google shared drives") for c in current
+                   if c.name == "My Drive"]
+    cur = [_norm(c) for c in current]
+    out, seen = [], set()
+    for path, why in candidates:  # no disk access until the timed check below: L:\\ may be a dead network drive
+        r = _norm(path)
+        if r in seen or r.parent == r or r == _norm(home) or r.name.lower() in MEDIA:
+            continue
+        if any(r == c or c in r.parents for c in cur):  # already read
+            continue
+        seen.add(r)
+        out.append((path, why))
+    found = set(_dirs_within([p for p, _ in out]))
+    result = [{"path": str(p), "why": why} for p, why in out if p in found][:12]
+    if real:
+        _cache[key] = (time.time(), result)
+    return result
+
+
+def _norm(p: Path) -> Path:
+    """An absolute, case-folded path for comparing, without touching the disk."""
+    return Path(os.path.normcase(os.path.abspath(str(p))))
 
 
 def _is_dir(p: Path) -> bool:

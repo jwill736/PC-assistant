@@ -812,6 +812,15 @@ class Runtime:
             return {"enabled": False}
         return {**lib.status(), "enabled": True, "custom": bool((self.cfg.get("library") or {}).get("folders"))}
 
+    def library_suggestions(self) -> dict:
+        """Folders worth adding (pinned in File Explorer, Downloads, Google shared drives); asked by the HUD."""
+        from .library import suggestions
+
+        lib = self.svc.library
+        if lib is None:
+            return {"ok": False, "suggested": []}
+        return {"ok": True, "suggested": suggestions(lib.folders())}
+
     def index_library(self) -> dict:
         """Index now: in the background, progress as "library" events."""
         lib = self.svc.library

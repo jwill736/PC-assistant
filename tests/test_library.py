@@ -354,6 +354,7 @@ def test_hud_endpoints(cfg, svc, docs, monkeypatch):
         work = docs.parent / "Assured Space"
         work.mkdir()
         monkeypatch.setattr(libmod, "quick_access", lambda: [work, docs / "Work"])
+        monkeypatch.setattr(Path, "home", lambda: docs.parent / "home")  # not the runner's own Downloads
         libmod._cache.clear()
         assert c.get("/api/library/suggestions", headers=h).json()["suggested"] == [
             {"path": str(work), "why": "pinned in File Explorer"}]  # Work is inside a folder it reads already

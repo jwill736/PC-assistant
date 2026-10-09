@@ -52,6 +52,8 @@ class Runtime:
         self._bench_running = False  # the model test (one at a time)
         self.svc.free_model_memory = self.free_model_memory
         self.svc.live = lambda: self._live()[0]
+        if self.svc.google is not None:
+            self.svc.google.on_change = self._google_changed
         self.svc.system.extra_findings = self._model_memory_findings
         # Stream health while live, and the pre-stream check (Phase 5).
         obs_cfg = cfg["obs"]
@@ -888,6 +890,120 @@ class Runtime:
             return {"ok": False, "error": "That file isn't in your library."}
         return open_path(doc)
 
+    # ---- Google accounts (work and personal) -------------------------------------------
+    def google_status(self) -> dict:
+        g, lib = self.svc.google, self.svc.library
+        if g is None:
+            return {"configured": False, "accounts": []}
+        return {"configured": g.configured, "accounts": g.accounts(),
+                "calendars": (self.cfg.get("google") or {}).get("calendars") or [],
+                "ical": [c for c in self.svc.calendars.status() if c.get("kind") == "ical"],
+                "docs": lib.google_counts() if lib is not None else None}
+
+    def set_google_client(self, client_id: str, client_secret: str) -> dict:
+        """The sign-in key from Google Cloud (a "Desktop app" client): saved to .env, used at once."""
+        import os
+
+        from .firstrun import set_env_value
+
+        client_id, client_secret = (client_id or "").strip(), (client_secret or "").strip()
+        if not client_id.endswith(".apps.googleusercontent.com") or len(client_secret) < 10:
+            return {"ok": False, "error": "That doesn't look like a Google client: the ID ends in "
+                                          ".apps.googleusercontent.com and the secret starts GOCSPX-."}
+        g = self.cfg.get("google") or {}
+        names = (g.get("client_id_env", "GOOGLE_CLIENT_ID"), g.get("client_secret_env", "GOOGLE_CLIENT_SECRET"))
+        env = self.cfg.root / ".env"
+        text = env.read_text(encoding="utf-8") if env.exists() else ""
+        for name, value in zip(names, (client_id, client_secret)):
+            text = set_env_value(text, name, value)
+            os.environ[name] = value
+        env.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        self.svc.google.set_client(client_id, client_secret)
+        return {"ok": True, **self.google_status()}
+
+    def google_connect(self, base_url: str, login_hint: str = "") -> dict:
+        """Open Google's sign-in page in the browser; it comes back to /api/google/callback."""
+        import webbrowser
+
+        from .integrations.google import GoogleError
+
+        try:
+            url = self.svc.google.begin(base_url.rstrip("/") + "/api/google/callback", login_hint)
+        except GoogleError as exc:
+            return {"ok": False, "error": str(exc)}
+        webbrowser.open(url)
+        return {"ok": True, "url": url}
+
+    def google_finish(self, state: str, code: str, error: str = "") -> tuple[bool, str]:
+        from .integrations.google import GoogleError
+
+        if error:
+            return False, ("You cancelled the sign-in." if error == "access_denied" else f"Google said: {error}")
+        try:
+            email = self.svc.google.finish(state, code)
+        except (GoogleError, KeyError, ValueError) as exc:
+            return False, str(exc)
+        except Exception as exc:  # network trouble mid-sign-in
+            return False, f"{type(exc).__name__}: {exc}"[:200]
+        return True, email
+
+    def _google_changed(self, email: str) -> None:
+        """An account was connected: read its Google Docs and calendars now, and tell the HUD."""
+        lib = self.svc.library
+        if lib is not None:
+            lib.reread_links()
+            if lib.running:
+                lib.stop()
+            threading.Thread(target=self._safe(self._after_google), name="google", daemon=True).start()
+        self.bus.publish("google", self.google_status(), sticky=True)
+        self.announce(f"Connected Google: {email}.")
+
+    def _after_google(self) -> None:
+        lib = self.svc.library
+        deadline = time.time() + 15
+        while lib.running and time.time() < deadline:
+            time.sleep(0.2)
+        self._index_library(force=False)
+        self.bus.publish("google", self.google_status(), sticky=True)
+
+    def google_remove(self, email: str) -> dict:
+        removed = self.svc.google.remove(email)
+        g = self.cfg.get("google") or {}
+        kept = [c for c in g.get("calendars") or [] if c.get("account") != email]
+        if len(kept) != len(g.get("calendars") or []):
+            save_setting(self.cfg, "google.calendars", kept)
+        if self.svc.library is not None:
+            self.svc.library.reread_links()
+        self.bus.publish("google", self.google_status(), sticky=True)
+        return {"ok": removed, **self.google_status()}
+
+    def google_calendar_choices(self) -> dict:
+        """Every calendar each signed-in account can see, marked when it's on the agenda."""
+        from .integrations.google import GoogleError
+
+        chosen = {(c.get("account"), c.get("id")): c for c in (self.cfg.get("google") or {}).get("calendars") or []}
+        out, errors = [], {}
+        for email in self.svc.google.emails():
+            try:
+                for c in self.svc.google.calendars(email):
+                    pick = chosen.get((email, c["id"]))
+                    out.append({**c, "on": bool(pick), "profile": (pick or {}).get("profile") or _guess_profile(c)})
+            except GoogleError as exc:
+                errors[email] = str(exc)
+        return {"ok": True, "calendars": out, "errors": errors}
+
+    def set_google_calendars(self, calendars: list[dict], drop_ical: bool = False) -> dict:
+        clean = [{"account": str(c["account"]), "id": str(c["id"]), "name": str(c.get("name") or c["id"])[:80],
+                  "profile": str(c.get("profile") or "personal")} for c in calendars or []
+                 if c.get("account") and c.get("id")]
+        save_setting(self.cfg, "google.calendars", clean)
+        if drop_ical:
+            save_setting(self.cfg, "calendars", [])
+            self.svc.calendars.set_sources([])
+        self._poll_calendar()
+        self.bus.publish("google", self.google_status(), sticky=True)
+        return {"ok": True, **self.google_status()}
+
     def discovery_report(self) -> dict | None:
         latest = self.bus.latest.get("discovery")
         return latest["data"] if latest else discovery.load_report(self.cfg.data_dir)
@@ -918,7 +1034,18 @@ class Runtime:
             "health": self.supervisor.snapshot(),
             "voice_profile": self.voice_status(),
             "library": latest.get("library") or self.library_status(),
+            "google": self.google_status(),
             "tts": self.speaker.status(),
             "pc_control": self.assistant.control_status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},
         }
+
+
+def _guess_profile(cal: dict) -> str:
+    """A first guess for a calendar's area, from its name (the HUD lets you change it)."""
+    name = (cal.get("name") or "").lower()
+    if any(w in name for w in ("stream", "twitch")):
+        return "stream"
+    if cal.get("primary") and not cal.get("account", "").endswith("@gmail.com"):
+        return "work"
+    return "work" if "work" in name else "personal"

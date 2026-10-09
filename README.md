@@ -215,7 +215,8 @@ own work get answered from your own documents.
   and the model is told not to read out personal details, so nothing private reaches the stream's audio.
 - **What it reads:** Word (`.docx`), PowerPoint (`.pptx`, speaker notes too), Excel (`.xlsx`: sheet names and
   the words in cells), PDF (text PDFs; a scan has no text to read), Markdown and text. Old `.doc`/`.ppt`/`.xls`
-  aren't read. A native Google Doc (`.gdoc`) is only a link, so it's found by name and opens in the browser.
+  aren't read. A native Google Doc, Sheet or Slides deck (`.gdoc`, `.gsheet`, `.gslides`) is only a link: it's
+  found by name until you connect that Google account (below), then its words are read through Google.
 - **OneDrive "online only" files** (the cloud icon in File Explorer) are known by name only: reading them
   would download the whole drive. Right-click → **Always keep on this device** for the ones you want read.
 - **Asking:** "search my documents for vendor support hours" and "find the document about hiring" read out the
@@ -229,11 +230,20 @@ own work get answered from your own documents.
   other answer). Text read from a document is treated like Twitch chat: it's information, never instructions,
   and any action asked for after reading one waits for your "yes".
 
-### Calendars (plural)
-Each calendar is a private iCal link. Store the link in `.env` and reference it
-from `config.yaml` with `url_env`:
+### Google accounts (work and personal)
+**Setup → Google accounts** signs in to each of your Google accounts (docs/SETUP.md, Part 7: a free Google Cloud
+"Desktop app" key, made once). Read-only: Vesper asks Google for the text of your Google Docs, Sheets (first tab)
+and Slides so the library can search them, and for your Google calendars, which you tick in **Choose calendars**
+with an area each (work, personal, stream). A doc in the personal Drive that was shared with the work account is
+read through whichever account can open it. Sign-ins are kept in `data/google_tokens.json`; **Disconnect** removes
+one (and tells Google). The Health check's **Google accounts** row says when an account needs **Reconnect**.
 
-- **Google:** Calendar settings → *(the calendar)* → Integrate calendar → **Secret address in iCal format**
+### Calendars (plural)
+Google calendars: connect the account (above). Any other calendar is a private iCal link. Store the link in `.env`
+and reference it from `config.yaml` with `url_env`:
+
+- **Google** (without signing in): Calendar settings → *(the calendar)* → Integrate calendar → **Secret address
+  in iCal format** (a Workspace admin can switch this off; signing in still works)
 - **Outlook / Microsoft 365:** Settings → Calendar → Shared calendars → **Publish a calendar** → ICS link
 - **iCloud:** Share the calendar → Public Calendar → copy the `webcal://` link (it's converted automatically)
 

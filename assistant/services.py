@@ -51,6 +51,7 @@ class Services:
     free_model_memory: Callable[[bool], dict] | None = None  # unload what Ollama is holding (set by the runtime)
     highlights: Callable[[], list] | None = None
     library: Any = None  # your documents (library.Library), or None when turned off
+    google: Any = None  # signed-in Google accounts (integrations/google.GoogleAccounts)
     live: Callable[[], bool] | None = None  # streaming right now (set by the runtime): what's said may be on air
 
     @property
@@ -72,6 +73,12 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
     bus = bus or EventBus()
     storage = storage or Storage(cfg.data_dir / "assistant.db")
     tz = local_tz(cfg["assistant"].get("timezone"))
+    from .integrations.google import GoogleAccounts
+
+    gcfg = cfg.get("google") or {}
+    google = GoogleAccounts(cfg.secret(gcfg.get("client_id_env", "GOOGLE_CLIENT_ID")),
+                            cfg.secret(gcfg.get("client_secret_env", "GOOGLE_CLIENT_SECRET")),
+                            cfg.data_dir / "google_tokens.json")
     obs_cfg, tw_cfg, proj_cfg = cfg["obs"], cfg["twitch"], cfg["projects"]
     svc = Services(
         cfg=cfg,
@@ -87,7 +94,8 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
         twitch=TwitchClient(tw_cfg.get("channel", ""), cfg.secret(tw_cfg.get("client_id_env")),
                             cfg.secret(tw_cfg.get("client_secret_env")), enabled=tw_cfg.get("enabled", True),
                             token_path=cfg.data_dir / "twitch_token.json"),
-        calendars=CalendarHub(cfg["calendars"], cfg["assistant"].get("timezone")),
+        calendars=CalendarHub(cfg["calendars"], cfg["assistant"].get("timezone"), google=google,
+                              google_sources=lambda: (cfg.get("google") or {}).get("calendars") or []),
         news=NewsFeed(cfg["news"].get("feeds") or None, cfg["news"]["refresh_minutes"], cfg["news"]["max_items"]),
         projects=ProjectTracker(proj_cfg.get("scan_dirs") or [], proj_cfg.get("claude_dir", "~/.claude"),
                                 GitHub(proj_cfg["github"].get("user", ""), cfg.secret(proj_cfg["github"].get("token_env")))),
@@ -95,6 +103,7 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
                                  cfg["tracking"]["idle_seconds"],
                                  on_change=lambda seg: bus.publish("activity_now", seg, sticky=True)),
     )
+    svc.google = google
     lib = cfg.get("library") or {}
     if lib.get("enabled", True):
         from .library import Library, default_folders
@@ -103,5 +112,6 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
                               folders=lambda: cfg["library"].get("folders") or default_folders(),
                               exclude=lib.get("exclude") or [], max_file_mb=float(lib.get("max_file_mb", 25)),
                               max_files=int(lib.get("max_files", 20000)),
-                              whole_pc=lambda: bool(cfg["library"].get("whole_pc")), skip_paths=[cfg.root])
+                              whole_pc=lambda: bool(cfg["library"].get("whole_pc")), skip_paths=[cfg.root],
+                              cloud=lambda link, ext: svc.google.export(link, ext) if svc.google and svc.google.emails() else None)
     return svc

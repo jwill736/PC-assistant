@@ -134,6 +134,9 @@ DEFAULTS: dict[str, Any] = {
         "claude": "https://claude.ai",
     },
     "calendars": [],
+    # Google sign-in (work and personal accounts): Google Docs text for the library, Google calendars.
+    # The key goes in .env (Setup → Google accounts writes it there); calendars are chosen in the HUD.
+    "google": {"client_id_env": "GOOGLE_CLIENT_ID", "client_secret_env": "GOOGLE_CLIENT_SECRET", "calendars": []},
     "news": {"feeds": [], "refresh_minutes": 15, "max_items": 40},
     "projects": {
         "scan_dirs": [],

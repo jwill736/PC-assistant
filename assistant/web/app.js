@@ -1034,8 +1034,9 @@ render.library = function library() {
       const results = h('div', { class: 'lib-results' });
       const form = h('form', { class: 'addrow', onsubmit: e => { e.preventDefault(); libSearch(q.value, results); } },
         q, h('button', { class: 'btn small', type: 'submit' }, 'Search'));
-      b._lib = { stat: h('div', { class: 'lib-status muted' }), folders: h('div', {}), results };
-      fill(b, b._lib.stat, form, results, h('div', { class: 'sub-h' }, 'Folders it reads'), b._lib.folders);
+      b._lib = { stat: h('div', { class: 'lib-status muted' }), folders: h('div', {}), suggested: h('div', { style: { marginTop: '12px' } }), results };
+      fill(b, b._lib.stat, form, results, h('div', { class: 'sub-h' }, 'Folders it reads'), b._lib.folders, b._lib.suggested);
+      libSuggest(b._lib.suggested);
     }
     fill(b._lib.stat, libStatusLine(st));
     fill(b._lib.folders, libFolders(st));
@@ -1059,11 +1060,7 @@ function libStatusLine(st) {
 
 function libFolders(st) {
   const folders = st.folders || [];
-  const save = async list => {
-    const r = await post('/api/library/folders', { folders: list }).catch(e => ({ ok: false, error: e.message }));
-    if (!r.ok) return toast(r.error || 'Could not save the folders.');
-    S.data.library = r; render.library(); toast('Saved. Reading the folders now.');
-  };
+  const save = saveLibFolders;
   const input = h('input', { placeholder: 'Add a folder: paste its path, e.g. C:\\Users\\you\\Work', 'aria-label': 'Folder to add' });
   const add = h('form', { class: 'addrow', onsubmit: e => {
     e.preventDefault();
@@ -1082,7 +1079,27 @@ function libFolders(st) {
   ];
 }
 
+async function saveLibFolders(list) {
+  const r = await post('/api/library/folders', { folders: list }).catch(e => ({ ok: false, error: e.message }));
+  if (!r.ok) return toast(r.error || 'Could not save the folders.');
+  S.data.library = r; render.library(); toast('Saved. Reading the folders now.');
+  for (const p of panels('library')) if (body(p)._lib) libSuggest(body(p)._lib.suggested);
+}
+
+/* Folders worth adding: the ones pinned in File Explorer, Downloads, Google shared drives. */
+async function libSuggest(box) {
+  const r = await api('/api/library/suggestions').catch(() => ({ suggested: [] }));
+  const list = r.suggested || [];
+  if (!list.length) return fill(box);
+  const current = (S.data.library?.folders || []).map(f => f.path);
+  fill(box, h('div', { class: 'sub-h' }, 'Suggested · add the ones with your work in them'),
+    h('div', { class: 'list' }, list.map(sg => h('div', { class: 'item' },
+      h('div', { class: 'main' }, h('div', { class: 't1' }, sg.path), h('div', { class: 't2' }, sg.why)),
+      h('button', { class: 'btn small', onclick: () => saveLibFolders([...current, sg.path]) }, 'Add')))));
+}
+
 async function libSearch(query, box) {
+  if (!query.trim()) return fill(box, h('div', { class: 'muted' }, 'Type a few words you know are in the file: a client, a project, a phrase.'));
   fill(box, h('div', { class: 'muted' }, 'Searching…'));
   const r = await post('/api/library/search', { query, limit: 8 }).catch(e => ({ ok: false, error: e.message }));
   if (r.ok === false) return fill(box, empty(r.error || 'Search failed.'));

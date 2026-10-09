@@ -129,10 +129,11 @@ that will run the model: this one, or your main PC.
 ## Part 6 · Your documents (2 minutes, then it reads by itself)
 
 21. **See what it reads.** HUD → **Work** tab → **Library · your documents**. Under **Folders it reads** you'll
-    see Documents, Desktop, OneDrive and Google Drive (the ones on this PC). The top line counts up while it
-    reads: “Reading your documents… 340 looked at”. The first read can take a while; Vesper works normally
-    meanwhile.
-22. **Add a work folder it missed.** In File Explorer open the folder, click the address bar, copy the path
+    see your OneDrive (with Documents and Desktop in it), each Google Drive's **My Drive** and Dropbox, the ones
+    on this PC. The top line counts up while it reads: “Reading your documents… 340 looked at”. The first read
+    can take a while; Vesper works normally meanwhile.
+22. **Add your work folders.** Under **Suggested** are the folders you pinned in File Explorer: click **Add** on
+    the ones with work in them. Anything else: open it in File Explorer, click the address bar, copy the path
     (<kbd>Ctrl</kbd>+<kbd>C</kbd>), paste it into **Add a folder**, click **Add**. **Remove** takes a folder out.
 23. **Try it.** Type a few words you know are in one of your files into the search box, e.g. a client's name,
     and press **Search**: you should see the file, the matching passage and an **Open** button. Then say

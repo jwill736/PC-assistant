@@ -320,6 +320,11 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def library_status():
         return await run_in_threadpool(runtime.library_status)
 
+    @app.get("/api/library/suggestions")
+    async def library_suggestions():
+        """Folders worth adding: pinned in File Explorer, Downloads, Google shared drives (cached ten minutes)."""
+        return await run_in_threadpool(runtime.library_suggestions)
+
     @app.post("/api/library/search")
     async def library_search(body: dict):
         """{"query": "vendor support hours", "limit": 8}"""

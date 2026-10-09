@@ -1067,7 +1067,16 @@ function libFolders(st) {
     const path = input.value.trim().replace(/^"|"$/g, '');
     if (path) save([...folders.map(f => f.path), path]);
   } }, input, h('button', { class: 'btn small', type: 'submit' }, 'Add'));
+  const whole = !!st.whole_pc;
+  const scope = h('div', { style: { margin: '2px 0 8px' } }, h('span', { class: 'seg' }, [['Your folders', false], ['This whole PC', true]].map(([label, v]) =>
+    h('button', { 'aria-pressed': String(whole === v), onclick: () => setLibScope(v, whole) }, label))));
+  const drives = whole ? [h('div', { class: 'sub-h' }, 'Every drive · ranked after your folders'),
+    h('div', { class: 'list' }, (st.drives || []).map(d => h('div', { class: 'item' }, h('div', { class: 'main' },
+      h('div', { class: 't1' }, d.path), h('div', { class: 't2' }, `${(d.files || 0).toLocaleString()} documents`))))),
+    h('div', { class: 't3 muted' }, 'Leaves out Windows, programs, games and code, and plain text files outside your folders. Read once a day.')] : [];
   return [
+    scope,
+    h('div', { class: 't3 muted', style: { marginBottom: '4px' } }, whole ? 'Your folders (searched first):' : 'Reads:'),
     folders.length ? h('div', { class: 'list' }, folders.map(f => h('div', { class: 'item' },
       h('div', { class: 'main' }, h('div', { class: 't1' }, f.path), h('div', { class: 't2' }, `${(f.files || 0).toLocaleString()} documents`)),
       h('button', { class: 'btn small', 'aria-label': `Stop reading ${f.path}`, onclick: () => {
@@ -1076,7 +1085,16 @@ function libFolders(st) {
     add,
     st.custom ? h('button', { class: 'btn small', onclick: () => save([]) }, 'Go back to the usual places') :
       h('div', { class: 't3 muted' }, 'These are the usual places on this PC. Add or remove folders to choose your own.'),
+    ...drives,
   ];
+}
+
+async function setLibScope(whole, was) {
+  if (whole === was) return;
+  if (whole && !confirm('Read every drive in this PC too?\n\nYour own folders still come first in answers. Windows, programs, games and code are left out. The first read can take a while; Vesper works normally meanwhile.')) return;
+  const r = await post('/api/library/scope', { whole_pc: whole }).catch(e => ({ ok: false, error: e.message }));
+  if (!r.ok) return toast(r.error || 'Could not change it.');
+  S.data.library = r; render.library(); toast(whole ? 'Reading the whole PC now.' : 'Back to your folders only.');
 }
 
 async function saveLibFolders(list) {

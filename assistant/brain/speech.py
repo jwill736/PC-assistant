@@ -282,11 +282,13 @@ def _library_summary(args: dict, result: dict) -> str:
     if not hits:
         return result.get("note") or f"Nothing in your documents about {args.get('query')}."
     top = hits[0]
+    more = len(hits) - 1
+    if result.get("live"):  # on air: the passage stays on the HUD, never in the stream's audio
+        return f"Found it in {top['title']}. It's on the HUD." + (f" Plus {more} more." if more else "")
     where = f", {top['where']}" if top.get("where") else ""
     passage = re.sub(r"[\[\]]", "", top.get("passage") or "").strip(" .…")
     said = f"{top['title']}{where}: {passage[:180].rsplit(' ', 1)[0] if len(passage) > 180 else passage}." if passage \
         else f"{top['title']}, {top.get('note') or 'modified ' + top['modified']}."
-    more = len(hits) - 1
     return said + (f" And {more} more on the HUD." if more else "")
 
 

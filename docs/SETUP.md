@@ -135,17 +135,20 @@ that will run the model: this one, or your main PC.
 22. **Add your work folders.** Under **Suggested** are the folders you pinned in File Explorer: click **Add** on
     the ones with work in them. Anything else: open it in File Explorer, click the address bar, copy the path
     (<kbd>Ctrl</kbd>+<kbd>C</kbd>), paste it into **Add a folder**, click **Add**. **Remove** takes a folder out.
-23. **Try it.** Type a few words you know are in one of your files into the search box, e.g. a client's name,
+23. **Everything on the PC (optional).** Click **This whole PC** above the folder list, then **OK**. Vesper also reads
+    every drive, once a day, and still ranks your own folders first. It leaves out Windows, programs, games and
+    code.
+24. **Try it.** Type a few words you know are in one of your files into the search box, e.g. a client's name,
     and press **Search**: you should see the file, the matching passage and an **Open** button. Then say
     “Vesper, search my documents for …” or, with your model connected, ask a question about your work and
     “check my documents”.
 
 ## Part 7 · Optional
 
-24. **Start at sign-in:** in the Vesper folder's address bar type `powershell`, then run
+25. **Start at sign-in:** in the Vesper folder's address bar type `powershell`, then run
     `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`. Vesper then lives as a ring icon
     by the clock (click <kbd>^</kbd> if hidden): right-click for **Open HUD**, **Mute microphone**, **Quit**.
-25. **Updates:** Start menu → **Update Vesper** (or paste the install line again). It closes Vesper, downloads
+26. **Updates:** Start menu → **Update Vesper** (or paste the install line again). It closes Vesper, downloads
     the new version, updates the packages and starts it again. `config.yaml`, `.env` and everything in `data`
     are kept. The old black log window closes by itself, and the HUD window you had open reloads onto the new
     version (no second window).

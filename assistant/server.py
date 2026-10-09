@@ -340,6 +340,11 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         """{"folders": ["C:\\Users\\you\\Documents", …]}; [] = the usual places."""
         return await run_in_threadpool(runtime.set_library_folders, body.get("folders"))
 
+    @app.post("/api/library/scope")
+    async def library_scope(body: dict):
+        """{"whole_pc": true}: every drive in this PC too, ranked after your folders; false: your folders only."""
+        return await run_in_threadpool(runtime.set_library_scope, bool(body.get("whole_pc")))
+
     @app.post("/api/library/open")
     async def library_open(body: dict):
         """{"path": "<a path from a search result>"}"""

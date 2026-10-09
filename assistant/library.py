@@ -46,6 +46,14 @@ DOCUMENTS = TEXT | OFFICE | PDF | LINKS
 SKIP_DIRS = {"node_modules", "__pycache__", "site-packages", "appdata", "$recycle.bin", "system volume information",
              "windowsapps", "my games", "venv", "bower_components"}
 SKIP_NAMES = ("~$", ".~lock", "~wrl")  # Office lock and temp files
+# Reading a whole drive ("this whole PC"): Windows, programs and games are someone else's files, not your writing.
+SYSTEM_DIRS = {"windows", "windows.old", "program files", "program files (x86)", "programdata", "recovery",
+               "perflogs", "msocache", "$windows.~bt", "$windows.~ws", "$sysreset", "intel", "amd", "nvidia",
+               "drivers", "steamlibrary", "steamapps", "steam", "epic games", "riot games", "battle.net",
+               "gog games", "xboxgames", "origin games", "ea games", "ubisoft", "ubisoft game launcher", "msys64",
+               "cygwin64", "python27", "anaconda3", "miniconda3", "android", "sdk"}
+WHOLE_PC_TYPES = OFFICE | PDF | LINKS | {".md", ".markdown"}  # not .txt: outside your folders that's logs and readmes
+FULL_EVERY_S = 24 * 3600  # the whole PC once a day; your own folders every pass
 
 # Windows file attributes (os.stat().st_file_attributes)
 HIDDEN, SYSTEM, OFFLINE = 0x2, 0x4, 0x1000
@@ -70,8 +78,10 @@ CREATE TABLE IF NOT EXISTS files (
     indexed REAL NOT NULL,
     status TEXT NOT NULL,      -- ok | online (name only) | empty (no text, e.g. a scan) | too_big | link | error
     url TEXT,
-    passages INTEGER NOT NULL DEFAULT 0  -- not "chunks": that name is the search table's
+    passages INTEGER NOT NULL DEFAULT 0, -- not "chunks": that name is the search table's
+    priority INTEGER NOT NULL DEFAULT 1  -- 1: one of your folders; 0: elsewhere on the PC (ranked after yours)
 );
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX IF NOT EXISTS files_mtime ON files(mtime);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(title, text, file_id UNINDEXED, loc UNINDEXED,
                                                      tokenize='porter unicode61');
@@ -167,6 +177,22 @@ def drive_letters() -> list[str]:
         return []
 
 
+def local_drives() -> list[Path]:
+    """The drives in this PC (fixed and removable), for reading the whole PC. Not network drives, and not Google
+    Drive's letters: those are cloud drives, read through their My Drive."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        roots = [Path(f"{c}:/") for c in drive_letters() if k32.GetDriveTypeW(f"{c}:\\") in (2, 3)]
+    except (AttributeError, OSError):
+        return []
+    google = {str(p)[:2].upper() for p in google_drives()}
+    return [r for r in roots if str(r)[:2].upper() not in google]
+
+
 def google_drives() -> list[Path]:
     """Google Drive for desktop gives each account a drive letter with My Drive in it. A disconnected network
     drive can take many seconds to answer, so every letter is asked at once and a slow one is left out."""
@@ -236,6 +262,11 @@ def suggestions(current: list[Path], home: Path | None = None, pinned: list[Path
     if real:
         _cache[key] = (time.time(), result)
     return result
+
+
+def _under(path: str, roots: list[Path]) -> bool:
+    p = _norm(Path(path))
+    return any(p == r or r in p.parents for r in roots)
 
 
 def _norm(p: Path) -> Path:
@@ -410,9 +441,13 @@ def chunks_of(sections: list[Section], size: int = CHUNK) -> Iterator[tuple[str,
 class Library:
     def __init__(self, path: Path | str, folders: Callable[[], list[Path]] | list[Path] | None = None,
                  exclude: list[str] | None = None, max_file_mb: float = 25, max_files: int = 20_000,
-                 pause: float = 0.002):
+                 pause: float = 0.002, whole_pc: Callable[[], bool] | bool = False,
+                 drives: Callable[[], list[Path]] = local_drives, skip_paths: list[Path] | None = None):
         self.path = str(path)
         self._folders = folders if callable(folders) else (lambda f=list(folders or []): f)
+        self._whole_pc = whole_pc if callable(whole_pc) else (lambda w=bool(whole_pc): w)
+        self._drives = drives
+        self.skip_paths = [_norm(p) for p in skip_paths or []]  # Vesper's own folder: its docs aren't yours
         self.exclude = [e.lower() for e in exclude or []]
         self.max_bytes = int(max_file_mb * 1024 * 1024)
         self.max_files = max_files
@@ -422,6 +457,10 @@ class Library:
         self._db.row_factory = sqlite3.Row
         with self._lock:
             self._db.executescript(SCHEMA)
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(files)")}
+            if "priority" not in cols:  # an index made before "this whole PC" existed: all of it is your folders
+                self._db.execute("ALTER TABLE files ADD COLUMN priority INTEGER NOT NULL DEFAULT 1")
+            self._db.commit()
         self.running = False
         self.progress: dict = {}
         self.last: dict = {}  # the last pass: when, how many, how long
@@ -436,12 +475,47 @@ class Library:
             log.exception("library: reading the folder list failed")
             return []
 
+    def whole_pc(self) -> bool:
+        try:
+            return bool(self._whole_pc())
+        except Exception:
+            return False
+
+    def drives(self) -> list[Path]:
+        """The drive roots read in "this whole PC" mode; none otherwise."""
+        if not self.whole_pc():
+            return []
+        try:
+            return [d for d in self._drives() if _norm(d) not in self.skip_paths]
+        except Exception:
+            log.exception("library: listing drives failed")
+            return []
+
+    def _meta(self, key: str, value: str | None = None) -> str | None:
+        with self._lock:
+            if value is not None:
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value))
+                self._db.commit()
+                return value
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+            return row["value"] if row else None
+
+    def full_due(self) -> bool:
+        """The whole PC is read once a day; the passes between only look at your own folders."""
+        return self.whole_pc() and time.time() - float(self._meta("last_full") or 0) > FULL_EVERY_S
+
     def _excluded(self, path: Path) -> bool:
         s = str(path).lower().replace("\\", "/")
         return any(fnmatch.fnmatch(s, pat.replace("\\", "/")) for pat in self.exclude)
 
-    def walk(self, folder: Path) -> Iterator[tuple[Path, os.stat_result]]:
-        """Every document under ``folder``, with its stat; never follows junctions or links (loops)."""
+    def walk(self, folder: Path, strict: bool = False, avoid: list[Path] | None = None
+             ) -> Iterator[tuple[Path, os.stat_result]]:
+        """Every document under ``folder``, with its stat; never follows junctions or links (loops).
+
+        ``strict`` (a whole drive, outside your folders): leaves out Windows, programs and games (a folder with a
+        .dll in it is a program), code repositories (a .git), Vesper's own folder, and plain text files (logs and
+        readmes); ``avoid`` are your folders, walked on their own."""
+        avoid_n = [_norm(a) for a in avoid or []]
         stack = [folder]
         while stack:
             d = stack.pop()
@@ -449,6 +523,9 @@ class Library:
                 entries = list(os.scandir(d))
             except OSError:
                 continue
+            if strict and d != folder and any(
+                    e.name.lower().endswith(".dll") or e.name == ".git" for e in entries):
+                continue  # a program, a game or a repo
             for e in entries:
                 name = e.name
                 try:
@@ -459,31 +536,42 @@ class Library:
                     if attrs & (HIDDEN | SYSTEM) or name.startswith("."):
                         continue
                     if e.is_dir(follow_symlinks=False):
-                        if name.lower() not in SKIP_DIRS and not self._excluded(Path(e.path)):
-                            stack.append(Path(e.path))
+                        low = name.lower()
+                        if low in SKIP_DIRS or self._excluded(Path(e.path)):
+                            continue
+                        if strict and (low in SYSTEM_DIRS or _norm(Path(e.path)) in avoid_n
+                                       or _norm(Path(e.path)) in self.skip_paths):
+                            continue
+                        stack.append(Path(e.path))
                         continue
                 except OSError:
                     continue
-                if Path(name).suffix.lower() in DOCUMENTS and not name.startswith(SKIP_NAMES) \
+                types = WHOLE_PC_TYPES if strict else DOCUMENTS
+                if Path(name).suffix.lower() in types and not name.startswith(SKIP_NAMES) \
                         and not self._excluded(Path(e.path)):
                     yield Path(e.path), st
 
-    def index(self, on_progress: Callable[[dict], None] | None = None) -> dict:
-        """One pass over every folder: read what's new or changed, drop what's gone. Safe to call again."""
+    def index(self, on_progress: Callable[[dict], None] | None = None, scope: str | None = None) -> dict:
+        """One pass: read what's new or changed, drop what's gone. Safe to call again.
+
+        ``scope``: "all" (your folders, and every drive in "this whole PC" mode), "yours" (your folders only), or
+        None: the whole PC once a day, your folders the rest of the time."""
         with self._lock:
             if self.running:
                 return {"ok": True, "running": True}
             self.running = True
         self._stop.clear()
         t0 = time.time()
+        scope = scope or ("all" if self.full_due() or not self.whole_pc() else "yours")
         counts = {"added": 0, "updated": 0, "removed": 0, "unchanged": 0, "online": 0, "failed": 0}
         seen: set[str] = set()
-        folders = self.folders()
-        known = {r["path"]: (r["size"], r["mtime"]) for r in self._query("SELECT path, size, mtime FROM files")}
+        folders, drives = self.folders(), self.drives()
+        roots = [(f, False) for f in folders] + ([(d, True) for d in drives] if scope == "all" else [])
+        known = {r["path"]: r for r in self._query("SELECT path, size, mtime, folder, priority FROM files")}
         capped = False
         try:
-            for folder in folders:
-                for path, st in self.walk(folder):
+            for root, strict in roots:
+                for path, st in self.walk(root, strict=strict, avoid=folders if strict else None):
                     if self._stop.is_set():
                         break
                     if len(seen) >= self.max_files:
@@ -492,10 +580,14 @@ class Library:
                     key = str(path)
                     seen.add(key)
                     old = known.get(key)
-                    if old and old[0] == st.st_size and abs(old[1] - st.st_mtime) < 1:
+                    if old and old["size"] == st.st_size and abs(old["mtime"] - st.st_mtime) < 1:
                         counts["unchanged"] += 1
+                        if old["folder"] != str(root) or old["priority"] != int(not strict):  # a folder you added
+                            with self._lock:
+                                self._db.execute("UPDATE files SET folder=?, priority=? WHERE path=?",
+                                                 (str(root), int(not strict), key))
                         continue
-                    status = self._index_file(path, st, folder)
+                    status = self._index_file(path, st, root, priority=not strict)
                     counts["online" if status == "online" else "failed" if status == "error" else
                            "updated" if old else "added"] += 1
                     self.progress = {"running": True, "seen": len(seen), "current": path.name, **counts}
@@ -503,24 +595,31 @@ class Library:
                         on_progress(dict(self.progress))
                     time.sleep(self.pause)
             if not self._stop.is_set():
-                gone = [p for p in known if p not in seen and (capped is False or not any(
-                    p.startswith(str(f)) for f in folders))]
+                walked = [_norm(r) for r, _ in roots]
+                current = [_norm(r) for r in folders + drives]
+                # gone: under a place this pass walked fully (not stopped at the file limit) and not seen, or no
+                # longer under anything that's read (a folder taken off the list, "this whole PC" turned off)
+                gone = [p for p in known if p not in seen and (
+                    (not capped and _under(p, walked)) or not _under(p, current))]
                 for p in gone:
                     self._remove(p)
                 counts["removed"] = len(gone)
+                if scope == "all" and drives and not capped:
+                    self._meta("last_full", str(time.time()))
         finally:
             with self._lock:
                 self._db.commit()
                 self.running = False
             self.progress = {}
-        self.last = {"at": time.time(), "seconds": round(time.time() - t0, 1), "capped": capped, **counts}
+        self.last = {"at": time.time(), "seconds": round(time.time() - t0, 1), "capped": capped, "scope": scope,
+                     **counts}
         log.info("library: %s", self.last)
         return {"ok": True, **self.last}
 
     def stop(self) -> None:
         self._stop.set()
 
-    def _index_file(self, path: Path, st: os.stat_result, folder: Path) -> str:
+    def _index_file(self, path: Path, st: os.stat_result, folder: Path, priority: bool = True) -> str:
         ext = path.suffix.lower()
         attrs = getattr(st, "st_file_attributes", 0)
         url, sections, status = None, [], "ok"
@@ -549,14 +648,16 @@ class Library:
             if row:
                 self._db.execute("DELETE FROM chunks WHERE file_id=?", (row["id"],))
                 self._db.execute("UPDATE files SET folder=?, title=?, ext=?, size=?, mtime=?, indexed=?, status=?, "
-                                 "url=?, passages=? WHERE id=?", (str(folder), title, ext, st.st_size, st.st_mtime,
-                                                                time.time(), status, url, len(passages), row["id"]))
+                                 "url=?, passages=?, priority=? WHERE id=?",
+                                 (str(folder), title, ext, st.st_size, st.st_mtime, time.time(), status, url,
+                                  len(passages), int(priority), row["id"]))
                 fid = row["id"]
             else:
                 fid = self._db.execute(
-                    "INSERT INTO files(path, folder, title, ext, size, mtime, indexed, status, url, passages) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)", (str(path), str(folder), title, ext, st.st_size, st.st_mtime,
-                                                     time.time(), status, url, len(passages))).lastrowid
+                    "INSERT INTO files(path, folder, title, ext, size, mtime, indexed, status, url, passages, priority) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)", (str(path), str(folder), title, ext, st.st_size, st.st_mtime,
+                                                       time.time(), status, url, len(passages), int(priority))
+                ).lastrowid
             self._db.executemany("INSERT INTO chunks(title, text, file_id, loc) VALUES (?,?,?,?)",
                                  [(title, text, fid, loc) for loc, text in passages])
             self._dirty += 1
@@ -589,7 +690,8 @@ class Library:
         try:
             rows = self._query(
                 "SELECT f.*, c.loc, snippet(chunks, 1, '[', ']', ' … ', 28) AS snippet, "
-                "bm25(chunks, 4.0, 1.0) AS score FROM chunks c JOIN files f ON f.id = c.file_id "
+                "bm25(chunks, 4.0, 1.0) * CASE f.priority WHEN 1 THEN 1.6 ELSE 1.0 END AS score "  # yours first
+                "FROM chunks c JOIN files f ON f.id = c.file_id "
                 "WHERE chunks MATCH ? ORDER BY score LIMIT ?", (match, limit * 8))
         except sqlite3.OperationalError:
             return []
@@ -637,6 +739,9 @@ class Library:
     def read(self, name: str, max_chars: int = 6000) -> dict:
         doc = self.find(name)
         if not doc:
+            loose = Path(name.strip().strip('"'))
+            if loose.is_absolute() and loose.suffix.lower() in DOCUMENTS - LINKS and loose.is_file():
+                return self._read_loose(loose, max_chars)  # any document on the PC, by its path
             return {"ok": False, "error": f"No document called {name} in your library."}
         if doc["status"] in ("online", "link"):
             return {"ok": True, **self._hit({**doc, "loc": "", "snippet": ""}), "text": ""}
@@ -651,6 +756,19 @@ class Library:
         return {"ok": True, **self._hit({**doc, "loc": "", "snippet": ""}), "text": text[:max_chars],
                 "truncated": total > max_chars or len(text) > max_chars}
 
+    def _read_loose(self, path: Path, max_chars: int) -> dict:
+        """A document that isn't in the library (a program's folder, a path you gave): read straight from disk."""
+        try:
+            if path.stat().st_size > self.max_bytes:
+                return {"ok": False, "error": f"{path.name} is too big to read."}
+            sections = extract(path)
+        except Exception as exc:
+            return {"ok": False, "error": f"Can't read {path.name}: {exc}"[:200]}
+        text = "\n\n".join(f"[{s.loc}] {s.text}" if s.loc else s.text for s in sections)
+        return {"ok": True, "title": title_of(path), "file": path.name, "path": str(path), "folder": path.parent.name,
+                "where": "", "passage": "", "text": text[:max_chars], "truncated": len(text) > max_chars,
+                "note": "read from disk: it isn't in the library"}
+
     def count(self) -> int:
         return self._query("SELECT COUNT(*) AS n FROM files")[0]["n"]
 
@@ -658,8 +776,10 @@ class Library:
         counts = {r["status"]: r["n"] for r in self._query("SELECT status, COUNT(*) AS n FROM files GROUP BY status")}
         by_folder = {r["folder"]: r["n"] for r in self._query("SELECT folder, COUNT(*) AS n FROM files GROUP BY folder")}
         return {"files": sum(counts.values()), "by_status": counts, "running": self.running,
-                "progress": self.progress, "last": self.last,
-                "folders": [{"path": str(f), "files": by_folder.get(str(f), 0)} for f in self.folders()]}
+                "progress": self.progress, "last": self.last, "whole_pc": self.whole_pc(),
+                "last_full": float(self._meta("last_full") or 0) or None,
+                "folders": [{"path": str(f), "files": by_folder.get(str(f), 0)} for f in self.folders()],
+                "drives": [{"path": str(d), "files": by_folder.get(str(d), 0)} for d in self.drives()]}
 
     def close(self) -> None:
         with self._lock:

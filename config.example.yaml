@@ -123,6 +123,7 @@ sites:
 library:
   enabled: true
   folders: []
+  whole_pc: false        # true: every drive too, ranked after your folders (programs and games left out)
   exclude: []            # e.g. "*/Archive/*"
   refresh_minutes: 30
 

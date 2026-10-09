@@ -366,3 +366,127 @@ def test_never_reads_while_live_unless_asked(cfg, svc, docs, monkeypatch):
     monkeypatch.setattr(rt, "_live", lambda: (True, 60.0))
     assert rt._index_library() == {"ok": True, "skipped": "live"} and svc.library.count() == 0
     assert rt._index_library(force=True)["added"] == 5
+
+
+# ---- this whole PC ------------------------------------------------------------------------------------
+
+@pytest.fixture
+def pc(tmp_path):
+    """J's PC in miniature: OneDrive on C:, the stream business on D:, and the things a whole-drive read must
+    leave alone: Windows, programs, a game, a code repo, logs, and Vesper's own folder."""
+    c, d = tmp_path / "C", tmp_path / "D"
+    onedrive = c / "Users" / "jwill" / "OneDrive"
+    (onedrive / "Documents").mkdir(parents=True)
+    docx(onedrive / "Documents" / "Rate card.docx", ["Sponsor rates for Acme: 500 per stream."])
+    (onedrive / "Documents" / "todo.txt").write_text("call the sponsor about the overlay")
+    (d / "Twitch" / "NUHH 2026").mkdir(parents=True)
+    pptx(d / "Twitch" / "NUHH 2026" / "Deck.pptx", ["Sponsor pitch for Acme: audience and reach"])
+    (d / "Twitch" / "NUHH 2026" / "chat log.txt").write_text("sponsor sponsor sponsor")
+    for skip, name in ((c / "Windows", "help.md"), (c / "Program Files" / "App", "manual.pdf")):
+        skip.mkdir(parents=True)
+        (skip / name).write_text("sponsor") if name.endswith(".md") else pdf(skip / name, ["Sponsor manual"])
+    game = d / "Games" / "Thing"
+    game.mkdir(parents=True)
+    (game / "engine.dll").write_bytes(b"MZ")
+    pdf(game / "readme.pdf", ["Sponsor of the game"])
+    repo = d / "Code" / "bot"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "README.md").write_text("sponsor bot")
+    vesper = c / "Users" / "jwill" / "Vesper"
+    vesper.mkdir(parents=True)
+    (vesper / "README.md").write_text("sponsor")
+    return SimpleNamespace(c=c, d=d, onedrive=onedrive, vesper=vesper, game=game)
+
+
+def whole(tmp_path, pc, on=True, folders=None):
+    state = {"on": on}
+    lib = Library(tmp_path / "pc.db", folders or [pc.onedrive], pause=0, whole_pc=lambda: state["on"],
+                  drives=lambda: [pc.c, pc.d], skip_paths=[pc.vesper])
+    return lib, state
+
+
+def test_whole_pc_reads_every_drive_but_not_windows_programs_games_code_or_logs(tmp_path, pc):
+    lib, _ = whole(tmp_path, pc)
+    out = lib.index()
+    assert out["scope"] == "all"
+    rows = {Path(r["path"]).name: (r["priority"], Path(r["folder"]).name)
+            for r in lib._query("SELECT path, priority, folder FROM files")}
+    assert rows == {"Rate card.docx": (1, "OneDrive"), "todo.txt": (1, "OneDrive"), "Deck.pptx": (0, "D")}
+    status = lib.status()
+    assert status["whole_pc"] and [d["files"] for d in status["drives"]] == [0, 1]
+
+
+def test_your_folders_come_first_when_equally_relevant(tmp_path, pc):
+    """Both mention the sponsor and Acme: the one in your folders comes first. (A file elsewhere that matches
+    more of the question still beats one of yours that matches less.)"""
+    lib, _ = whole(tmp_path, pc)
+    lib.index()
+    order = [h["file"] for h in lib.search("sponsor acme")]
+    assert order.index("Rate card.docx") < order.index("Deck.pptx")
+
+
+def test_the_whole_pc_is_read_once_a_day_and_your_folders_every_pass(tmp_path, pc):
+    lib, state = whole(tmp_path, pc)
+    lib.index()
+    assert not lib.full_due()
+    docx(pc.onedrive / "Documents" / "New brief.docx", ["fresh"])
+    docx(pc.d / "Twitch" / "Later.docx", ["later"])
+    out = lib.index()
+    assert out["scope"] == "yours" and out["added"] == 1 and out["removed"] == 0  # D: waits for the daily pass
+    assert lib.find("Deck.pptx") and not lib.find("Later.docx")
+    state["on"] = False  # back to your folders only: everything from the drives leaves
+    assert lib.index()["removed"] == 1 and not lib.find("Deck.pptx")
+
+
+def test_adding_a_folder_ranks_what_was_already_read_there(tmp_path, pc):
+    folders = [pc.onedrive]
+    lib, _ = whole(tmp_path, pc, folders=lambda: folders)
+    lib.index()
+    folders.append(pc.d / "Twitch")
+    lib.index(scope="yours")
+    row = lib._query("SELECT priority, folder FROM files WHERE path LIKE '%Deck.pptx'")[0]
+    assert row["priority"] == 1 and Path(row["folder"]).name == "Twitch"
+
+
+def test_an_index_from_before_whole_pc_mode_keeps_working(tmp_path):
+    import sqlite3
+
+    db = sqlite3.connect(tmp_path / "old.db")
+    db.executescript("""CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, folder TEXT NOT NULL,
+        title TEXT NOT NULL, ext TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL, indexed REAL NOT NULL,
+        status TEXT NOT NULL, url TEXT, passages INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO files VALUES (1, '/x/a.md', '/x', 'a', '.md', 1, 1, 1, 'ok', NULL, 1);""")
+    db.commit()
+    db.close()
+    lib = Library(tmp_path / "old.db", [], pause=0)
+    assert lib._query("SELECT priority FROM files")[0]["priority"] == 1
+
+
+def test_any_document_can_be_read_by_its_path(tmp_path, pc):
+    lib, _ = whole(tmp_path, pc)
+    lib.index()
+    out = lib.read(str(pc.game / "readme.pdf"))  # a program's folder: never indexed, still readable on request
+    assert out["ok"] and "Sponsor of the game" in out["text"] and "isn't in the library" in out["note"]
+    assert lib.read(str(pc.game / "engine.dll"))["ok"] is False
+
+
+def test_on_stream_passages_stay_off_the_air(svc, lib):
+    svc.library = lib
+    svc.live = lambda: True
+    box = ToolBox(svc)
+    found = box.run("search_library", {"query": "support hours"})
+    assert found["live"] and "never read out personal details" in found["live_note"]
+    assert summarize("search_library", {"query": "support hours"}, found, svc.tz) == \
+        "Found it in Vendor review Acme (final). It's on the HUD."
+    assert box.run("read_document", {"name": "vendor review"})["live"]
+
+
+def test_hud_turns_whole_pc_on(cfg, svc, docs):
+    rt = Runtime(cfg, services=svc)
+    svc.library = Library(cfg.data_dir / "library.db", [docs], pause=0,
+                          whole_pc=lambda: bool(cfg["library"].get("whole_pc")), drives=lambda: [])
+    app = create_app(rt, start_background=False)
+    with TestClient(app) as c:
+        r = c.post("/api/library/scope", json={"whole_pc": True}, headers={"X-Assistant-Token": app.state.token}).json()
+        assert r["ok"] and r["whole_pc"] and cfg["library"]["whole_pc"] is True
+        assert "whole_pc: true" in (cfg.data_dir / "settings.yaml").read_text()

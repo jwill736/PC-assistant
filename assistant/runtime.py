@@ -51,6 +51,7 @@ class Runtime:
         self._commands = ThreadPoolExecutor(max_workers=1, thread_name_prefix="command")
         self._bench_running = False  # the model test (one at a time)
         self.svc.free_model_memory = self.free_model_memory
+        self.svc.live = lambda: self._live()[0]
         self.svc.system.extra_findings = self._model_memory_findings
         # Stream health while live, and the pre-stream check (Phase 5).
         obs_cfg = cfg["obs"]
@@ -802,7 +803,7 @@ class Runtime:
             self.supervisor.beat("library")  # a first read can take longer than the stall timeout
             self.bus.publish("library", {**self.library_status(), "progress": p}, sticky=True)
         self.bus.publish("library", self.library_status(), sticky=True)
-        result = lib.index(on_progress=progress)
+        result = lib.index(on_progress=progress, scope="all" if force else None)
         self.bus.publish("library", self.library_status(), sticky=True)
         return result
 
@@ -851,6 +852,23 @@ class Runtime:
         save_setting(self.cfg, "library.folders", clean)
         if lib.running:
             lib.stop()
+            deadline = time.time() + 10
+            while lib.running and time.time() < deadline:
+                time.sleep(0.1)
+        self.index_library()
+        return {"ok": True, **self.library_status()}
+
+    def set_library_scope(self, whole_pc: bool) -> dict:
+        """Your folders only, or every drive in this PC too (ranked after your folders); from the HUD."""
+        lib = self.svc.library
+        if lib is None:
+            return {"ok": False, "error": "The library is turned off (library: enabled in config.yaml)."}
+        save_setting(self.cfg, "library.whole_pc", bool(whole_pc))
+        if lib.running:
+            lib.stop()
+            deadline = time.time() + 10
+            while lib.running and time.time() < deadline:
+                time.sleep(0.1)
         self.index_library()
         return {"ok": True, **self.library_status()}
 

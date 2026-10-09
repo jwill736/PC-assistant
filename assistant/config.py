@@ -102,6 +102,7 @@ DEFAULTS: dict[str, Any] = {
     "library": {
         "enabled": True,
         "folders": [],         # empty = the usual places: Documents, Desktop, OneDrive, Google Drive, Dropbox
+        "whole_pc": False,     # also every drive in this PC, ranked after your folders (programs and games skipped)
         "exclude": [],         # patterns to leave out, e.g. "*/Archive/*"
         "max_file_mb": 25,
         "max_files": 20000,

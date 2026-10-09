@@ -51,6 +51,7 @@ class Services:
     free_model_memory: Callable[[bool], dict] | None = None  # unload what Ollama is holding (set by the runtime)
     highlights: Callable[[], list] | None = None
     library: Any = None  # your documents (library.Library), or None when turned off
+    live: Callable[[], bool] | None = None  # streaming right now (set by the runtime): what's said may be on air
 
     @property
     def name(self) -> str:
@@ -101,5 +102,6 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
         svc.library = Library(cfg.data_dir / "library.db",
                               folders=lambda: cfg["library"].get("folders") or default_folders(),
                               exclude=lib.get("exclude") or [], max_file_mb=float(lib.get("max_file_mb", 25)),
-                              max_files=int(lib.get("max_files", 20000)))
+                              max_files=int(lib.get("max_files", 20000)),
+                              whole_pc=lambda: bool(cfg["library"].get("whole_pc")), skip_paths=[cfg.root])
     return svc

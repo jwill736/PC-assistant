@@ -147,7 +147,8 @@ def test_signs_in_work_and_personal_with_pkce(accounts, fake, tmp_path):
     assert url.startswith(g.AUTH_URL)
     assert (q["code_challenge_method"], q["access_type"], q["response_type"]) == ("S256", "offline", "code")
     assert q["redirect_uri"] == "http://127.0.0.1:8765/api/google/callback" and q["login_hint"] == WORK
-    assert "drive.readonly" in q["scope"] and "calendar.readonly" in q["scope"] and "gmail" not in q["scope"]
+    assert "drive.readonly" in q["scope"] and "calendar.readonly" in q["scope"] and "gmail.readonly" in q["scope"]
+    assert "gmail.send" not in q["scope"] and "gmail.modify" not in q["scope"]  # read only
     seen = []
     accounts.on_change = seen.append
     assert accounts.finish(q["state"], "code-work") == WORK
@@ -187,7 +188,7 @@ def test_says_when_a_box_was_left_unticked(accounts, fake, cfg):
         return resp
     accounts.http = httpx.Client(transport=httpx.MockTransport(drive_only))
     connect(accounts, fake, "code-work")
-    assert accounts.accounts()[0]["missing"] == ["Google Calendar"]
+    assert accounts.accounts()[0]["missing"] == ["Google Calendar", "Gmail"]
     check = doctor.check_google(cfg, accounts)
     assert check.status == "warn" and "didn't allow Google Calendar" in check.detail and "tick every box" in check.fix
     accounts.http = httpx.Client(transport=httpx.MockTransport(fake))

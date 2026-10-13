@@ -28,6 +28,7 @@ from pathlib import Path
 
 from ..bus import EventBus
 from . import neural
+from .level import LevelMeter
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ class Speaker:
         self._thread: threading.Thread | None = None
         self._browser_done = threading.Event()
         self._cancel = threading.Event()  # barge-in: stop the current reply now
+        self.level = LevelMeter(bus, "tts")  # the HUD orb's voice level while it speaks
+        self._level_thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._thread is None and self.engine_name != "none":
@@ -249,6 +252,7 @@ class Speaker:
             self._cancel.clear()
             self.speaking.set()
             self.bus.publish("speaking", {"active": True})
+            self._start_level_pump()
             try:
                 if self.neural is not None:
                     self._speak_neural(turn, text, queued_at, waited)
@@ -288,6 +292,26 @@ class Speaker:
                 self.first_audio_ms.append(round((time.perf_counter() - queued_at) * 1000))
             first = False
             self.out.play(audio)
+
+    def _start_level_pump(self) -> None:
+        """While a neural voice plays and a HUD is open, sample what's about to play ~20 times a second
+        (its own thread: never the audio callback, and never waiting on synthesis)."""
+        if self.out is None or not getattr(self.bus, "client_count", 0) or not hasattr(self.out, "level"):
+            return
+        if self._level_thread is not None and self._level_thread.is_alive():
+            return
+        self._level_thread = threading.Thread(target=self._pump_levels, name="tts-level", daemon=True)
+        self._level_thread.start()
+
+    def _pump_levels(self) -> None:
+        try:
+            while self.speaking.is_set():
+                out = self.out
+                if out is not None:
+                    self.level.send(out.level)
+                time.sleep(self.level.gap)
+        finally:
+            self.level.end()
 
     def _finish_if_idle(self) -> None:
         if self.speaking.is_set() and self._q.empty() and (self.out is None or not self.out.playing):

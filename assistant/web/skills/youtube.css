@@ -1,0 +1,26 @@
+/* YouTube skill */
+.yt-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.yt-stats .stat .value { font-size: 24px; }
+.yt-delta { font-variant-numeric: tabular-nums; color: var(--muted); }
+.yt-delta.up { color: var(--good); }
+.yt-delta.down { color: var(--critical); }
+.yt-spark { width: 100%; height: 56px; margin: 10px 0 6px; overflow: visible; }
+.yt-spark-empty { margin: 10px 0; }
+.yt-line { fill: none; stroke: var(--series-1); stroke-width: 1.8; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1;
+  animation: yt-draw 1.2s cubic-bezier(.23,1,.32,1) forwards; }
+.yt-area { fill: color-mix(in srgb, var(--series-1) 14%, transparent); opacity: 0; animation: yt-fade .8s .4s ease forwards; }
+.yt-video { display: flex; gap: 10px; align-items: center; color: inherit; text-decoration: none; }
+.yt-video img { width: 64px; height: 36px; object-fit: cover; border-radius: 2px; flex: none; background: var(--inset); }
+.yt-video .main { min-width: 0; }
+.yt-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.yt-video:hover .yt-title { color: var(--accent); }
+.yt-warn { color: var(--warning); margin-top: 6px; }
+.yt-more { margin-top: 10px; }
+.yt-more summary { cursor: pointer; }
+.yt-setup { margin-top: 6px; }
+@keyframes yt-draw { to { stroke-dashoffset: 0; } }
+@keyframes yt-fade { to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .yt-line { animation: none; stroke-dashoffset: 0; }
+  .yt-area { animation: none; opacity: 1; }
+}

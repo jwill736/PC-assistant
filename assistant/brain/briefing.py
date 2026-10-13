@@ -85,10 +85,23 @@ def gather_morning(svc: Services) -> dict:
         "repos_with_uncommitted_work": [r for r in projects.get("repos", []) if r["dirty_files"]][:6],
         "open_prs": (projects.get("github") or {}).get("open_prs", [])[:6],
         "news": [{"source": h["source"], "title": h["title"]} for h in _safe("news", lambda: svc.news.headlines(limit=8), [])],
+        "email_waiting_on_you": _safe("email", lambda: _email_brief(svc), []),
+        "skills": _safe("skills", lambda: svc.skills.briefing() if svc.skills is not None else {}, {}),
         "system": _safe("system", lambda: svc.system.analyze()["findings"], []),
         "jobs_finished_overnight": [j for j in svc.storage.list_jobs(10)
                                     if j["status"] in {"done", "failed"} and (j["finished"] or 0) > yday0.timestamp()],
     }
+
+
+def _email_brief(svc: Services) -> list[dict]:
+    """Who's waiting on a reply, per account: names and subjects only (email text is other people's words)."""
+    if svc.gmail is None or not svc.gmail.accounts():
+        return []
+    out = []
+    for a in svc.gmail.needs_you().get("accounts", []):
+        out.append({"account": "personal" if a["email"].endswith("@gmail.com") else "work", "waiting": a.get("waiting", 0),
+                    "from": [{"from": m["from"], "subject": m["subject"][:90]} for m in a.get("people", [])[:5]]})
+    return out
 
 
 def gather_recap(svc: Services) -> dict:
@@ -117,7 +130,8 @@ Priorities, in order: (1) the north-star goal and this week's priorities, (2) ha
 (3) momentum from yesterday (commits, Claude Code sessions, unfinished work), (4) everything else.
 - top_moves: the 3 highest-leverage things to do today, each tied to a specific free block or time, each with a
   one-line reason that connects to the goal. Time is money: favour moves that ship something or make money.
-- sections: Schedule, Yesterday in numbers, Projects, Stream, News worth knowing, System. Skip a section if there's
+- sections: Schedule, Inbox (who's waiting on a reply, work and personal), Yesterday in numbers, Projects,
+  Stream, News worth knowing, System. Skip a section if there's
   nothing real to say. Use the actual numbers from the data (hours, commits, dropped frames), not adjectives.
 - risks: conflicts, overcommitment, stale work, a goal nobody's touching. Be blunt.
 - spoken: greet {user} by name, then the day in 60-120 words; conversational, no lists, no URLs.
@@ -185,6 +199,9 @@ def fallback_morning(data: dict, name: str) -> dict:
         "top_moves": moves,
         "sections": [s for s in [
             {"title": "Schedule", "bullets": schedule + free_line},
+            {"title": "Inbox", "bullets": [f"{a['account'].title()}: {a['waiting']} waiting" + (
+                " (" + ", ".join(m["from"].split(" <")[0] for m in a["from"][:3]) + ")" if a["from"] else "")
+                for a in data.get("email_waiting_on_you") or [] if a["waiting"]]},
             {"title": "Yesterday in numbers", "bullets": yesterday},
             {"title": "Projects", "bullets": projects},
             {"title": "Stream", "bullets": [f"{e['title']} — {e['start'][:16].replace('T', ' ')}" for e in data["upcoming_streams"]]},

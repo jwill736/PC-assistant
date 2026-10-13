@@ -1,0 +1,37 @@
+/* Spotify skill */
+.sp-card { display: grid; grid-template-columns: 96px 1fr; gap: 14px; align-items: start; }
+.sp-new { animation: sp-in .4s cubic-bezier(.23,1,.32,1) both; }
+.sp-art { position: relative; width: 96px; height: 96px; border-radius: var(--radius); overflow: hidden; background: var(--inset); border: 1px solid var(--line); }
+.sp-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sp-viz { position: absolute; left: 6px; bottom: 6px; display: flex; align-items: flex-end; gap: 2px; height: 16px; padding: 2px 3px;
+  border-radius: 2px; background: color-mix(in srgb, var(--bg) 70%, transparent); }
+.sp-viz span { width: 3px; height: 100%; background: var(--accent); transform-origin: bottom; transform: scaleY(.25);
+  animation: sp-eq .9s ease-in-out infinite alternate; }
+.sp-viz span:nth-child(2n) { animation-duration: .7s; }
+.sp-viz span:nth-child(3n) { animation-duration: 1.15s; }
+.is-paused .sp-viz span { animation-play-state: paused; opacity: .5; }
+.sp-info { min-width: 0; }
+.sp-track { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+.sp-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-bar { height: 3px; margin: 10px 0 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.sp-bar i { display: block; height: 100%; background: var(--accent); transform-origin: left; will-change: transform; }
+.sp-times { display: flex; justify-content: space-between; }
+.sp-controls { display: flex; align-items: center; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.sp-controls .btn svg { width: 14px; height: 14px; fill: currentColor; stroke: none; }
+.sp-controls .btn[aria-label="Shuffle"] svg { fill: none; stroke: currentColor; stroke-width: 1.8; }
+.sp-controls .btn.on { color: var(--accent); border-color: var(--accent); }
+.sp-main { padding: 4px 10px; }
+.sp-vol { margin-left: auto; }
+.sp-vol input[type=range] { width: 90px; }
+.sp-dmca { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px;
+  border-radius: var(--radius); box-shadow: inset 2px 0 0 var(--warning); background: var(--inset); color: var(--warning); }
+.sp-setup { display: grid; gap: 8px; }
+.sp-redirect { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sp-redirect code { font-size: 12px; padding: 2px 6px; background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius); word-break: break-all; }
+.sp-warn { color: var(--warning); }
+@keyframes sp-eq { to { transform: scaleY(1); } }
+@keyframes sp-in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) {
+  .sp-viz span, .sp-new { animation: none; }
+  .sp-viz span { transform: scaleY(.6); }
+}

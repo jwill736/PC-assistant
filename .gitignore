@@ -10,3 +10,6 @@ research_notes/
 reports/
 tests/.models/
 smoke_boot.out
+
+# agent worktrees
+.claude/worktrees/

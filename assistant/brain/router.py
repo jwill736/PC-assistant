@@ -26,6 +26,7 @@ class RouterContext:
     profiles: list[str] = field(default_factory=lambda: ["work", "stream"])
     profile_aliases: dict[str, str] = field(default_factory=dict)
     macro_match: Callable[[str], str | None] = lambda t: None
+    skill_route: Callable[[str], "Intent | None"] = lambda t: None  # skills/: one file per feature
 
 
 FILLER = re.compile(r"^(?:(?:hey|ok|okay|yo|please|can you|could you|would you|will you|i need you to|go ahead and|and)\s+)+")
@@ -138,6 +139,9 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
     macro = ctx.macro_match(t)
     if macro:
         return Intent("macro", args={"name": macro})
+    skill = ctx.skill_route(t)
+    if skill is not None:
+        return skill
 
     # --- briefings -------------------------------------------------------
     if re.search(r"\bgood morning\b|\bmorning (brief|briefing|report|rundown)\b|\bbrief me\b|\bwhat'?s (on )?(my|the) (day|agenda|plan)( today| look like)?\b|\bgive me (the|my) rundown\b", t):
@@ -279,6 +283,18 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
                   r"what (?:were|are) my notes (?:on|about) )(.+)$", t)
     if m:
         return Intent("tool", "recall", {"query": m.group(1)})
+    # --- email: before "search ..." and the library, which would take "search my email for"
+    mail = r"(?:e-?mails?|inbox|gmail|mail)"
+    if re.search(rf"^(?:check|read|go through) (?:my |the )?(?:(?:work|personal) )?{mail}$"
+                 rf"|^(?:any |do i have (?:any )?)(?:new |unread )?{mail}s?(?: today)?$"
+                 rf"|^who'?s (?:waiting on|emailed) me$|^what'?s in my (?:(?:work|personal) )?inbox$", t):
+        acct = "work" if " work " in f" {t} " else "personal" if " personal " in f" {t} " else ""
+        return Intent("tool", "check_email", {"account": acct} if acct else {})
+    m = re.search(rf"^(?:search|look through|check) (?:my |the )?{mail} (?:for|about) (.+)$"
+                  rf"|^(?:any |do i have (?:any )?)(?:new )?{mail}s? from (.+)$|^did (.+?) (?:email|mail|write) me$", t)
+    if m:
+        q = m.group(1) or (f"from:{m.group(2) or m.group(3)}")
+        return Intent("tool", "search_email", {"query": q.replace("from:", "from:").strip()})
     # --- your documents (the library): before web search and "open <app>", which would take these
     # ("notes" is left to the model: they may be Vesper's notes or a file. "open sticky notes" and "open google
     # slides" are apps, so neither word marks a document here.)

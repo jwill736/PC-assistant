@@ -52,6 +52,12 @@ class Services:
     highlights: Callable[[], list] | None = None
     library: Any = None  # your documents (library.Library), or None when turned off
     google: Any = None  # signed-in Google accounts (integrations/google.GoogleAccounts)
+    gmail: Any = None  # their Gmail, read-only (integrations/gmail.Gmail)
+    skills: Any = None  # every skill (skills.Skills): one file per feature
+    think: Callable[..., Any] = field(default=lambda prompt, schema=None, **kw: None)  # ask the model (brain/assistant)
+    nudge: Callable[..., Any] | None = None
+    memory: Any = None  # long-term memory (memory.Memory), set by the memory skill
+    off_record: Callable[[float], float] | None = None  # stop logging/learning for N minutes (set by the assistant)  # say something first, at the right moment (skills/nudges.py)
     live: Callable[[], bool] | None = None  # streaming right now (set by the runtime): what's said may be on air
 
     @property
@@ -104,6 +110,9 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
                                  on_change=lambda seg: bus.publish("activity_now", seg, sticky=True)),
     )
     svc.google = google
+    from .integrations.gmail import Gmail
+
+    svc.gmail = Gmail(google)
     lib = cfg.get("library") or {}
     if lib.get("enabled", True):
         from .library import Library, default_folders
@@ -114,4 +123,7 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
                               max_files=int(lib.get("max_files", 20000)),
                               whole_pc=lambda: bool(cfg["library"].get("whole_pc")), skip_paths=[cfg.root],
                               cloud=lambda link, ext: svc.google.export(link, ext) if svc.google and svc.google.emails() else None)
+    from .skills import Skills
+
+    svc.skills = Skills(svc)
     return svc

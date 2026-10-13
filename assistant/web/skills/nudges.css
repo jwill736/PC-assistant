@@ -1,0 +1,11 @@
+.nudge-feed .item { align-items: flex-start; animation: nudge-in .42s cubic-bezier(.23,1,.32,1) both; }
+.nudge-urgent { box-shadow: inset 2px 0 0 var(--crit, #ff5f56); padding-left: 8px; }
+.nudge-normal { box-shadow: inset 2px 0 0 var(--accent); padding-left: 8px; }
+.nudge-fb { display: flex; gap: 4px; opacity: .45; transition: opacity .16s; }
+.item:hover .nudge-fb, .nudge-fb:focus-within { opacity: 1; }
+.btn.icon { padding: 2px 7px; line-height: 1.2; }
+.nudge-held { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--muted); }
+.nudge-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: nudge-pulse 2.4s ease-in-out infinite; }
+@keyframes nudge-in { from { opacity: 0; transform: translateY(-6px); } }
+@keyframes nudge-pulse { 50% { opacity: .25; transform: scale(.7); } }
+@media (prefers-reduced-motion: reduce) { .nudge-feed .item, .nudge-pulse { animation: none; } }

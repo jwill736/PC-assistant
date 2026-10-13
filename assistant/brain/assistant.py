@@ -107,6 +107,8 @@ class Assistant:
         self._untrusted_ids: dict[str, str] = {}  # tool results to scrub from history once the command ends
         self._tainted_by = "chat"
         self.tools = toolbox or ToolBox(svc, context=lambda: self._ctx)
+        svc.think = self.think  # skills ask the model through this
+        svc.off_record = self.set_off_record
         self.on_kill = None  # the runtime adds what only it can stop: speech, background jobs
         self.on_pending = None  # e.g. a Windows toast with Yes/No buttons
         self.macros = macro_mod.load_macros(svc.cfg)
@@ -155,6 +157,44 @@ class Assistant:
             log.warning("Claude API not configured; running on the local command router only")
         return client
 
+    def set_off_record(self, minutes: float) -> float:
+        self.off_record_until = time.time() + max(0.0, minutes) * 60
+        return self.off_record_until
+
+    def think(self, prompt: str, schema: dict | None = None, max_tokens: int = 1200, private: bool = True):
+        """One question to the model for a skill (triage, summaries, plans): a dict when ``schema`` is given, else
+        text; None when no model is connected. ``private``: the prompt holds email/documents, so the local model is
+        preferred and Claude is only used when the user chose it (brain.provider: claude)."""
+        pref = (self.svc.cfg.get("brain") or {}).get("provider", "auto")
+        order = {"claude": ["claude", "local"], "local": ["local"]}.get(pref) or (
+            ["local", "claude"] if private else ["claude", "local"])
+        text = None
+        for which in order:
+            try:
+                if which == "local" and self.local.ready:
+                    llm = self.local.refresh()
+                    if llm is not None:
+                        text = llm.chat([{"role": "user", "content": prompt}], json_schema=schema, temperature=0.2,
+                                        max_tokens=max_tokens)["content"]
+                elif which == "claude" and self.claude_ready:
+                    ask = prompt + ("\n\nAnswer with JSON only, matching this schema: " + json.dumps(schema) if schema else "")
+                    msg = self.client.messages.create(model=self.cfg["model"], max_tokens=max_tokens,
+                                                      messages=[{"role": "user", "content": ask}])
+                    text = "".join(getattr(b, "text", "") for b in msg.content)
+            except Exception:
+                log.exception("think (%s) failed", which)
+            if text:
+                break
+        if not text:
+            return None
+        if schema is None:
+            return text.strip()
+        text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        try:
+            return json.loads(text[text.find("{"): text.rfind("}") + 1] if "{" in text else text)
+        except ValueError:
+            return None
+
     @property
     def claude_ready(self) -> bool:
         return self.client is not None
@@ -196,6 +236,7 @@ class Assistant:
             profile_aliases={k.lower(): k for k in self.svc.cfg["profiles"]}
             | {str(v.get("label", "")).lower(): k for k, v in self.svc.cfg["profiles"].items() if v.get("label")},
             macro_match=lambda t: macro_mod.match(t, self.macros),
+            skill_route=self.svc.skills.route if self.svc.skills is not None else (lambda t: None),
         )
 
     # ------------------------------------------------------------------
@@ -209,8 +250,16 @@ class Assistant:
             self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner}
             self._tainted = False
             self.tools.guard.new_command()
-            self.svc.storage.log("user", text, source)
-            self.svc.bus.publish("user_said", {"text": text, "source": source})
+            try:
+                intent = route(text, self.router_context())
+            except Exception:
+                log.exception("routing failed")
+                intent = None
+            # private words (a journal entry) never go into the conversation log or its search
+            private = intent is not None and intent.tool in PRIVATE_TOOLS
+            if not self.off_record() and not private:
+                self.svc.storage.log("user", text, source)
+            self.svc.bus.publish("user_said", {"text": "(journal entry)" if private else text, "source": source})
             self.svc.bus.publish("thinking", {"active": True})
             started = time.time()
             speak = source == "voice" or self.svc.cfg["voice"].get("speak_typed")
@@ -218,7 +267,6 @@ class Assistant:
             self._stream_on = bool(speak and self.svc.cfg["voice"]["tts"].get("stream", True))
             self._speak_turn, self._streamed = turn, False
             try:
-                intent = route(text, self.router_context())
                 if intent is not None:
                     out = self._run_intent(intent)
                 else:
@@ -235,7 +283,8 @@ class Assistant:
             out["ms"] = round((time.time() - started) * 1000)
             reply = out.get("reply") or ""
             if reply:
-                self.svc.storage.log("assistant", reply, source)
+                if not self.off_record():
+                    self.svc.storage.log("assistant", reply, source)
             self.svc.bus.publish("assistant_said", {
                 "text": reply, "kind": out.get("kind"), "source": source, "ms": out["ms"],
                 "pending": self.pending_view(),
@@ -375,7 +424,8 @@ class Assistant:
             return {"reply": f"Confirm: {tool.describe(args)}? Say yes or cancel.", "kind": "pending"}
         result = self.tools.run(name, args, confirmed_by=via)
         self.svc.bus.publish("tool", {"name": name, "args": args, "result": result})
-        reply = summarize(name, args, result, self.svc.tz, hints)
+        said = self.svc.skills.say(name, args, result) if self.svc.skills is not None and not _failed(result) else None
+        reply = said or summarize(name, args, result, self.svc.tz, hints)
         if name == "run_routine" and result.get("close_candidates"):
             names = result["close_candidates"]
             self._set_pending([("close_app", {"name": n}) for n in names], f"close {', '.join(names)}")
@@ -451,6 +501,23 @@ class Assistant:
             self.history, self.user_turns = [], 0
 
     # ------------------------------------------------------------------
+    off_record_until: float = 0.0
+
+    def off_record(self) -> bool:
+        """"Off the record": nothing said is written to the log or learned until it ends (skills/memory.py)."""
+        return time.time() < self.off_record_until
+
+    def _memory_context(self, text: str, include_private: bool = True) -> str:
+        """The core profile and the facts relevant to this question (skills/memory.py), or nothing."""
+        mem = self.svc.memory
+        if mem is None:
+            return ""
+        try:
+            return mem.context_for(text, include_private=include_private)
+        except Exception:
+            log.exception("memory recall failed")
+            return ""
+
     def _context_line(self) -> str:
         now = datetime.now(self.svc.tz)
         win = desktop.active_window()
@@ -496,7 +563,8 @@ class Assistant:
         if idle or self.user_turns >= self.cfg.get("history_turns", 12):
             self.reset()  # start fresh rather than editing history, so the conversation stays append-only
         checkpoint = len(self.history)
-        self.history.append({"role": "user", "content": f"{self._context_line()}\n{text}"})
+        mem = self._memory_context(text, include_private=False)  # private facts never go to the cloud
+        self.history.append({"role": "user", "content": f"{self._context_line()}\n{mem + chr(10) if mem else ''}{text}"})
         self.user_turns += 1
         self.last_turn = time.time()
         definitions = self.tools.definitions()
@@ -599,6 +667,9 @@ class Assistant:
         # The context line goes in the system message, not the user turn: a 3B model put in the user turn
         # repeated it as the first line of its answer (found by the CI run against llama3.2:3b).
         system = f"{self.system_prompt}{LOCAL_ADDENDUM if llm.can_act else NO_ACTIONS}\nRight now: {self._context_line().strip('[]')}"
+        mem = self._memory_context(text)
+        if mem:
+            system += f"\n\n{mem}"
         messages = [{"role": "system", "content": system}, *self.local_history, {"role": "user", "content": text}]
         tools = self._local_tools() if llm.can_act else None
 
@@ -808,3 +879,10 @@ class Assistant:
         if resp is None or resp.stop_reason == "refusal":
             raise RuntimeError("research request was declined")
         return "\n".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+
+
+PRIVATE_TOOLS = {"journal_add"}  # what's said for these is kept only where the tool keeps it
+
+
+def _failed(result) -> bool:
+    return isinstance(result, dict) and result.get("ok") is False and bool(result.get("error"))

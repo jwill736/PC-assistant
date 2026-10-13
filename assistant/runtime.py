@@ -120,6 +120,10 @@ class Runtime:
         owner = getattr(self.listener, "last_owner", "unknown") if self.listener else "unknown"
         self._commands.submit(self._run_voice_command, text, turn, owner)
 
+    def command(self, text: str, source: str = "automation") -> dict:
+        """Run a command as if typed (routines, the phone bridge), queued behind any voice command."""
+        return self._commands.submit(self.assistant.handle, text, source).result(timeout=300)
+
     def _run_voice_command(self, text: str, turn: int, owner: str = "unknown") -> None:
         try:
             self.assistant.handle(text, "voice", turn=turn, owner=owner)
@@ -185,6 +189,15 @@ class Runtime:
                         is_disabled=lambda: not self.svc.twitch.auth.connected)
         sup.poller("projects", 120, self._poll_projects)
         sup.poller("calendars", 300, self._poll_calendar)
+        sup.poller("gmail", 180, self._poll_gmail, delay=20)
+        for skill in self.svc.skills or []:
+            try:
+                skill.start(self)
+            except Exception:
+                log.exception("skill %s: start failed", skill.name)
+            if skill.poll_s:
+                sup.poller(f"skill · {skill.title or skill.name}", skill.poll_s, skill.tick, delay=skill.delay_s)
+        threading.Thread(target=self._first_skill_panels, name="skill-panels", daemon=True).start()
         sup.poller("pre-stream check", 60, self._prestream_tick, delay=30)
         sup.poller("news", 900, self._poll_news)
         sup.poller("morning briefing", 60, self._morning_check)
@@ -421,6 +434,38 @@ class Runtime:
         self.svc.calendars.refresh(force=True)
         self.bus.publish("calendar", {"events": self.svc.calendars.agenda(7), "calendars": self.svc.calendars.status()},
                          sticky=True)
+
+    def _poll_gmail(self) -> None:
+        g = self.svc.gmail
+        if g is None or not (g.accounts() or g.missing()):
+            return
+        self.bus.publish("gmail", g.needs_you(fresh=True), sticky=True)
+
+    def gmail_status(self, fresh: bool = False) -> dict:
+        g = self.svc.gmail
+        if g is None:
+            return {"ok": False, "accounts": []}
+        out = g.needs_you(fresh=fresh)
+        self.bus.publish("gmail", out, sticky=True)
+        return out
+
+    def _first_skill_panels(self) -> None:
+        """Fill every skill's HUD panel now, not at its first tick (some tick every 15 minutes)."""
+        for skill in self.svc.skills or []:
+            if skill.last_status is None:
+                try:
+                    skill.publish()
+                except Exception:
+                    log.exception("skill %s: first status failed", skill.name)
+
+    def skills_state(self, latest: dict | None = None) -> dict:
+        """Each skill's latest HUD data, and which skills are loaded (the HUD loads their scripts)."""
+        sk = self.svc.skills
+        if sk is None:
+            return {"loaded": [], "data": {}, "errors": {}}
+        latest = latest if latest is not None else {k: v["data"] for k, v in self.bus.latest.items()}
+        return {"loaded": [{"name": s.name, "title": s.title} for s in sk],
+                "data": {s.name: latest.get(s.name, s.last_status) for s in sk}, "errors": sk.errors}
 
     def _poll_news(self) -> None:
         self.svc.news.refresh(force=True)
@@ -955,6 +1000,7 @@ class Runtime:
             if lib.running:
                 lib.stop()
             threading.Thread(target=self._safe(self._after_google), name="google", daemon=True).start()
+        threading.Thread(target=self._safe(self._poll_gmail), name="google-mail", daemon=True).start()
         self.bus.publish("google", self.google_status(), sticky=True)
         self.announce(f"Connected Google: {email}.")
 
@@ -1035,6 +1081,8 @@ class Runtime:
             "voice_profile": self.voice_status(),
             "library": latest.get("library") or self.library_status(),
             "google": self.google_status(),
+            "gmail": latest.get("gmail"),
+            "skills": self.skills_state(latest),
             "tts": self.speaker.status(),
             "pc_control": self.assistant.control_status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},

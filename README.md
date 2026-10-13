@@ -16,6 +16,11 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 > names like Atlas ("at last"), Nova ("know the") or Juno ("you know") fire all the time.
 > Re-run calibration after renaming.
 
+> **Vesper 2.0** adds 50+ abilities as one-file "skills" (`assistant/skills/`, `docs/SKILLS.md`): it speaks first at
+> the right moment, learns about you, plans your day, tracks replies/promises/meetings/people from Gmail, bills and
+> packages, focus/habits/journal, screen/clipboard/rewind, PC health, a stream co-pilot, phone (Telegram), Spotify,
+> lights, YouTube, Discord and MCP tool servers, in a new HUD. Setup for each: [docs/VESPER-2.md](docs/VESPER-2.md).
+
 ## What works today
 
 | Area | What it does |
@@ -235,7 +240,11 @@ own work get answered from your own documents.
 "Desktop app" key, made once). Read-only: Vesper asks Google for the text of your Google Docs, Sheets (first tab)
 and Slides so the library can search them, and for your Google calendars, which you tick in **Choose calendars**
 with an area each (work, personal, stream). A doc in the personal Drive that was shared with the work account is
-read through whichever account can open it. Sign-ins are kept in `data/google_tokens.json`; **Disconnect** removes
+read through whichever account can open it. **Gmail** (read-only): the **Inbox** panel lists who's waiting on a
+reply in each account (newsletters, notifications and Gmail's Promotions/Social/Updates tabs left out); "check my
+email", "did Dana email me", "search my email for the contract" by voice; the morning briefing names who's waiting.
+Email is other people's writing, so it's handled like a downloaded document: never instructions, and any action
+asked for after reading one waits for your "yes". While you're live, Vesper says only who and how many. Sign-ins are kept in `data/google_tokens.json`; **Disconnect** removes
 one (and tells Google). The Health check's **Google accounts** row says when an account needs **Reconnect**.
 
 ### Calendars (plural)

@@ -1,0 +1,19 @@
+/* Replies skill: owed / waiting / promised */
+.iz-tabs { margin-bottom: 8px; }
+.iz-tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px; }
+.iz-n { font-variant-numeric: tabular-nums; font-size: 10.5px; padding: 0 5px; border-radius: 2px; background: var(--inset); color: var(--ink-2); }
+.iz-tabs button[aria-pressed="true"] .iz-n { background: var(--accent); color: var(--on-accent); }
+.iz-list { animation: iz-in .28s cubic-bezier(.23, 1, .32, 1); }
+.iz-item { transition: opacity .25s ease, transform .25s ease; }
+.iz-item.iz-leaving { opacity: 0; transform: translateX(12px); pointer-events: none; }
+.iz-acct { font-size: 10px; margin-left: 4px; vertical-align: 1px; }
+.iz-due { font-size: 10px; margin-left: 4px; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.iz-days { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink-2); align-self: flex-start; white-space: nowrap; }
+.iz-quote { font-style: italic; }
+.iz-link { color: inherit; text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 2px; }
+.iz-link:hover { color: var(--accent); }
+.iz-btns { display: flex; flex-direction: column; gap: 4px; align-self: flex-start; }
+@keyframes iz-in { from { opacity: 0; transform: translateY(4px); } }
+.iz-due.late { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 45%, transparent); }
+@media (max-width: 600px) { .iz-btns { flex-direction: row; } .iz-item { flex-wrap: wrap; } .iz-item .main { flex-basis: 100%; } }
+@media (prefers-reduced-motion: reduce) { .iz-list { animation: none; } .iz-item { transition: none; } }

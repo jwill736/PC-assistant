@@ -12,6 +12,7 @@ pypdf>=4.2  # the second brain reads your PDFs
 recurring-ical-events>=3.0
 obsws-python>=1.7
 tzdata>=2024.1  # Windows ships no IANA timezone database
+mcp>=2.3  # tool servers (skills/mcp.py); Vesper still runs without it, the HUD then says "pip install mcp"
 # System tray icon (Windows)
 pystray>=0.19; sys_platform == "win32"
 Pillow>=10; sys_platform == "win32"

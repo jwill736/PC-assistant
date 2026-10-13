@@ -47,8 +47,12 @@ class EventBus:
         """Register an in-process listener (called on the publishing thread)."""
         self._listeners.append(callback)
 
-    def publish(self, event_type: str, data: Any = None, *, sticky: bool = False) -> None:
+    def publish(self, event_type: str, data: Any = None, *, sticky: bool = False, transient: bool = False) -> None:
+        """``transient``: a high-rate, throwaway event (the orb's audio level) that only goes to connected HUDs:
+        not kept in ``recent`` and not passed to in-process listeners."""
         event = {"type": event_type, "ts": time.time(), "data": data}
+        if transient:
+            return self._send(event)
         if sticky:
             self.latest[event_type] = event
         else:
@@ -58,6 +62,9 @@ class EventBus:
                 cb(event)
             except Exception:  # a bad listener must not break publishers
                 log.exception("bus listener failed for %s", event_type)
+        self._send(event)
+
+    def _send(self, event: dict) -> None:
         loop = self._loop
         if loop is None or loop.is_closed():
             return

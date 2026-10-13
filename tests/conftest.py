@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +27,7 @@ def cfg(tmp_path) -> Config:
                        "launch": {"apps": [], "urls": [], "obs_scene": None}, "close_apps": []},
         },
         "news": {"feeds": [{"name": "Local", "url": "http://127.0.0.1:9/none", "topic": "tech"}]},
+        "skills": {"memory": {"embed_model": ""}},  # no embedding calls to a developer's Ollama
     }))
     c.root = tmp_path
     return c
@@ -35,7 +35,11 @@ def cfg(tmp_path) -> Config:
 
 @pytest.fixture
 def svc(cfg):
-    return build_services(cfg, EventBus(), Storage(":memory:"))
+    s = build_services(cfg, EventBus(), Storage(":memory:"))
+    nud = s.skills.get("nudges") if s.skills is not None else None
+    if nud is not None:  # never the test machine's own desktop (a CI runner reports "fullscreen")
+        nud.fullscreen, nud.idle = (lambda: ""), (lambda: 0)
+    return s
 
 
 # ---- fake Anthropic client -------------------------------------------------

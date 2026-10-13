@@ -1135,6 +1135,33 @@ async function libSearch(query, box) {
 /* "Acme [support] [hours] are…" -> the bracketed words highlighted (still text nodes, never HTML). */
 function marked(text) { return text.split(/(\[[^\]]*\])/).map(part => part.startsWith('[') && part.endsWith(']') ? h('mark', {}, part.slice(1, -1)) : part); }
 
+// ---------------------------------------------------------------- Inbox (Gmail, work + personal)
+render.inbox = function inbox() {
+  const st = S.data.gmail;
+  for (const p of panels('inbox')) {
+    const b = body(p);
+    const accts = st?.accounts || [];
+    const waiting = accts.reduce((n, a) => n + (a.waiting || 0), 0);
+    meta(p, st?.at ? `${waiting} waiting · ${ago(st.at)}` : '');
+    if (!st || (!accts.length && !(st.missing || []).length)) {
+      fill(b, empty(st?.error || 'Connect Google (Setup → Google accounts) to see who is waiting on a reply.'));
+      continue;
+    }
+    fill(b, h('div', { class: 'inbox-cols' }, accts.map(a => h('div', { class: 'inbox-col' },
+      h('div', { class: 'sub-h' }, a.email.endsWith('@gmail.com') ? 'Personal' : 'Work', h('span', { class: 'muted' }, ` · ${a.email}`)),
+      a.error ? h('div', { class: 't3' }, a.error) : null,
+      (a.people || []).length ? h('div', { class: 'list' }, a.people.map(m => h('a', { class: 'item mail', href: m.link, target: '_blank', rel: 'noopener' },
+        h('div', { class: 'main' },
+          h('div', { class: 't1' }, m.important ? h('span', { class: 'mail-flag', title: 'Gmail marked it important' }, '◆ ') : null, m.from),
+          h('div', { class: 't2' }, m.subject),
+          m.snippet ? h('div', { class: 't3 muted' }, m.snippet.slice(0, 140)) : null),
+        h('span', { class: 'muted mail-age' }, ago(m.ts))))) : empty('Nobody waiting.'),
+      a.bulk ? h('div', { class: 't3 muted', style: { marginTop: '6px' } }, `+ ${a.bulk} newsletters and notifications`) : null))),
+      (st.missing || []).length ? h('div', { class: 't3', style: { marginTop: '8px' } },
+        `Gmail isn't allowed yet for ${st.missing.join(', ')}: Setup → Google accounts → Reconnect, and tick Gmail.`) : null);
+  }
+};
+
 // ---------------------------------------------------------------- Google accounts (work + personal)
 render.google = function google() {
   const st = S.data.google;
@@ -1307,6 +1334,9 @@ document.addEventListener('click', async e => {
       S.data[action === 'rescan' ? 'discovery' : 'doctor'] = res;
       render[action === 'rescan' ? 'connections' : 'doctor']();
     } catch (err) { toast(`Failed: ${err.message}`); } finally { btn.disabled = false; btn.textContent = label; }
+  } else if (action === 'inbox-refresh') {
+    btn.disabled = true;
+    try { S.data.gmail = await api('/api/gmail?fresh=true'); render.inbox(); } catch (err) { toast(`Failed: ${err.message}`); } finally { btn.disabled = false; }
   } else if (action === 'library-index') {
     const r = await post('/api/library/index').catch(e => ({ ok: false, error: e.message }));
     toast(r.ok === false ? r.error : r.running ? 'Already reading.' : 'Reading new and changed files…');
@@ -1450,6 +1480,7 @@ function onEvent(ev) {
     case 'goals': S.data.goals = data; if (!S.editGoals) render.tasks(); break;
     case 'library': S.data.library = data; render.library(); break;
     case 'google': S.data.google = data; render.google(); break;
+    case 'gmail': S.data.gmail = data; render.inbox(); break;
     case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;

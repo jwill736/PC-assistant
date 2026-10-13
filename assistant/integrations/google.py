@@ -2,7 +2,8 @@
 
 - the text of your Google Docs, Sheets and Slides (a .gdoc in Google Drive for desktop is only a link, so the
   library asks Google for the words: Drive "export");
-- your Google calendars, without the secret iCal links a Workspace admin can switch off.
+- your Google calendars, without the secret iCal links a Workspace admin can switch off;
+- your Gmail (integrations/gmail.py): what needs a reply, search, one message at a time.
 
 Sign-in is Google's own page in your browser ("installed app" OAuth with PKCE); it comes back to Vesper on
 127.0.0.1. You create the sign-in key once (a Google Cloud "Desktop app" client, docs/SETUP.md) because Google
@@ -32,9 +33,10 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 DRIVE = "https://www.googleapis.com/drive/v3"
 CALENDAR = "https://www.googleapis.com/calendar/v3"
+GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPES = ["openid", "email", "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/calendar.readonly"]
-ALLOWS = {SCOPES[2]: "Google Drive", SCOPES[3]: "Google Calendar"}  # the boxes on Google's consent page
+          "https://www.googleapis.com/auth/calendar.readonly", GMAIL_SCOPE]
+ALLOWS = {SCOPES[2]: "Google Drive", SCOPES[3]: "Google Calendar", GMAIL_SCOPE: "Gmail"}  # Google's consent boxes
 # What a Drive-for-desktop link stands for, and what Google can turn it into
 EXPORT = {".gdoc": "text/plain", ".gsheet": "text/csv", ".gslides": "text/plain"}
 OPEN_URL = {".gdoc": "https://docs.google.com/document/d/{}/edit",
@@ -95,6 +97,12 @@ class GoogleAccounts:
     def emails(self) -> list[str]:
         with self._lock:
             return [e for e, t in self._tokens.items() if not t.get("error")]
+
+    def can(self, email: str, scope: str) -> bool:
+        """This account allowed ``scope`` on Google's page (an account connected before Gmail was added hasn't)."""
+        with self._lock:
+            t = self._tokens.get(email) or {}
+            return not t.get("error") and scope in t.get("scope", "").split()
 
     # ---- signing in --------------------------------------------------------------
     def begin(self, redirect_uri: str, login_hint: str = "") -> str:

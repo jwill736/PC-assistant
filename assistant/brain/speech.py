@@ -112,6 +112,12 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
         return _recall_summary(args, result)
     if tool == "search_library":
         return _library_summary(args, result)
+    if tool == "check_email":
+        return _inbox_summary(result)
+    if tool == "search_email":
+        return _email_search_summary(args, result)
+    if tool == "read_email":
+        return _email_read_summary(result)
     if tool == "open_document":
         return f"Opening {result.get('opened', args.get('name'))}."
     if tool == "connections":
@@ -290,6 +296,54 @@ def _library_summary(args: dict, result: dict) -> str:
     said = f"{top['title']}{where}: {passage[:180].rsplit(' ', 1)[0] if len(passage) > 180 else passage}." if passage \
         else f"{top['title']}, {top.get('note') or 'modified ' + top['modified']}."
     return said + (f" And {more} more on the HUD." if more else "")
+
+
+def _short(account: str) -> str:
+    return "personal" if account.endswith("@gmail.com") else "work"
+
+
+def _inbox_summary(result: dict) -> str:
+    accounts = result.get("accounts") or []
+    if not accounts:
+        return result.get("error") or "No inbox to check."
+    parts, firsts = [], []
+    for a in accounts:
+        if a.get("error"):
+            parts.append(f"{_short(a['email'])} didn't load")
+            continue
+        n = a.get("waiting", len(a.get("people") or []))
+        parts.append(f"{n} in {_short(a['email'])}" if n else f"nothing new in {_short(a['email'])}")
+        firsts += a.get("people") or []
+    if not firsts:
+        return "Nobody's waiting on you: " + ", ".join(parts) + "."
+    firsts.sort(key=lambda m: m.get("ts", 0), reverse=True)
+    names = []
+    for m in firsts:
+        who = (m.get("from") or "someone").split(" <")[0]
+        if who not in names:
+            names.append(who)
+    line = f"{', '.join(parts)}. Latest from {', '.join(names[:3])}"
+    if not result.get("live") and firsts[0].get("subject"):
+        line += f". {firsts[0]['from'].split(' <')[0]}: {firsts[0]['subject']}"
+    return line[0].upper() + line[1:] + "."
+
+
+def _email_search_summary(args: dict, result: dict) -> str:
+    msgs = result.get("messages") or []
+    if not msgs:
+        return f"No emails match {args.get('query')}."
+    top = msgs[0]
+    more = len(msgs) - 1
+    if result.get("live"):
+        return f"{len(msgs)} emails, the latest from {top['from']}. They're on the HUD."
+    return f"Latest: {top['from']}, {top['subject']}." + (f" And {more} more on the HUD." if more else "")
+
+
+def _email_read_summary(result: dict) -> str:
+    if result.get("live"):
+        return f"That's from {result.get('from')}. It's on the HUD."
+    body = re.sub(r"\s+", " ", result.get("body") or result.get("snippet") or "").strip()
+    return f"From {result.get('from')}, {result.get('subject')}: {body[:220].rsplit(' ', 1)[0] if len(body) > 220 else body}"
 
 
 def _host(url: str) -> str:

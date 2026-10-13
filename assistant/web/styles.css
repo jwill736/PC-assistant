@@ -450,3 +450,10 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
 .lib-status { font-size: 12px; margin-bottom: 8px; }
 .lib-results { margin: 6px 0 4px; }
 .lib-results mark { background: color-mix(in srgb, var(--accent) 28%, transparent); color: inherit; padding: 0 1px; }
+
+/* Inbox: work and personal side by side */
+.inbox-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+.item.mail { text-decoration: none; color: inherit; }
+.item.mail:hover .t1 { color: var(--accent); }
+.mail-flag { color: var(--accent); font-size: 10px; }
+.mail-age { font-size: 11px; white-space: nowrap; align-self: flex-start; }

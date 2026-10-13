@@ -378,6 +378,17 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
                 f"background:#111;color:#eee;padding:48px'><h2>{escape(title)}</h2><p>{escape(line)}</p></body>")
         return HTMLResponse(page, status_code=200 if ok else 400)
 
+    @app.get("/api/gmail")
+    async def gmail(fresh: bool = False):
+        """Who's waiting on you in each connected Gmail (people only, newest first)."""
+        return await run_in_threadpool(runtime.gmail_status, fresh)
+
+    @app.post("/api/gmail/search")
+    async def gmail_search(body: dict):
+        """{"query": "from:dana invoice", "account": "work"}"""
+        return await run_in_threadpool(runtime.svc.gmail.search, str(body.get("query") or ""),
+                                       str(body.get("account") or ""), int(body.get("limit") or 10))
+
     @app.post("/api/google/remove")
     async def google_remove(body: dict):
         return await run_in_threadpool(runtime.google_remove, str(body.get("email") or ""))

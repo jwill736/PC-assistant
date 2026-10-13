@@ -235,7 +235,11 @@ own work get answered from your own documents.
 "Desktop app" key, made once). Read-only: Vesper asks Google for the text of your Google Docs, Sheets (first tab)
 and Slides so the library can search them, and for your Google calendars, which you tick in **Choose calendars**
 with an area each (work, personal, stream). A doc in the personal Drive that was shared with the work account is
-read through whichever account can open it. Sign-ins are kept in `data/google_tokens.json`; **Disconnect** removes
+read through whichever account can open it. **Gmail** (read-only): the **Inbox** panel lists who's waiting on a
+reply in each account (newsletters, notifications and Gmail's Promotions/Social/Updates tabs left out); "check my
+email", "did Dana email me", "search my email for the contract" by voice; the morning briefing names who's waiting.
+Email is other people's writing, so it's handled like a downloaded document: never instructions, and any action
+asked for after reading one waits for your "yes". While you're live, Vesper says only who and how many. Sign-ins are kept in `data/google_tokens.json`; **Disconnect** removes
 one (and tells Google). The Health check's **Google accounts** row says when an account needs **Reconnect**.
 
 ### Calendars (plural)

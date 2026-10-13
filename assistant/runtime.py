@@ -185,6 +185,7 @@ class Runtime:
                         is_disabled=lambda: not self.svc.twitch.auth.connected)
         sup.poller("projects", 120, self._poll_projects)
         sup.poller("calendars", 300, self._poll_calendar)
+        sup.poller("gmail", 180, self._poll_gmail, delay=20)
         sup.poller("pre-stream check", 60, self._prestream_tick, delay=30)
         sup.poller("news", 900, self._poll_news)
         sup.poller("morning briefing", 60, self._morning_check)
@@ -421,6 +422,20 @@ class Runtime:
         self.svc.calendars.refresh(force=True)
         self.bus.publish("calendar", {"events": self.svc.calendars.agenda(7), "calendars": self.svc.calendars.status()},
                          sticky=True)
+
+    def _poll_gmail(self) -> None:
+        g = self.svc.gmail
+        if g is None or not (g.accounts() or g.missing()):
+            return
+        self.bus.publish("gmail", g.needs_you(fresh=True), sticky=True)
+
+    def gmail_status(self, fresh: bool = False) -> dict:
+        g = self.svc.gmail
+        if g is None:
+            return {"ok": False, "accounts": []}
+        out = g.needs_you(fresh=fresh)
+        self.bus.publish("gmail", out, sticky=True)
+        return out
 
     def _poll_news(self) -> None:
         self.svc.news.refresh(force=True)
@@ -955,6 +970,7 @@ class Runtime:
             if lib.running:
                 lib.stop()
             threading.Thread(target=self._safe(self._after_google), name="google", daemon=True).start()
+        threading.Thread(target=self._safe(self._poll_gmail), name="google-mail", daemon=True).start()
         self.bus.publish("google", self.google_status(), sticky=True)
         self.announce(f"Connected Google: {email}.")
 
@@ -1035,6 +1051,7 @@ class Runtime:
             "voice_profile": self.voice_status(),
             "library": latest.get("library") or self.library_status(),
             "google": self.google_status(),
+            "gmail": latest.get("gmail"),
             "tts": self.speaker.status(),
             "pc_control": self.assistant.control_status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},

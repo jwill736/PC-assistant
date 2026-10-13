@@ -279,6 +279,18 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
                   r"what (?:were|are) my notes (?:on|about) )(.+)$", t)
     if m:
         return Intent("tool", "recall", {"query": m.group(1)})
+    # --- email: before "search ..." and the library, which would take "search my email for"
+    mail = r"(?:e-?mails?|inbox|gmail|mail)"
+    if re.search(rf"^(?:check|read|go through) (?:my |the )?(?:(?:work|personal) )?{mail}$"
+                 rf"|^(?:any |do i have (?:any )?)(?:new |unread )?{mail}s?(?: today)?$"
+                 rf"|^who'?s (?:waiting on|emailed) me$|^what'?s in my (?:(?:work|personal) )?inbox$", t):
+        acct = "work" if " work " in f" {t} " else "personal" if " personal " in f" {t} " else ""
+        return Intent("tool", "check_email", {"account": acct} if acct else {})
+    m = re.search(rf"^(?:search|look through|check) (?:my |the )?{mail} (?:for|about) (.+)$"
+                  rf"|^(?:any |do i have (?:any )?)(?:new )?{mail}s? from (.+)$|^did (.+?) (?:email|mail|write) me$", t)
+    if m:
+        q = m.group(1) or (f"from:{m.group(2) or m.group(3)}")
+        return Intent("tool", "search_email", {"query": q.replace("from:", "from:").strip()})
     # --- your documents (the library): before web search and "open <app>", which would take these
     # ("notes" is left to the model: they may be Vesper's notes or a file. "open sticky notes" and "open google
     # slides" are apps, so neither word marks a document here.)

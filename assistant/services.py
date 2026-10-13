@@ -52,6 +52,7 @@ class Services:
     highlights: Callable[[], list] | None = None
     library: Any = None  # your documents (library.Library), or None when turned off
     google: Any = None  # signed-in Google accounts (integrations/google.GoogleAccounts)
+    gmail: Any = None  # their Gmail, read-only (integrations/gmail.Gmail)
     live: Callable[[], bool] | None = None  # streaming right now (set by the runtime): what's said may be on air
 
     @property
@@ -104,6 +105,9 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
                                  on_change=lambda seg: bus.publish("activity_now", seg, sticky=True)),
     )
     svc.google = google
+    from .integrations.gmail import Gmail
+
+    svc.gmail = Gmail(google)
     lib = cfg.get("library") or {}
     if lib.get("enabled", True):
         from .library import Library, default_folders

@@ -1,0 +1,45 @@
+/* PC Health (janitor skill) */
+.pc-issues { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 10px; }
+.pc-gauges { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 12px 8px; }
+.pc-gauge { display: grid; justify-items: center; gap: 4px; cursor: default; animation: pc-in .7s cubic-bezier(.23, 1, .32, 1) both; }
+.pc-gauge[title*="free of"] { cursor: pointer; }
+.pc-gauge:nth-child(2) { animation-delay: .06s; } .pc-gauge:nth-child(3) { animation-delay: .12s; }
+.pc-gauge:nth-child(4) { animation-delay: .18s; } .pc-gauge:nth-child(n+5) { animation-delay: .24s; }
+.pc-dial { position: relative; width: 84px; height: 84px; }
+.pc-ring { width: 100%; height: 100%; overflow: visible; }
+.pc-track { fill: none; stroke: var(--grid); stroke-width: 7; }
+.pc-arc { fill: none; stroke: var(--series-1); stroke-width: 7; stroke-linecap: round; }
+.pc-tip { transform-box: view-box; transform-origin: 50px 50px; transition: transform .9s cubic-bezier(.23, 1, .32, 1); }
+.pc-tip circle { fill: var(--panel); stroke: var(--series-1); stroke-width: 2; }
+.pc-halo { fill: none; stroke: var(--critical); stroke-width: 1.5; opacity: 0; transform-box: view-box; transform-origin: 50px 50px; }
+.pc-gauge.warn .pc-arc, .pc-gauge.warn .pc-tip circle { stroke: var(--warning); }
+.pc-gauge.crit .pc-arc, .pc-gauge.crit .pc-tip circle { stroke: var(--critical); }
+.pc-gauge.crit .pc-halo { animation: pc-breathe 2.2s ease-in-out infinite; }
+.pc-mid { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; line-height: 1.1; }
+.pc-val { font-size: 19px; font-weight: 300; letter-spacing: -.01em; }
+.pc-sub { font-size: 10.5px; max-width: 62px; }
+.pc-lab { color: var(--ink-2); text-align: center; overflow-wrap: anywhere; }
+.pc-hint { margin-top: 6px; }
+.pc-section { border-top: 1px solid var(--grid); margin-top: 12px; padding-top: 10px; }
+.pc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.pc-folders { display: grid; gap: 6px; }
+.pc-folder { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; align-items: center; gap: 10px; }
+.pc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-bar { height: 6px; background: var(--grid); overflow: hidden; border-radius: 1px; }
+.pc-bar i { display: block; height: 100%; background: var(--series-1); transform-origin: left; }
+.pc-fresh .pc-bar i { animation: pc-bar .8s cubic-bezier(.23, 1, .32, 1) both; }
+.pc-extra { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pc-chip { padding: 4px 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--inset); font-size: 12.5px; }
+.pc-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pc-scan { position: relative; overflow: hidden; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink-2); }
+.pc-sweep { position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--accent-soft), transparent);
+  transform: translateX(-100%); animation: pc-sweep 1.4s ease-in-out infinite; }
+@keyframes pc-in { from { opacity: 0; transform: scale(.88) rotate(-25deg); } }
+@keyframes pc-breathe { 0%, 100% { opacity: 0; transform: scale(.94); } 50% { opacity: .9; transform: scale(1); } }
+@keyframes pc-bar { from { transform: scaleX(0); } }
+@keyframes pc-sweep { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .pc-gauge, .pc-fresh .pc-bar i, .pc-sweep { animation: none; }
+  .pc-gauge.crit .pc-halo { animation: none; opacity: .8; }
+  .pc-tip { transition: none; }
+}

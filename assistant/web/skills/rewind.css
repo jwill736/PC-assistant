@@ -1,0 +1,34 @@
+/* Rewind skill: the 24-hour scrubber */
+.rw-track { position: relative; height: 44px; margin-top: 30px; border-radius: var(--radius); background: var(--inset);
+  border: 1px solid var(--line); cursor: crosshair; touch-action: none; outline: none; }
+.rw-track:focus-visible { border-color: var(--accent); }
+.rw-bands { position: absolute; inset: 2px 0; width: 100%; height: calc(100% - 4px); }
+.rw-first .rw-band { transform-origin: center; animation: rw-grow .6s cubic-bezier(.23, 1, .32, 1) both; }
+.rw-now { fill: var(--ink); opacity: .7; }
+.rw-cursor { position: absolute; top: -4px; bottom: -4px; left: 0; width: 2px; margin-left: -1px; background: var(--ink);
+  box-shadow: 0 0 0 1px var(--bg), 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent); opacity: 0;
+  transition: opacity .15s; pointer-events: none; will-change: transform; }
+.rw-read { position: absolute; bottom: calc(100% + 6px); left: 0; display: flex; align-items: center; gap: 6px; max-width: min(100%, 520px);
+  padding: 3px 8px; white-space: nowrap; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--radius);
+  opacity: 0; transition: opacity .15s; pointer-events: none; will-change: transform; }
+.rw-on .rw-cursor, .rw-on .rw-read { opacity: 1; }
+.rw-read .rw-title { overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); min-width: 0; }
+.rw-read .rw-time { color: var(--muted); }
+.rw-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.rw-ticks { position: relative; height: 16px; margin-top: 3px; }
+.rw-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.rw-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 10px; }
+.rw-legend span { display: inline-flex; align-items: center; gap: 5px; text-transform: capitalize; }
+.rw-legend i { width: 9px; height: 9px; border-radius: 2px; }
+.rw-where { padding: 8px 10px; margin-bottom: 10px; background: var(--inset); border-left: 2px solid var(--accent); border-radius: var(--radius);
+  overflow-wrap: anywhere; }
+.rw-top { display: grid; gap: 6px; }
+.rw-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) auto; align-items: center; gap: 10px; }
+.rw-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rw-bar { height: 6px; background: var(--grid); overflow: hidden; border-radius: 1px; }
+.rw-bar i { display: block; height: 100%; background: var(--series-1); transform-origin: left; transition: transform .6s cubic-bezier(.23, 1, .32, 1); }
+@keyframes rw-grow { from { opacity: 0; transform: scaleY(.2); } }
+@media (prefers-reduced-motion: reduce) {
+  .rw-first .rw-band { animation: none; }
+  .rw-cursor, .rw-read, .rw-bar i { transition: none; }
+}

@@ -35,7 +35,11 @@ def cfg(tmp_path) -> Config:
 
 @pytest.fixture
 def svc(cfg):
-    return build_services(cfg, EventBus(), Storage(":memory:"))
+    s = build_services(cfg, EventBus(), Storage(":memory:"))
+    nud = s.skills.get("nudges") if s.skills is not None else None
+    if nud is not None:  # never the test machine's own desktop (a CI runner reports "fullscreen")
+        nud.fullscreen, nud.idle = (lambda: ""), (lambda: 0)
+    return s
 
 
 # ---- fake Anthropic client -------------------------------------------------

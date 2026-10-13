@@ -178,4 +178,4 @@ def test_off_the_record_keeps_nothing(svc):
     assert len(svc.storage.recent_log(100)) == before
     a.handle("back on the record")
     a.handle("what time is it")
-    assert len(svc.storage.recent_log(100)) == before + 2
+    assert len(svc.storage.recent_log(100)) == before + 3  # "back on the record" reply, then the question and answer

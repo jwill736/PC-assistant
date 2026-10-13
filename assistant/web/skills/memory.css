@@ -1,0 +1,13 @@
+.mem-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 12px; }
+.mem-block textarea { width: 100%; resize: vertical; background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 8px 10px; color: inherit; font: inherit; line-height: 1.5; outline: none; transition: border-color .16s; }
+.mem-block textarea:focus { border-color: var(--accent); }
+.mem-yours { color: var(--accent); font-weight: 500; }
+.mem-learned { margin-bottom: 10px; }
+.mem-new { display: flex; gap: 8px; align-items: baseline; animation: mem-in .5s cubic-bezier(.23,1,.32,1) both; }
+.mem-new:nth-child(3) { animation-delay: 35ms; } .mem-new:nth-child(4) { animation-delay: 70ms; } .mem-new:nth-child(5) { animation-delay: 105ms; }
+.mem-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; transform: translateY(-1px); }
+.mem-fact.pinned .t1 { color: var(--accent); }
+.mem-list { max-height: 360px; overflow: auto; }
+@keyframes mem-in { from { opacity: 0; transform: translateX(-6px); } }
+@media (prefers-reduced-motion: reduce) { .mem-new { animation: none; } }

@@ -488,6 +488,17 @@ class Assistant:
             self.history, self.user_turns = [], 0
 
     # ------------------------------------------------------------------
+    def _memory_context(self, text: str, include_private: bool = True) -> str:
+        """The core profile and the facts relevant to this question (skills/memory.py), or nothing."""
+        mem = self.svc.memory
+        if mem is None:
+            return ""
+        try:
+            return mem.context_for(text, include_private=include_private)
+        except Exception:
+            log.exception("memory recall failed")
+            return ""
+
     def _context_line(self) -> str:
         now = datetime.now(self.svc.tz)
         win = desktop.active_window()
@@ -533,7 +544,8 @@ class Assistant:
         if idle or self.user_turns >= self.cfg.get("history_turns", 12):
             self.reset()  # start fresh rather than editing history, so the conversation stays append-only
         checkpoint = len(self.history)
-        self.history.append({"role": "user", "content": f"{self._context_line()}\n{text}"})
+        mem = self._memory_context(text, include_private=False)  # private facts never go to the cloud
+        self.history.append({"role": "user", "content": f"{self._context_line()}\n{mem + chr(10) if mem else ''}{text}"})
         self.user_turns += 1
         self.last_turn = time.time()
         definitions = self.tools.definitions()
@@ -636,6 +648,9 @@ class Assistant:
         # The context line goes in the system message, not the user turn: a 3B model put in the user turn
         # repeated it as the first line of its answer (found by the CI run against llama3.2:3b).
         system = f"{self.system_prompt}{LOCAL_ADDENDUM if llm.can_act else NO_ACTIONS}\nRight now: {self._context_line().strip('[]')}"
+        mem = self._memory_context(text)
+        if mem:
+            system += f"\n\n{mem}"
         messages = [{"role": "system", "content": system}, *self.local_history, {"role": "user", "content": text}]
         tools = self._local_tools() if llm.can_act else None
 

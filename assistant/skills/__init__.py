@@ -25,7 +25,7 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 # Load order is the order on the HUD and in the briefing.
-MODULES = ["nudges", "weather", "automations", "inbox_zero", "meetings", "people", "planner", "focus", "habits",
+MODULES = ["nudges", "memory", "weather", "automations", "inbox_zero", "meetings", "people", "planner", "focus", "habits",
            "journal", "bills", "travel", "pulse", "screen", "clipboard", "rewind", "janitor", "mcp", "phone", "spotify",
            "home", "youtube", "discord", "stream_copilot"]
 
@@ -158,6 +158,8 @@ class Skills:
         return None
 
     def say(self, tool: str, args: dict, result: dict) -> str | None:
+        if not self._tool_owner:
+            self.tools()
         skill = self._tool_owner.get(tool)
         if skill is None:
             return None

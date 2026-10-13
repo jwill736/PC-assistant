@@ -1269,6 +1269,7 @@ const Vesper = window.Vesper = {
   get data() { return S.data; },
   notices: NOTICES,
   onNotice(fn) { this._noticeListeners.push(fn); },
+  repaint(name) { if (SKILL_RENDER[name] && S.data[name] !== undefined) paintSkill(name); },
   act(name, action, payload) { return post(`/api/skill/${name}/${action}`, payload || {}).catch(e => ({ ok: false, error: e.message })); },
   panel({ name, view = 'command', span = 4, title = '', after = null, first = false, buttons = [] }) {
     const section = $(`.view[data-view="${view}"]`);

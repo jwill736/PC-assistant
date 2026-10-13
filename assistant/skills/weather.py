@@ -129,7 +129,7 @@ class Weather(Skill):
         return data if data.get("ok") else {"ok": False, "error": data.get("error")}
 
     def briefing(self):
-        d = self.forecast()
+        d = self._data or {}  # what the last refresh fetched: the briefing never waits on the network
         if not d.get("ok"):
             return None
         today = d["days"][0]

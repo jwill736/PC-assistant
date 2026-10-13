@@ -156,7 +156,7 @@ def test_weather_finds_you_and_reads_the_forecast(weather):
     assert said.startswith("61°F and partly cloudy in Decatur. Today 54 to 72, rain likely around 2 PM.")
     assert wx.spoken({**d, "pick": wx.pick_day(d, "tomorrow")}, "tomorrow") == "Tomorrow: clear, 56 to 75°F, dry."
     assert "Thursday thunderstorms" not in wx.spoken(d, "week") and "Friday thunderstorms, 68°F" in wx.spoken(d, "week")
-    assert weather.briefing()["advice"] == "rain likely around 2 PM: take an umbrella"
+    assert weather.briefing()["advice"] == "rain likely around 2 PM: take an umbrella"  # from the fetched forecast
 
 
 def test_set_location(weather):

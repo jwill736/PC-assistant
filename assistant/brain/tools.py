@@ -341,6 +341,10 @@ class ToolBox:
         for h in hits:
             h["when"] = _dt.fromtimestamp(h["ts"], self.svc.tz).strftime("%a %b %d, %I:%M %p").replace(" 0", " ")
         out = {"ok": True, "query": query, "hits": hits}
+        if self.svc.memory is not None and query.strip():
+            facts = self.svc.memory.recall(query, k=5)
+            if facts:
+                out["facts"] = [f["statement"] for f in facts]
         lib = self.svc.library
         if lib is not None and query.strip():
             # names only: the text is search_library's, which marks it as text from files

@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +27,7 @@ def cfg(tmp_path) -> Config:
                        "launch": {"apps": [], "urls": [], "obs_scene": None}, "close_apps": []},
         },
         "news": {"feeds": [{"name": "Local", "url": "http://127.0.0.1:9/none", "topic": "tech"}]},
+        "skills": {"memory": {"embed_model": ""}},  # no embedding calls to a developer's Ollama
     }))
     c.root = tmp_path
     return c

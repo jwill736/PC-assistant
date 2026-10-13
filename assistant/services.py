@@ -55,7 +55,8 @@ class Services:
     gmail: Any = None  # their Gmail, read-only (integrations/gmail.Gmail)
     skills: Any = None  # every skill (skills.Skills): one file per feature
     think: Callable[..., Any] = field(default=lambda prompt, schema=None, **kw: None)  # ask the model (brain/assistant)
-    nudge: Callable[..., Any] | None = None  # say something first, at the right moment (skills/nudges.py)
+    nudge: Callable[..., Any] | None = None
+    memory: Any = None  # long-term memory (memory.Memory), set by the memory skill  # say something first, at the right moment (skills/nudges.py)
     live: Callable[[], bool] | None = None  # streaming right now (set by the runtime): what's said may be on air
 
     @property

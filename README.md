@@ -16,6 +16,11 @@ The HUD dashboard has three views: **Command** (everything at once), **Work** an
 > names like Atlas ("at last"), Nova ("know the") or Juno ("you know") fire all the time.
 > Re-run calibration after renaming.
 
+> **Vesper 2.0** adds 50+ abilities as one-file "skills" (`assistant/skills/`, `docs/SKILLS.md`): it speaks first at
+> the right moment, learns about you, plans your day, tracks replies/promises/meetings/people from Gmail, bills and
+> packages, focus/habits/journal, screen/clipboard/rewind, PC health, a stream co-pilot, phone (Telegram), Spotify,
+> lights, YouTube, Discord and MCP tool servers, in a new HUD. Setup for each: [docs/VESPER-2.md](docs/VESPER-2.md).
+
 ## What works today
 
 | Area | What it does |

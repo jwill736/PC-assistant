@@ -184,7 +184,13 @@ key, so steps 25–29 make yours in Google Cloud (free); do them signed in as yo
     shows who's waiting on a reply in each account. Connected before Gmail was added? Click **Reconnect** next to
     each account and tick Gmail.
 
-## Part 8 · Optional
+## Part 8 · Vesper 2.0: the new abilities
+
+Weather, reminders and routines, memory, day plan, focus, habits, journal, Gmail replies, meeting prep, people,
+money, packages, Pulse, screen, clipboard, rewind, PC health, the stream co-pilot, phone, Spotify, lights, YouTube,
+Discord and tool servers: [docs/VESPER-2.md](VESPER-2.md) walks through each one, click by click.
+
+## Part 9 · Optional
 
 34. **Start at sign-in:** in the Vesper folder's address bar type `powershell`, then run
     `powershell -ExecutionPolicy Bypass -File scripts\install-startup.ps1`. Vesper then lives as a ring icon

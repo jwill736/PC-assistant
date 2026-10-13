@@ -1,0 +1,10 @@
+.tm-timers { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.tm { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius); }
+.tm-ring { transform: rotate(-90deg); flex: none; }
+.tm-track { fill: none; stroke: var(--line-2); stroke-width: 3; }
+.tm-arc { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-dasharray: 1; transition: stroke-dashoffset 1s linear; }
+.tm-left { font-size: 18px; font-weight: 500; }
+.tm.done { border-color: var(--accent); animation: tm-done 1s ease-in-out 3; }
+.tm .btn { margin-left: auto; }
+@keyframes tm-done { 50% { box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 35%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .tm-arc { transition: none; } .tm.done { animation: none; } }

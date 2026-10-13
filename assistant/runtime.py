@@ -120,6 +120,10 @@ class Runtime:
         owner = getattr(self.listener, "last_owner", "unknown") if self.listener else "unknown"
         self._commands.submit(self._run_voice_command, text, turn, owner)
 
+    def command(self, text: str, source: str = "automation") -> dict:
+        """Run a command as if typed (routines, the phone bridge), queued behind any voice command."""
+        return self._commands.submit(self.assistant.handle, text, source).result(timeout=300)
+
     def _run_voice_command(self, text: str, turn: int, owner: str = "unknown") -> None:
         try:
             self.assistant.handle(text, "voice", turn=turn, owner=owner)

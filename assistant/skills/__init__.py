@@ -25,7 +25,7 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 # Load order is the order on the HUD and in the briefing.
-MODULES = ["weather", "automations", "nudges", "focus", "inbox_zero", "people", "journal", "clipboard",
+MODULES = ["nudges", "weather", "automations", "focus", "inbox_zero", "people", "journal", "clipboard",
            "screen", "phone", "spotify", "home", "mcp", "rewind", "janitor", "meetings", "pulse", "habits",
            "youtube", "stream_copilot", "travel"]
 
@@ -86,6 +86,13 @@ class Skill:
                                         "key": key or f"{self.name}:{text[:40]}", **extra})
         if speak and not (self.svc.live and self.svc.live()):
             self.svc.speak(text)
+
+    def nudge(self, text: str, **kw) -> Any:
+        """Speak up at the next good moment (skills/nudges.py); just a HUD card if nudges are off."""
+        if self.svc.nudge is not None:
+            return self.svc.nudge(text, source=kw.pop("source", self.name), **kw)
+        self.notify(text, level=kw.get("priority", "info"))
+        return None
 
     def setting(self, key: str, default: Any = None) -> Any:
         return self.cfg.get(key, default)

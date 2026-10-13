@@ -102,10 +102,19 @@ class ToolBox:
         self.audit = audit
         self.context = context or (lambda: {})  # who asked: source, utterance, turn, owner
         built = self._build()
+        self._builtin = {t.name for t in built}
         if getattr(svc, "skills", None) is not None:
-            names = {t.name for t in built}
-            built += [t for t in svc.skills.tools() if t.name not in names]  # a skill never replaces a built-in
+            built += [t for t in svc.skills.tools() if t.name not in self._builtin]  # a skill never replaces a built-in
         self.tools: dict[str, Tool] = {t.name: t for t in built}
+
+    def refresh_skill_tools(self) -> None:
+        """Ask the skills for their tools again: some come and go after startup (an MCP server connecting later)."""
+        if getattr(self.svc, "skills", None) is None:
+            return
+        tools = {n: t for n, t in self.tools.items() if n in self._builtin}
+        for t in self.svc.skills.tools():
+            tools.setdefault(t.name, t)
+        self.tools = tools  # one swap: a request reading the old dict finishes with it
 
     def definitions(self) -> list[dict]:
         return [t.definition() for t in self.tools.values()]

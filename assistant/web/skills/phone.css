@@ -1,0 +1,27 @@
+.ph-steps { display: flex; flex-direction: column; gap: 14px; }
+.ph-step { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; animation: ph-in .36s cubic-bezier(.23, 1, .32, 1) both; }
+.ph-step:nth-child(2) { animation-delay: .05s; } .ph-step:nth-child(3) { animation-delay: .1s; }
+.ph-num { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line-2); display: grid; place-items: center;
+  font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.ph-step.done .ph-num { border-color: var(--good); color: var(--good); }
+.ph-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.ph-main .addrow { width: 100%; margin: 0; }
+.ph-how { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.ph-code { display: flex; gap: 6px; }
+.ph-code span { font-family: var(--display); font-size: 26px; font-variant-numeric: tabular-nums; width: 1.15em; text-align: center;
+  border-bottom: 2px solid var(--accent); color: var(--ink); animation: ph-digit .5s cubic-bezier(.23, 1, .32, 1) both; }
+.ph-code span:nth-child(2) { animation-delay: .04s; } .ph-code span:nth-child(3) { animation-delay: .08s; }
+.ph-code span:nth-child(4) { animation-delay: .12s; } .ph-code span:nth-child(5) { animation-delay: .16s; } .ph-code span:nth-child(6) { animation-delay: .2s; }
+.ph-mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.ph-toggle { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.ph-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.ph-switch { flex: none; width: 30px; height: 16px; border-radius: 8px; background: var(--line-2); position: relative; margin-top: 1px; }
+.ph-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ink);
+  transition: transform .18s ease; }
+.ph-toggle input:checked + .ph-switch { background: var(--accent); }
+.ph-toggle input:checked + .ph-switch::after { transform: translateX(14px); background: var(--on-accent); }
+.ph-toggle input:focus-visible + .ph-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ph-err { margin-top: 10px; }
+@keyframes ph-in { from { opacity: 0; transform: translateY(4px); } }
+@keyframes ph-digit { from { opacity: 0; transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { .ph-step, .ph-code span { animation: none; } .ph-switch::after { transition: none; } }

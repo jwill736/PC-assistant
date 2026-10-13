@@ -893,3 +893,6 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
 :root[data-motion="off"] *, :root[data-motion="off"] *::before, :root[data-motion="off"] *::after {
   animation: none !important; transition-duration: 0s !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
 :root[data-hidden] *, :root[data-hidden] *::before, :root[data-hidden] *::after { animation-play-state: paused !important; }
+
+/* Life and PC tabs: panels keep their own height instead of stretching to the tallest in the row */
+.view[data-view="life"] > .panel, .view[data-view="pc"] > .panel { align-self: start; }

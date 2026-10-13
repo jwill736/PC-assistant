@@ -52,5 +52,5 @@
         items.length ? h('div', { class: 'cb-foot' }, h('button', { class: 'btn small', onclick: async () => { const r = await Vesper.act('clipboard', 'clear'); toast(r.ok ? 'Clipboard history cleared.' : r.error); } }, 'Clear history')) : null);
     }
   }
-  Vesper.skill('clipboard', { panels: [{ view: 'work', span: 4, title: 'Clipboard', after: 'library' }], render: paint });
+  Vesper.skill('clipboard', { panels: [{ view: 'pc', span: 12, title: 'Clipboard', after: 'rewind' }], render: paint });
 })();

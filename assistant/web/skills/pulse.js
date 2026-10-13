@@ -98,7 +98,7 @@
   }
 
   Vesper.skill('pulse', {
-    panels: [{ view: 'command', span: 5, title: 'Pulse', after: 'briefing', buttons: [
+    panels: [{ view: 'command', span: 6, title: 'Pulse', after: 'weather', buttons: [
       { label: 'Run now', onclick: async () => { const r = await Vesper.act('pulse', 'run', {}); toast(r.ok ? `${(r.cards || []).length} cards ready.` : r.error); } }] }],
     render: paint,
   });

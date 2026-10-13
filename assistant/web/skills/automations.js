@@ -45,5 +45,5 @@
     if (items_have_timers(d)) ticking = setInterval(() => { if (!document.hidden) paint(Vesper.data.automations); }, 1000);
   }
   const items_have_timers = d => (d?.items || []).some(i => i.kind === 'timer');
-  Vesper.skill('automations', { panels: [{ view: 'command', span: 4, title: 'Reminders & routines', after: 'nudges' }], render: paint });
+  Vesper.skill('automations', { panels: [{ view: 'command', span: 6, title: 'Reminders & routines', after: 'pulse' }], render: paint });
 })();

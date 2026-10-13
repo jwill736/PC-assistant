@@ -9,7 +9,7 @@
     if (r.quiet) toast(`OK: ${SRC[r.source] || r.source} updates will stay on the HUD, no speaking.`);
   }
   Vesper.skill('nudges', {
-    panels: [{ view: 'command', span: 4, title: 'Updates', after: 'briefing', buttons: [
+    panels: [{ view: 'command', span: 4, title: 'Updates', after: 'agenda', buttons: [
       { label: 'Quiet 1h', onclick: async () => { const r = await Vesper.act('nudges', 'mute', { minutes: 60 }); toast(r.ok ? 'Quiet for an hour.' : r.error); } }] }],
     render(d) {
       for (const p of panels('nudges')) {

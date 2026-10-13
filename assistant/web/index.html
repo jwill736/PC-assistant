@@ -58,7 +58,9 @@
     <nav class="tabs" role="tablist" aria-label="Views">
       <button role="tab" data-view="command" aria-selected="true">Command</button>
       <button role="tab" data-view="work" aria-selected="false">Work</button>
+      <button role="tab" data-view="life" aria-selected="false">Life</button>
       <button role="tab" data-view="stream" aria-selected="false">Stream</button>
+      <button role="tab" data-view="pc" aria-selected="false">PC</button>
       <button role="tab" data-view="setup" aria-selected="false">Setup <span class="tab-badge hidden" id="setup-badge"></span></button>
       <span class="tab-ink" aria-hidden="true"></span>
     </nav>
@@ -164,6 +166,14 @@
     <article class="panel span-4" data-panel="vitals" data-mode="stream"><div class="panel-head"><h2>Rig health</h2><span class="spacer"></span><button class="btn small" data-action="optimize" data-streaming="1">Optimize for stream</button></div><div class="body"></div></article>
     <article class="panel span-4" data-panel="agenda" data-days="7" data-profile="stream"><div class="panel-head"><h2>Stream schedule</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
     <article class="panel span-4" data-panel="tasks" data-profile="stream"><div class="panel-head"><h2>Stream tasks</h2></div><div class="body"></div></article>
+  </section>
+
+  <!-- ===================== LIFE (skills fill it: focus, habits, journal, music, home, money, travel) ===================== -->
+  <section class="view" data-view="life" hidden></section>
+
+  <!-- ===================== PC (skills fill it: health, screen, rewind, clipboard) ===================== -->
+  <section class="view" data-view="pc" hidden>
+    <article class="panel span-4" data-panel="vitals" data-mode="pc"><div class="panel-head"><h2>System</h2><span class="spacer"></span><button class="btn small" data-action="optimize">Optimize</button></div><div class="body"></div></article>
   </section>
 
   <!-- ===================== SETUP ===================== -->

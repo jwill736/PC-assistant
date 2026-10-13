@@ -76,7 +76,7 @@
   }
 
   Vesper.skill('bills', {
-    panels: [{ view: 'work', span: 12, title: 'Money · bills & subscriptions', after: 'jobs', buttons: [
+    panels: [{ view: 'life', span: 12, title: 'Money · bills & subscriptions', after: 'travel', buttons: [
       { label: 'Read receipts', onclick: async () => { const r = await Vesper.act('bills', 'scan', {}); toast(r.ok ? `Read ${r.read || 0} new email${r.read === 1 ? '' : 's'}.` : r.error); } }] }],
     render: paint,
   });

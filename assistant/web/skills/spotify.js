@@ -70,7 +70,7 @@
   }
 
   Vesper.skill('spotify', {
-    panels: [{ view: 'command', span: 4, title: 'Now playing', after: 'automations' },
+    panels: [{ view: 'life', span: 4, title: 'Now playing', after: 'journal' },
       { view: 'stream', span: 4, title: 'Music', after: 'twitch' }],
     render(d) {
       clocks.forEach(clearInterval); clocks = [];

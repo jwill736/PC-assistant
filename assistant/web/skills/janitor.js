@@ -113,6 +113,5 @@
         report(b, d), tidy(d));
     }
   }
-  Vesper.skill('janitor', { panels: [{ view: 'command', span: 8, title: 'PC Health', after: 'vitals' },
-    { view: 'setup', span: 6, title: 'PC Health', after: 'doctor' }], render: paint });
+  Vesper.skill('janitor', { panels: [{ view: 'pc', span: 8, title: 'PC Health', first: true }], render: paint });
 })();

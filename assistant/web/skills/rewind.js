@@ -100,5 +100,5 @@
     }
   }
   addEventListener('resize', () => { for (const p of panels('rewind')) { const t = body(p)._track; if (t && st.t != null && t.classList.contains('rw-on')) point(t, st.t); } });
-  Vesper.skill('rewind', { panels: [{ view: 'work', span: 8, title: 'Rewind · last 24 hours', after: 'activity' }], render: paint });
+  Vesper.skill('rewind', { panels: [{ view: 'pc', span: 12, title: 'Rewind · last 24 hours', after: 'screen' }], render: paint });
 })();

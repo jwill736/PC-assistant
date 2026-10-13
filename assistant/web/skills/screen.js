@@ -38,5 +38,5 @@
       expiry = setTimeout(() => { const x = Vesper.data.screen; if (x?.last?.thumb) { delete x.last.thumb; paint(x); } }, ms + 50);
     }
   }
-  Vesper.skill('screen', { panels: [{ view: 'command', span: 4, title: 'Screen', after: 'automations' }], render: paint });
+  Vesper.skill('screen', { panels: [{ view: 'pc', span: 4, title: 'Screen', after: 'vitals' }], render: paint });
 })();

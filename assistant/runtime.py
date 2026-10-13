@@ -197,6 +197,7 @@ class Runtime:
                 log.exception("skill %s: start failed", skill.name)
             if skill.poll_s:
                 sup.poller(f"skill · {skill.title or skill.name}", skill.poll_s, skill.tick, delay=skill.delay_s)
+        threading.Thread(target=self._first_skill_panels, name="skill-panels", daemon=True).start()
         sup.poller("pre-stream check", 60, self._prestream_tick, delay=30)
         sup.poller("news", 900, self._poll_news)
         sup.poller("morning briefing", 60, self._morning_check)
@@ -447,6 +448,15 @@ class Runtime:
         out = g.needs_you(fresh=fresh)
         self.bus.publish("gmail", out, sticky=True)
         return out
+
+    def _first_skill_panels(self) -> None:
+        """Fill every skill's HUD panel now, not at its first tick (some tick every 15 minutes)."""
+        for skill in self.svc.skills or []:
+            if skill.last_status is None:
+                try:
+                    skill.publish()
+                except Exception:
+                    log.exception("skill %s: first status failed", skill.name)
 
     def skills_state(self, latest: dict | None = None) -> dict:
         """Each skill's latest HUD data, and which skills are loaded (the HUD loads their scripts)."""

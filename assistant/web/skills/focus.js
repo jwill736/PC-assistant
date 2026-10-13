@@ -70,5 +70,5 @@
     if (d?.active) ticking = setInterval(() => { if (!document.hidden) for (const p of panels('focus')) if (body(p)._ui) tick(body(p)._ui, Vesper.data.focus); }, 1000);
   }
 
-  Vesper.skill('focus', { panels: [{ view: 'command', span: 4, title: 'Focus', after: 'planner' }], render });
+  Vesper.skill('focus', { panels: [{ view: 'life', span: 4, title: 'Focus' }], render });
 })();

@@ -98,7 +98,7 @@
   }
 
   Vesper.skill('planner', {
-    panels: [{ view: 'command', span: 4, title: 'Day plan', after: 'automations', buttons: [
+    panels: [{ view: 'command', span: 4, title: 'Day plan', after: 'nudges', buttons: [
       { label: 'Re-plan', onclick: () => run('replan', r => (r.by === 'model' ? 'Re-planned with the model.' : 'Re-planned.')) }] }],
     render,
   });

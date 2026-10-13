@@ -35,7 +35,7 @@
     return s;
   }
   Vesper.skill('weather', {
-    panels: [{ view: 'command', span: 4, title: 'Weather', after: 'agenda' }],
+    panels: [{ view: 'command', span: 4, title: 'Weather', after: 'planner' }],
     render(d) {
       for (const p of panels('weather')) {
         const b = body(p);

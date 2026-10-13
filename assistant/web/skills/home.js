@@ -52,7 +52,7 @@
   }
 
   Vesper.skill('home', {
-    panels: [{ view: 'command', span: 4, title: 'Lights & home', after: 'spotify' },
+    panels: [{ view: 'life', span: 4, title: 'Lights & home', after: 'spotify' },
       { view: 'stream', span: 4, title: 'Lights', after: 'spotify' }],
     render(d) {
       for (const p of panels('home')) {

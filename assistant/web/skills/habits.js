@@ -60,5 +60,5 @@
     }
   }
 
-  Vesper.skill('habits', { panels: [{ view: 'command', span: 4, title: 'Habits', after: 'focus' }], render });
+  Vesper.skill('habits', { panels: [{ view: 'life', span: 4, title: 'Habits', after: 'focus' }], render });
 })();

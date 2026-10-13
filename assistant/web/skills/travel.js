@@ -80,7 +80,7 @@
   }
 
   Vesper.skill('travel', {
-    panels: [{ view: 'command', span: 4, title: 'On the way · packages & trips', after: 'weather', buttons: [
+    panels: [{ view: 'life', span: 4, title: 'On the way · packages & trips', after: 'home', buttons: [
       { label: 'Check email', onclick: async () => { const r = await Vesper.act('travel', 'scan', {}); toast(r.ok ? 'Up to date.' : r.error); } }] }],
     render: paint,
   });

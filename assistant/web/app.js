@@ -1358,6 +1358,16 @@ async function googleCalendars(box) {
 
 // ---------------------------------------------------------------- skills (assistant/skills + web/skills/<name>.js)
 const SKILL_RENDER = {};
+const PENDING_PLACE = [];
+/* After every skill script ran: put panels whose "after" neighbour came from a later skill in their place. */
+window.addEventListener('DOMContentLoaded', () => {
+  for (let round = 0; round < 4; round++) {  // chains (a after b after c) settle within a few rounds
+    for (const item of PENDING_PLACE) {
+      const ref = $(`.panel[data-panel="${item.after}"]`, item.section);
+      if (ref && ref !== item.art && ref.nextElementSibling !== item.art) ref.after(item.art);
+    }
+  }
+});
 function paintSkill(name) { try { SKILL_RENDER[name](S.data[name]); } catch (err) { console.error(name, err); } }
 const NOTICES = [];
 function notice(n) {
@@ -1385,6 +1395,7 @@ const Vesper = window.Vesper = {
       h('div', { class: 'body' }, empty('Loading…')));
     const ref = after && $(`.panel[data-panel="${after}"]`, section);
     if (ref) ref.after(art); else if (first) section.prepend(art); else section.append(art);
+    if (after) PENDING_PLACE.push({ art, after, section });  // re-placed once every skill has loaded
     stagger(section);
     if (typeof render.systems === 'function') queueSystems();
   },
@@ -1505,7 +1516,7 @@ $('#mute-btn').addEventListener('click', e => {
   post('/api/voice/mute', { muted });
 });
 for (const t of $$('.tabs button')) t.addEventListener('click', () => setView(t.dataset.view));
-const VIEWS = ['command', 'work', 'stream', 'setup'];
+const VIEWS = ['command', 'work', 'life', 'stream', 'pc', 'setup'];
 function setView(view) {
   const prev = S.view;
   S.view = view;

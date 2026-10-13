@@ -73,5 +73,5 @@
     }
   }
 
-  Vesper.skill('journal', { panels: [{ view: 'command', span: 4, title: 'Journal', after: 'habits' }], render });
+  Vesper.skill('journal', { panels: [{ view: 'life', span: 4, title: 'Journal', after: 'habits' }], render });
 })();

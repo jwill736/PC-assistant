@@ -1,0 +1,33 @@
+/* Habit rows: tap target, a 7-day dot strip (fill = share of the day's target), streak flame. */
+.hb-list { display: flex; flex-direction: column; margin-bottom: 8px; }
+.hb-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 10px; align-items: center; padding: 7px 0;
+  border-bottom: 1px solid var(--grid); }
+.hb-row:last-child { border-bottom: 0; }
+.hb-hit { display: flex; align-items: center; gap: 10px; min-width: 0; background: none; border: 0; padding: 0; text-align: left;
+  color: inherit; font: inherit; cursor: pointer; }
+.hb-plus { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 14px;
+  border: 1px solid var(--line-2); color: var(--ink-2); transition: transform .16s, background .2s, border-color .2s; }
+.hb-hit:hover .hb-plus, .hb-hit:focus-visible .hb-plus { border-color: var(--accent); color: var(--accent); transform: scale(1.08); }
+.hb-row.done .hb-plus { background: var(--good); border-color: var(--good); color: var(--panel); }
+.hb-name { display: flex; flex-direction: column; min-width: 0; }
+.hb-name .t1 { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-transform: capitalize; }
+.hb-goal { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.hb-dots { display: flex; gap: 4px; }
+.hb-dot { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.hb-dot i { position: relative; width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--line-2); overflow: hidden; }
+.hb-dot i::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--series-4);
+  transform: scale(var(--f, 0)); opacity: calc(.35 + var(--f, 0) * .65); transition: transform .35s cubic-bezier(.23, 1, .32, 1); }
+.hb-dot.full i { border-color: var(--series-4); }
+.hb-dot.today i { box-shadow: 0 0 0 2px var(--accent-soft); border-color: var(--accent); }
+.hb-dot b { font-size: 8.5px; font-weight: 500; color: var(--muted); letter-spacing: .04em; }
+.hb-streak { display: inline-flex; align-items: center; gap: 3px; min-width: 34px; font-family: var(--display); font-size: 14px; }
+.hb-flame { width: 12px; height: 15px; fill: var(--serious); transform-origin: 50% 90%; animation: hb-flicker 2.8s ease-in-out infinite; }
+.hb-streak.zero { color: var(--muted); }
+.hb-streak.zero .hb-flame { fill: var(--line-2); animation: none; }
+.hb-more { display: flex; gap: 2px; opacity: .4; transition: opacity .16s; }
+.hb-row:hover .hb-more, .hb-more:focus-within { opacity: 1; }
+.hb-row.pop .hb-plus { animation: hb-pop .45s cubic-bezier(.23, 1, .32, 1); }
+@keyframes hb-pop { 40% { transform: scale(1.25); } }
+@keyframes hb-flicker { 50% { transform: scale(.94, 1.06); } }
+@media (max-width: 520px) { .hb-row { grid-template-columns: minmax(0, 1fr) auto; } .hb-dots { grid-column: 1; } .hb-more { display: none; } }
+@media (prefers-reduced-motion: reduce) { .hb-flame, .hb-row.pop .hb-plus { animation: none; } .hb-dot i::after, .hb-plus { transition: none; } }

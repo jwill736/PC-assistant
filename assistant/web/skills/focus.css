@@ -1,0 +1,31 @@
+/* Focus ring: one arc that empties as the session runs; amber while you're on a distraction. */
+.fx { display: grid; grid-template-columns: minmax(150px, 190px) minmax(0, 1fr); gap: 18px; align-items: center; --fx: var(--accent); }
+.fx [hidden] { display: none !important; }
+.fx.drifting { --fx: var(--warning); }
+.fx-dial { position: relative; aspect-ratio: 1; }
+.fx-ring { width: 100%; height: 100%; display: block; transform: rotate(-90deg); overflow: visible; }
+.fx-track { fill: none; stroke: var(--grid); stroke-width: 6; }
+.fx-arc { fill: none; stroke: var(--fx); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 0;
+  transition: stroke-dashoffset 1s linear, stroke .4s, opacity .4s; opacity: .22; }
+.fx.on .fx-arc { opacity: 1; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--fx) 45%, transparent)); }
+.fx.on .fx-dial::after { content: ""; position: absolute; inset: 9%; border-radius: 50%; pointer-events: none;
+  box-shadow: inset 0 0 24px color-mix(in srgb, var(--fx) 16%, transparent); animation: fx-breathe 6s ease-in-out infinite; }
+.fx-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 0 22%; }
+.fx-left { font-family: var(--display); font-size: clamp(26px, 3.2vw, 38px); font-weight: 300; line-height: 1; letter-spacing: .02em; }
+.fx:not(.on) .fx-left { color: var(--muted); }
+.fx-label { margin-top: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .16em; color: var(--muted);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-drift { font-size: 11px; color: var(--warning); min-height: 14px; margin-top: 2px; }
+.fx-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.fx-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.fx-stat { border: 1px solid var(--line); border-radius: var(--radius); background: var(--inset); padding: 6px 8px; }
+.fx-stat .v { font-family: var(--display); font-size: 17px; }
+.fx-stat .k { font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
+.fx-start .addrow { margin-bottom: 6px; }
+.fx-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.fx-last { font-size: 12px; color: var(--ink-2); }
+.fx-side > .btn { align-self: flex-start; }
+@keyframes fx-breathe { 50% { opacity: .35; } }
+@media (max-width: 520px) { .fx { grid-template-columns: minmax(0, 1fr); } .fx-dial { max-width: 200px; margin: 0 auto; } }
+@media (prefers-reduced-motion: reduce) { .fx-arc { transition: none; } .fx.on .fx-dial::after { animation: none; } }

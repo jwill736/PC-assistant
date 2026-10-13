@@ -1,0 +1,16 @@
+/* Screen skill */
+.scr-shot { position: relative; margin: 0 0 8px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--inset); }
+.scr-img { display: block; width: 100%; height: auto; max-height: 200px; object-fit: contain; }
+.scr-shot figcaption { padding: 4px 8px; border-top: 1px solid var(--line); }
+.scr-scan { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); box-shadow: 0 0 12px var(--accent);
+  opacity: 0; pointer-events: none; }
+.scr-new .scr-scan { animation: scr-scan 1.1s cubic-bezier(.4, 0, .2, 1) 1 both; }
+.scr-shot.scr-new { animation: scr-in .45s cubic-bezier(.23, 1, .32, 1) both; }
+.scr-q { margin-bottom: 4px; overflow-wrap: anywhere; }
+.scr-a { line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
+.scr-a.scr-new { animation: scr-in .5s .15s cubic-bezier(.23, 1, .32, 1) both; }
+.scr-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.scr-ask { margin: 10px 0 0; }
+@keyframes scr-scan { 0% { opacity: 0; transform: translateY(0); } 10% { opacity: 1; } 90% { opacity: .8; } 100% { opacity: 0; transform: translateY(198px); } }
+@keyframes scr-in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .scr-new .scr-scan, .scr-shot.scr-new, .scr-a.scr-new { animation: none; } }

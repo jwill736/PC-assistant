@@ -186,6 +186,13 @@ class Runtime:
         sup.poller("projects", 120, self._poll_projects)
         sup.poller("calendars", 300, self._poll_calendar)
         sup.poller("gmail", 180, self._poll_gmail, delay=20)
+        for skill in self.svc.skills or []:
+            try:
+                skill.start(self)
+            except Exception:
+                log.exception("skill %s: start failed", skill.name)
+            if skill.poll_s:
+                sup.poller(f"skill · {skill.title or skill.name}", skill.poll_s, skill.tick, delay=skill.delay_s)
         sup.poller("pre-stream check", 60, self._prestream_tick, delay=30)
         sup.poller("news", 900, self._poll_news)
         sup.poller("morning briefing", 60, self._morning_check)
@@ -436,6 +443,15 @@ class Runtime:
         out = g.needs_you(fresh=fresh)
         self.bus.publish("gmail", out, sticky=True)
         return out
+
+    def skills_state(self, latest: dict | None = None) -> dict:
+        """Each skill's latest HUD data, and which skills are loaded (the HUD loads their scripts)."""
+        sk = self.svc.skills
+        if sk is None:
+            return {"loaded": [], "data": {}, "errors": {}}
+        latest = latest if latest is not None else {k: v["data"] for k, v in self.bus.latest.items()}
+        return {"loaded": [{"name": s.name, "title": s.title} for s in sk],
+                "data": {s.name: latest.get(s.name, s.last_status) for s in sk}, "errors": sk.errors}
 
     def _poll_news(self) -> None:
         self.svc.news.refresh(force=True)
@@ -1052,6 +1068,7 @@ class Runtime:
             "library": latest.get("library") or self.library_status(),
             "google": self.google_status(),
             "gmail": latest.get("gmail"),
+            "skills": self.skills_state(latest),
             "tts": self.speaker.status(),
             "pc_control": self.assistant.control_status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},

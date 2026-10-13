@@ -457,3 +457,4 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
 .item.mail:hover .t1 { color: var(--accent); }
 .mail-flag { color: var(--accent); font-size: 10px; }
 .mail-age { font-size: 11px; white-space: nowrap; align-self: flex-start; }
+

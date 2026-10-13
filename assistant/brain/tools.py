@@ -101,7 +101,11 @@ class ToolBox:
                 audit = AuditLog(None)
         self.audit = audit
         self.context = context or (lambda: {})  # who asked: source, utterance, turn, owner
-        self.tools: dict[str, Tool] = {t.name: t for t in self._build()}
+        built = self._build()
+        if getattr(svc, "skills", None) is not None:
+            names = {t.name for t in built}
+            built += [t for t in svc.skills.tools() if t.name not in names]  # a skill never replaces a built-in
+        self.tools: dict[str, Tool] = {t.name: t for t in built}
 
     def definitions(self) -> list[dict]:
         return [t.definition() for t in self.tools.values()]

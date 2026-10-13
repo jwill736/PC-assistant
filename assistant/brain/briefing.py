@@ -86,6 +86,7 @@ def gather_morning(svc: Services) -> dict:
         "open_prs": (projects.get("github") or {}).get("open_prs", [])[:6],
         "news": [{"source": h["source"], "title": h["title"]} for h in _safe("news", lambda: svc.news.headlines(limit=8), [])],
         "email_waiting_on_you": _safe("email", lambda: _email_brief(svc), []),
+        "skills": _safe("skills", lambda: svc.skills.briefing() if svc.skills is not None else {}, {}),
         "system": _safe("system", lambda: svc.system.analyze()["findings"], []),
         "jobs_finished_overnight": [j for j in svc.storage.list_jobs(10)
                                     if j["status"] in {"done", "failed"} and (j["finished"] or 0) > yday0.timestamp()],

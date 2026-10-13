@@ -196,6 +196,7 @@ class Assistant:
             profile_aliases={k.lower(): k for k in self.svc.cfg["profiles"]}
             | {str(v.get("label", "")).lower(): k for k, v in self.svc.cfg["profiles"].items() if v.get("label")},
             macro_match=lambda t: macro_mod.match(t, self.macros),
+            skill_route=self.svc.skills.route if self.svc.skills is not None else (lambda t: None),
         )
 
     # ------------------------------------------------------------------
@@ -375,7 +376,8 @@ class Assistant:
             return {"reply": f"Confirm: {tool.describe(args)}? Say yes or cancel.", "kind": "pending"}
         result = self.tools.run(name, args, confirmed_by=via)
         self.svc.bus.publish("tool", {"name": name, "args": args, "result": result})
-        reply = summarize(name, args, result, self.svc.tz, hints)
+        said = self.svc.skills.say(name, args, result) if self.svc.skills is not None and not _failed(result) else None
+        reply = said or summarize(name, args, result, self.svc.tz, hints)
         if name == "run_routine" and result.get("close_candidates"):
             names = result["close_candidates"]
             self._set_pending([("close_app", {"name": n}) for n in names], f"close {', '.join(names)}")
@@ -808,3 +810,7 @@ class Assistant:
         if resp is None or resp.stop_reason == "refusal":
             raise RuntimeError("research request was declined")
         return "\n".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+
+
+def _failed(result) -> bool:
+    return isinstance(result, dict) and result.get("ok") is False and bool(result.get("error"))

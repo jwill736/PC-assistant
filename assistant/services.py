@@ -53,6 +53,7 @@ class Services:
     library: Any = None  # your documents (library.Library), or None when turned off
     google: Any = None  # signed-in Google accounts (integrations/google.GoogleAccounts)
     gmail: Any = None  # their Gmail, read-only (integrations/gmail.Gmail)
+    skills: Any = None  # every skill (skills.Skills): one file per feature
     live: Callable[[], bool] | None = None  # streaming right now (set by the runtime): what's said may be on air
 
     @property
@@ -118,4 +119,7 @@ def build_services(cfg: Config, bus: EventBus | None = None, storage: Storage | 
                               max_files=int(lib.get("max_files", 20000)),
                               whole_pc=lambda: bool(cfg["library"].get("whole_pc")), skip_paths=[cfg.root],
                               cloud=lambda link, ext: svc.google.export(link, ext) if svc.google and svc.google.emails() else None)
+    from .skills import Skills
+
+    svc.skills = Skills(svc)
     return svc

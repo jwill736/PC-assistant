@@ -1252,6 +1252,40 @@ async function googleCalendars(box) {
     } }, 'Save calendars'), h('button', { class: 'btn', onclick: () => fill(box) }, 'Cancel')));
 }
 
+// ---------------------------------------------------------------- skills (assistant/skills + web/skills/<name>.js)
+const SKILL_RENDER = {};
+function paintSkill(name) { try { SKILL_RENDER[name](S.data[name]); } catch (err) { console.error(name, err); } }
+const NOTICES = [];
+function notice(n) {
+  if (NOTICES.some(x => x.key && x.key === n.key)) return;
+  NOTICES.unshift(n); NOTICES.length = Math.min(NOTICES.length, 50);
+  if (n.level !== 'quiet') toast(n.text);
+  for (const fn of Vesper._noticeListeners) fn(n, NOTICES);
+}
+/* The HUD side of a skill: Vesper.skill('weather', { panels: [...], render(data) {...} }) */
+const Vesper = window.Vesper = {
+  _noticeListeners: [],
+  ui: { h, fill, empty, status, ago, toast, api, post, panels, body, meta, $, $$, meter },
+  get data() { return S.data; },
+  notices: NOTICES,
+  onNotice(fn) { this._noticeListeners.push(fn); },
+  act(name, action, payload) { return post(`/api/skill/${name}/${action}`, payload || {}).catch(e => ({ ok: false, error: e.message })); },
+  panel({ name, view = 'command', span = 4, title = '', after = null, first = false, buttons = [] }) {
+    const section = $(`.view[data-view="${view}"]`);
+    if (!section || $(`.panel[data-panel="${name}"]`, section)) return;
+    const art = h('article', { class: `panel span-${span}`, 'data-panel': name },
+      h('div', { class: 'panel-head' }, h('h2', {}, title), h('span', { class: 'spacer' }), h('span', { class: 'meta', 'data-slot': 'meta' }),
+        buttons.map(b => h('button', { class: 'btn small', onclick: b.onclick }, b.label))),
+      h('div', { class: 'body' }, empty('Loading…')));
+    const ref = after && $(`.panel[data-panel="${after}"]`, section);
+    if (ref) ref.after(art); else if (first) section.prepend(art); else section.append(art);
+  },
+  skill(name, { panels: list = [], render: fn }) {
+    for (const p of list) this.panel({ name, ...p });
+    if (fn) { SKILL_RENDER[name] = fn; render[`skill_${name}`] = () => { if (S.data[name] !== undefined) paintSkill(name); }; }
+  },
+};
+
 function renderAll() { for (const fn of Object.values(render)) { try { fn(); } catch (err) { console.error(err); } } }
 
 // ---------------------------------------------------------------- actions
@@ -1471,7 +1505,10 @@ function onEvent(ev) {
     case 'twitch_event': twitchPatch(t => { t.feed = t.feed || { events: [] }; t.feed.events = [{ ...data, ts: data.ts || ev.ts }, ...(t.feed.events || [])].slice(0, 25); }); break;
     case 'highlight': twitchPatch(t => { t.highlights = [data, ...(t.highlights || [])].slice(0, 20); }); toast(`Highlight: ${data.reason}${data.marker ? ' (marker added)' : ''}`); break;
     case 'prestream': S.data.prestream = data; render.obs(); break;
-    case 'tool': if (S.data.pc_control) refreshControl(); break;
+    case 'tool':
+      if (S.data.pc_control) refreshControl();
+      if (['add_task', 'complete_task'].includes(data.name)) refreshTasks();
+      break;
     case 'speak': speak(data); break;
     case 'speak_stop': if ('speechSynthesis' in window) speechSynthesis.cancel(); break;
     case 'tts': S.data.tts = data; render.speech(); break;
@@ -1504,9 +1541,9 @@ function onEvent(ev) {
       S.data.jobs = jobs; render.jobs();
       break;
     }
-    case 'tool':
-      if (['add_task', 'complete_task'].includes(data.name)) refreshTasks();
-      break;
+    case 'notice': notice(data); break;
+    default:
+      if (SKILL_RENDER[type]) { S.data[type] = data; paintSkill(type); }
   }
 }
 
@@ -1527,6 +1564,7 @@ async function load() {
     const st = await api('/api/state');
     if (st.hud_version && HUD_VERSION && st.hud_version !== HUD_VERSION) return location.reload();  // Vesper was updated
     S.data = { ...S.data, ...st };
+    for (const [name, data] of Object.entries(st.skills?.data || {})) if (data != null) S.data[name] = data;
     S.log = (st.log || []).map(l => ({ role: l.role, text: l.text, source: l.source, ts: l.ts }));
     orbState.voice = st.voice?.state || 'off';
     $('#mute-btn').setAttribute('aria-pressed', String(!!st.voice?.muted));

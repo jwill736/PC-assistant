@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from assistant.config import goal_lines
 from assistant.runtime import Runtime
-from assistant.server import WEB, create_app
+from assistant.server import create_app
 
 
 def test_goal_lines_takes_one_line_or_a_list():
@@ -42,11 +42,11 @@ def test_goals_edited_in_the_hud_are_saved_and_ranked_against(cfg, svc):
 
 
 def test_the_hud_loads_its_script_by_content_version_and_is_never_cached(cfg, svc):
-    import hashlib
+    from assistant.server import hud_version
 
     rt = Runtime(cfg, services=svc)
     app = create_app(rt, start_background=False)
-    version = hashlib.sha1(b"".join((WEB / f).read_bytes() for f in ("app.js", "styles.css"))).hexdigest()[:10]
+    version = hud_version()
     with TestClient(app) as c:
         r = c.get("/")
         assert f'/static/app.js?v={version}"' in r.text and f'/static/styles.css?v={version}"' in r.text

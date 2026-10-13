@@ -156,9 +156,26 @@ def test_forget_and_search_everything(svc):
     ("what have you learned lately", "what_you_know", {"about": ""}),
     ("forget that i like pineapple", "forget", {"what": "i like pineapple"}),
     ("search everything for acme", "search_everything", {"query": "acme"}),
+    ("off the record", "off_the_record", {"minutes": 30}),
+    ("go off the record for ten minutes", "off_the_record", {"minutes": 10}),
+    ("back on the record", "off_the_record", {"minutes": 0}),
     ("what do i have on the q3 launch", "search_everything", {"query": "the q3 launch"}),
 ])
 def test_routes(svc, said, tool, args):
     sk = Skills(svc, ["memory"])
     intent = route(said, RouterContext(skill_route=sk.route))
     assert (intent.tool, intent.args) == (tool, args)
+
+
+def test_off_the_record_keeps_nothing(svc):
+    from assistant.brain.assistant import Assistant
+
+    Skills(svc, ["memory"])
+    a = Assistant(svc)
+    assert a.handle("off the record")["reply"].startswith("Off the record for 30 minutes")
+    before = len(svc.storage.recent_log(100))  # the request itself is the last thing kept
+    a.handle("what time is it")
+    assert len(svc.storage.recent_log(100)) == before
+    a.handle("back on the record")
+    a.handle("what time is it")
+    assert len(svc.storage.recent_log(100)) == before + 2

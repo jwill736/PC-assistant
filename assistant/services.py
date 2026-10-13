@@ -56,7 +56,8 @@ class Services:
     skills: Any = None  # every skill (skills.Skills): one file per feature
     think: Callable[..., Any] = field(default=lambda prompt, schema=None, **kw: None)  # ask the model (brain/assistant)
     nudge: Callable[..., Any] | None = None
-    memory: Any = None  # long-term memory (memory.Memory), set by the memory skill  # say something first, at the right moment (skills/nudges.py)
+    memory: Any = None  # long-term memory (memory.Memory), set by the memory skill
+    off_record: Callable[[float], float] | None = None  # stop logging/learning for N minutes (set by the assistant)  # say something first, at the right moment (skills/nudges.py)
     live: Callable[[], bool] | None = None  # streaming right now (set by the runtime): what's said may be on air
 
     @property

@@ -108,6 +108,7 @@ class Assistant:
         self._tainted_by = "chat"
         self.tools = toolbox or ToolBox(svc, context=lambda: self._ctx)
         svc.think = self.think  # skills ask the model through this
+        svc.off_record = self.set_off_record
         self.on_kill = None  # the runtime adds what only it can stop: speech, background jobs
         self.on_pending = None  # e.g. a Windows toast with Yes/No buttons
         self.macros = macro_mod.load_macros(svc.cfg)
@@ -155,6 +156,10 @@ class Assistant:
         if client is None:
             log.warning("Claude API not configured; running on the local command router only")
         return client
+
+    def set_off_record(self, minutes: float) -> float:
+        self.off_record_until = time.time() + max(0.0, minutes) * 60
+        return self.off_record_until
 
     def think(self, prompt: str, schema: dict | None = None, max_tokens: int = 1200, private: bool = True):
         """One question to the model for a skill (triage, summaries, plans): a dict when ``schema`` is given, else
@@ -245,7 +250,8 @@ class Assistant:
             self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner}
             self._tainted = False
             self.tools.guard.new_command()
-            self.svc.storage.log("user", text, source)
+            if not self.off_record():
+                self.svc.storage.log("user", text, source)
             self.svc.bus.publish("user_said", {"text": text, "source": source})
             self.svc.bus.publish("thinking", {"active": True})
             started = time.time()
@@ -271,7 +277,8 @@ class Assistant:
             out["ms"] = round((time.time() - started) * 1000)
             reply = out.get("reply") or ""
             if reply:
-                self.svc.storage.log("assistant", reply, source)
+                if not self.off_record():
+                    self.svc.storage.log("assistant", reply, source)
             self.svc.bus.publish("assistant_said", {
                 "text": reply, "kind": out.get("kind"), "source": source, "ms": out["ms"],
                 "pending": self.pending_view(),
@@ -488,6 +495,12 @@ class Assistant:
             self.history, self.user_turns = [], 0
 
     # ------------------------------------------------------------------
+    off_record_until: float = 0.0
+
+    def off_record(self) -> bool:
+        """"Off the record": nothing said is written to the log or learned until it ends (skills/memory.py)."""
+        return time.time() < self.off_record_until
+
     def _memory_context(self, text: str, include_private: bool = True) -> str:
         """The core profile and the facts relevant to this question (skills/memory.py), or nothing."""
         mem = self.svc.memory

@@ -27,3 +27,22 @@ def test_stylesheet_assets_are_bundled():
     for url in urls:
         assert not url.startswith(("http:", "https:", "//")), url
         assert (APP_JS.parent / url).is_file(), url
+
+
+def test_effects_script_is_loaded_and_versioned():
+    """fx.js (the orb, tickers, motion setting) loads before app.js and is part of the HUD's content hash."""
+    from assistant.server import hud_version
+
+    html = (APP_JS.parent / "index.html").read_text(encoding="utf-8")
+    assert html.index('/static/fx.js"') < html.index('/static/app.js"')
+    fx = (APP_JS.parent / "fx.js").read_text(encoding="utf-8")
+    assert "window.FX" in fx and hud_version()
+
+
+def test_skill_api_is_still_there():
+    """Skill scripts (web/skills/*.js) rely on these; see docs/SKILLS.md."""
+    js = APP_JS.read_text(encoding="utf-8")
+    for name in ("ui:", "get data()", "notices:", "onNotice(", "act(", "panel(", "skill("):
+        assert name in js, name
+    for helper in ("h", "fill", "empty", "status", "ago", "toast", "api", "post", "panels", "body", "meta", "meter"):
+        assert re.search(rf"ui: \{{[^}}]*\b{helper}\b", js), helper

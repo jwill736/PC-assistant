@@ -87,11 +87,67 @@ function compact(n) {
 function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function empty(text, code) { return h('div', { class: 'empty' }, text, code ? h('code', {}, code) : null); }
 function status(level, label) { return h('span', { class: `status ${level}` }, h('span', { class: 'dot' }), label); }
-function toast(text) {
-  const t = h('div', { class: 'toast' }, text);
-  document.body.append(t);
-  setTimeout(() => t.remove(), 6000);
+
+/* Source icons (16px, stroke) shared by toasts, the notification center and the palette. */
+const ICON = {
+  vesper: 'M8 1.5 13.6 4.75v6.5L8 14.5 2.4 11.25v-6.5zM5.5 6 8 10.5 10.5 6',
+  calendar: 'M2.5 4h11v9.5h-11zM2.5 7h11M5.5 2.5v3M10.5 2.5v3',
+  weather: 'M5 12.5h6.5a3 3 0 0 0 0-6 4.2 4.2 0 0 0-8 1.4A2.4 2.4 0 0 0 5 12.5z',
+  mail: 'M2 4h12v8.5H2zM2 4.5l6 4.5 6-4.5',
+  tasks: 'M2.5 3.5h11v9h-11zM5 8l2 2 4-4',
+  timer: 'M8 4a5 5 0 1 0 0 10A5 5 0 0 0 8 4zM8 6.5V9l1.8 1.2M6.5 1.5h3',
+  stream: 'M2 4h12v8H2zM6.5 6.2v3.6L9.6 8z',
+  system: 'M2 3h12v8H2zM5.5 14h5M8 11v3',
+  focus: 'M8 1.5v2.5M8 12v2.5M1.5 8H4M12 8h2.5M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z',
+  people: 'M5.5 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM1.5 13a4 4 0 0 1 8 0M11 7.5a1.6 1.6 0 1 0 0-3.2M11.5 9.5a3.5 3.5 0 0 1 3 3.5',
+  warn: 'M8 2 14.5 13.5h-13zM8 6.5v3.2M8 11.6v.2',
+  ok: 'M3 8.5l3 3 7-7',
+  view: 'M2 2.5h5v5H2zM9 2.5h5v5H9zM2 9.5h5v4H2zM9 9.5h5v4H9z',
+  panel: 'M2.5 2.5h11v11h-11zM2.5 6h11',
+  cmd: 'M3 5l3 3-3 3M8 11.5h5',
+  recent: 'M8 2.5a5.5 5.5 0 1 0 5.5 5.5M8 5v3.2l2 1.3M13.5 2.5v3h-3',
+  ask: 'M8 1.5 13.6 4.75v6.5L8 14.5 2.4 11.25v-6.5zM5.5 6 8 10.5 10.5 6',
+  bolt: 'M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z',
+  gear: 'M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4',
+};
+const SOURCE_ICON = { calendar: 'calendar', meetings: 'people', people: 'people', weather: 'weather', inbox_zero: 'mail', gmail: 'mail',
+  email: 'mail', tasks: 'tasks', planner: 'tasks', habits: 'tasks', automations: 'timer', break: 'focus', focus: 'focus', welcome: 'vesper',
+  janitor: 'system', pulse: 'system', system: 'system', stream: 'stream', obs: 'stream', twitch: 'stream', highlight: 'stream', vesper: 'vesper' };
+function icon(name) {
+  return s('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' }, s('path', { d: ICON[name] || ICON[SOURCE_ICON[name]] || ICON.vesper }));
 }
+const LEVEL_TONE = { urgent: 'error', critical: 'error', error: 'error', warning: 'warn', warn: 'warn', good: 'good', ok: 'good',
+  normal: 'info', info: 'info', low: 'info', quiet: 'info', vesper: 'vesper' };
+
+/* Toasts stack bottom-right (newest nearest the corner, at most 3), slide in, and leave on their own; hovering one
+   holds it. toast(text) still works; toast(text, 'error') or toast(text, { level, source, life }) add a tone. */
+function toast(text, opt) {
+  const o = typeof opt === 'string' ? { level: opt } : (opt || {});
+  const tone = LEVEL_TONE[o.level] || 'info';
+  const box = $('#toasts');
+  if (!box || !text) return;
+  const life = o.life || (tone === 'error' ? 9000 : 6000);
+  const close = h('button', { class: 't-x', 'aria-label': 'Dismiss' }, '✕');
+  const el = h('div', { class: 'toast', 'data-level': tone, role: tone === 'error' ? 'alert' : 'status' },
+    h('span', { class: 't-ic' }, icon(o.source || (tone === 'error' || tone === 'warn' ? 'warn' : tone === 'good' ? 'ok' : 'vesper'))),
+    h('div', {}, o.source ? h('div', { class: 't-src' }, SOURCE_LABEL_N[o.source] || o.source.replace(/_/g, ' ')) : null, h('div', { class: 't-txt' }, text)),
+    close, h('span', { class: 't-bar', 'aria-hidden': 'true' }));
+  el.style.setProperty('--life', `${life}ms`);
+  const dismiss = () => { clearTimeout(el._t); el.classList.add('out'); setTimeout(() => el.remove(), 200); };
+  let left = life, started = Date.now();
+  const arm = () => { started = Date.now(); el._t = setTimeout(dismiss, left); };
+  el.addEventListener('mouseenter', () => { clearTimeout(el._t); left -= Date.now() - started; });
+  el.addEventListener('mouseleave', arm);
+  close.addEventListener('click', dismiss);
+  box.prepend(el);
+  const live = [...box.children].filter(t => !t.classList.contains('out'));
+  live.forEach((t, i) => t.classList.toggle('older', i > 0));
+  for (const old of live.slice(3)) { clearTimeout(old._t); old.classList.add('out'); setTimeout(() => old.remove(), 200); }
+  arm();
+}
+const SOURCE_LABEL_N = { inbox_zero: 'Email', automations: 'Automation', nudges: 'Updates', calendar: 'Calendar', weather: 'Weather',
+  break: 'Break', tasks: 'Tasks', welcome: 'Welcome back', focus: 'Focus', people: 'People', meetings: 'Meetings', janitor: 'PC',
+  pulse: 'Pulse', vesper: 'Vesper', stream: 'Stream', obs: 'OBS', twitch: 'Twitch', highlight: 'Highlight', system: 'System' };
 
 // Category -> colour: profiles take categorical slots in config order, then "other"; idle is neutral.
 function categories() { return [...Object.keys(S.data.profiles || { work: 1, stream: 1 }), 'other']; }
@@ -121,11 +177,14 @@ function hideTip() { tip.hidden = true; }
 
 // ---------------------------------------------------------------- charts
 /* Single-series sparkline: 2px line, 10% wash, end dot with surface ring, crosshair hover. */
-function sparkline(container, points, { max, color = 'var(--series-1)', fmt = v => v, label = '' }) {
-  const w = Math.max(container.clientWidth || 220, 60), ht = 44;
+const DRAWN = new Set();  // sparklines that have already drawn in once (refreshes don't replay it)
+function sparkline(container, points, { max, color = 'var(--series-1)', fmt = v => v, label = '', key = '' }) {
+  const w = Math.max(container.clientWidth || 220, 60), ht = 40;
   const vals = points.map(p => p.v);
   const valid = vals.filter(v => v != null);
-  const svgEl = s('svg', { class: 'spark', viewBox: `0 0 ${w} ${ht}`, role: 'img', 'aria-label': `${label} trend` });
+  const first = !!key && valid.length >= 2 && !DRAWN.has(key);
+  if (first) DRAWN.add(key);
+  const svgEl = s('svg', { class: `spark${first ? ' draw' : ''}`, viewBox: `0 0 ${w} ${ht}`, role: 'img', 'aria-label': `${label} trend` });
   container.replaceChildren(svgEl);
   if (valid.length < 2) return;
   const mx = max ?? Math.max(...valid, 1) * 1.1;
@@ -135,9 +194,9 @@ function sparkline(container, points, { max, color = 'var(--series-1)', fmt = v 
   const d = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join('');
   svgEl.append(
     s('line', { x1: 0, x2: w, y1: ht - 3, y2: ht - 3, stroke: 'var(--baseline)', 'stroke-width': 1 }),
-    s('path', { d: `${d}L${x(n - 1)},${ht - 3}L${x(0)},${ht - 3}Z`, fill: color, opacity: 0.1 }),
-    s('path', { d, fill: 'none', stroke: color, 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }),
-    s('circle', { cx: x(n - 1), cy: y(vals[n - 1]), r: 3.5, fill: color, stroke: 'var(--panel)', 'stroke-width': 2 }));
+    s('path', { class: 's-area', d: `${d}L${x(n - 1)},${ht - 3}L${x(0)},${ht - 3}Z`, fill: color, opacity: 0.1 }),
+    s('path', { class: 's-line', d, pathLength: 1, fill: 'none', stroke: color, 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }),
+    s('circle', { class: 's-dot', cx: x(n - 1), cy: y(vals[n - 1]), r: 3.5, fill: color, stroke: 'var(--panel)', 'stroke-width': 2 }));
   const cross = s('line', { y1: 2, y2: ht - 3, stroke: 'var(--muted)', 'stroke-width': 1, visibility: 'hidden' });
   const hit = s('rect', { x: 0, y: 0, width: w, height: ht, fill: 'transparent' });
   svgEl.append(cross, hit);
@@ -182,6 +241,37 @@ function dayStrip(timeline, dayStart, width) {
   const now = Date.now() / 1000;
   if (now > t0 && now < t1) svgEl.append(s('line', { x1: X(now), x2: X(now), y1: 2, y2: top + bh + 4, stroke: 'var(--ink)', 'stroke-width': 1.5 }));
   return svgEl;
+}
+
+/* A 270-degree instrument gauge: track, value arc, 28 ticks, a pointer, and the number in the middle.
+   Built once per panel and updated in place, so the arc and pointer glide between samples. */
+function gauge(label, key) {
+  const ticks = [];
+  for (let i = 0; i < 28; i++) {
+    const a = (135 + (i / 27) * 270) * Math.PI / 180, major = i % 9 === 0 || i === 27;
+    const r0 = major ? 52 : 53.5, r1 = 57;
+    ticks.push(s('line', { class: `g-tick${major ? ' major' : ''}`, x1: 60 + Math.cos(a) * r0, y1: 60 + Math.sin(a) * r0, x2: 60 + Math.cos(a) * r1, y2: 60 + Math.sin(a) * r1 }));
+  }
+  const val = s('circle', { class: 'g-val', cx: 60, cy: 60, r: 46, pathLength: 100 });
+  const needle = s('line', { class: 'g-needle', x1: 96, y1: 60, x2: 104, y2: 60 });
+  const read = h('div', { class: 'g-read' });
+  const sub = h('div', { class: 'g-sub' });
+  const dial = h('div', { class: 'g-dial', role: 'img' },
+    s('svg', { viewBox: '0 0 120 120', 'aria-hidden': 'true' }, s('circle', { class: 'g-track', cx: 60, cy: 60, r: 46, pathLength: 100 }), val, ...ticks, needle), read);
+  const el = h('div', { class: 'gauge' }, dial, h('div', { class: 'g-lbl' }, label), sub);
+  let said = 0;
+  return {
+    el,
+    set(pct, subText) {
+      const v = Math.max(0, Math.min(100, Number(pct) || 0));
+      val.style.strokeDasharray = `${(v * 0.75).toFixed(2)} 100`;
+      needle.style.transform = `rotate(${(v * 2.7).toFixed(1)}deg)`;
+      el.dataset.level = v >= 92 ? 'crit' : v >= 80 ? 'warn' : '';
+      FX.tick(read, `${Math.round(v)}%`, key);
+      sub.textContent = subText || '';
+      if (Date.now() - said > 5000) { dial.setAttribute('aria-label', `${label} ${Math.round(v)} percent`); said = Date.now(); }
+    },
+  };
 }
 
 function meter(pct, warnAt = 80, critAt = 92) {
@@ -249,10 +339,11 @@ const render = {
     const next = events.find(e => new Date(e.start) > now);
     const commits = (proj.repos || []).reduce((a, r) => a + (r.commits_today || 0), 0);
     const focus = act.focus_sessions || [];
-    const tile = (label, value, sub, hero) => h('div', { class: `stat${hero ? ' hero' : ''}` },
-      h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), sub ? h('div', { class: 'sub' }, sub) : null);
+    let mode = 'all';
+    const tile = (label, value, sub, hero) => h('div', { class: `stat${hero ? ' hero' : ''}${value === 'LIVE' ? ' live' : ''}` },
+      h('div', { class: 'label' }, label), FX.tick(h('div', { class: 'value' }), value, `stat:${mode}:${label}`), sub ? h('div', { class: 'sub' }, sub) : null);
     for (const p of panels('stats')) {
-      const mode = p.dataset.mode;
+      mode = p.dataset.mode;
       let tiles;
       if (mode === 'work') {
         tiles = [
@@ -292,9 +383,22 @@ const render = {
     const sys = S.data.system;
     for (const p of panels('vitals')) {
       const b = body(p);
-      if (!sys) { fill(b, empty('Waiting for first sample…')); continue; }
+      if (!sys) { b._vit = null; fill(b, empty('Waiting for first sample…')); continue; }
       const hist = sys.history || [];
       const gpu = (sys.gpus || [])[0];
+      const vmode = p.dataset.mode || 'all';
+      if (!b._vit || !!b._vit.gpu !== !!gpu) {  // the gauges are built once, then glide between samples
+        const g = { cpu: gauge('CPU', `g:${vmode}:cpu`), mem: gauge('RAM', `g:${vmode}:mem`) };
+        if (gpu) { g.gpu = gauge('GPU', `g:${vmode}:gpu`); g.vram = gauge('VRAM', `g:${vmode}:vram`); }
+        b._vit = { ...g, rest: h('div', {}) };
+        fill(b, h('div', { class: 'gauges' }, Object.values(g).map(x => x.el)), b._vit.rest);
+      }
+      b._vit.cpu.set(sys.cpu.percent, sys.cpu.freq_mhz ? `${(sys.cpu.freq_mhz / 1000).toFixed(1)} GHz` : `${sys.cpu.threads}T`);
+      b._vit.mem.set(sys.memory.percent, `${sys.memory.used_gb}/${sys.memory.total_gb} GB`);
+      if (gpu) {
+        b._vit.gpu.set(gpu.util ?? 0, gpu.temp_c != null ? `${Math.round(gpu.temp_c)}°C` : '');
+        b._vit.vram.set(gpu.mem_total_mb ? (gpu.mem_used_mb / gpu.mem_total_mb) * 100 : 0, gpu.mem_total_mb ? `${(gpu.mem_used_mb / 1024).toFixed(1)}/${Math.round(gpu.mem_total_mb / 1024)} GB` : '');
+      }
       const rows = [
         ['CPU', `${Math.round(sys.cpu.percent)}%`, `${sys.cpu.cores || '?'}C/${sys.cpu.threads}T${sys.cpu.freq_mhz ? ` · ${(sys.cpu.freq_mhz / 1000).toFixed(1)} GHz` : ''}`, hist.map(x => ({ v: x.cpu, ts: x.ts })), 100, v => `${Math.round(v)}%`],
         ['Memory', `${Math.round(sys.memory.percent)}%`, `${sys.memory.used_gb} / ${sys.memory.total_gb} GB`, hist.map(x => ({ v: x.mem, ts: x.ts })), 100, v => `${Math.round(v)}%`],
@@ -304,8 +408,8 @@ const render = {
       const frag = [];
       for (const [k, v, sub, pts, max, fmt] of rows) {
         const wrap = h('div', { class: 'spark-wrap' });
-        frag.push(h('div', { class: 'vital' }, h('div', {}, h('div', { class: 'k' }, k), h('div', { class: 'v num' }, v), h('div', { class: 's' }, sub)), wrap));
-        requestAnimationFrame(() => sparkline(wrap, pts, { max, fmt, label: k }));
+        frag.push(h('div', { class: 'vital' }, h('div', {}, h('div', { class: 'k' }, k), FX.tick(h('div', { class: 'v num' }), v, `v:${vmode}:${k}`), h('div', { class: 's' }, sub)), wrap));
+        requestAnimationFrame(() => sparkline(wrap, pts, { max, fmt, label: k, key: `${vmode}:${k}` }));
       }
       const cores = h('div', { class: 'cores', role: 'img', 'aria-label': 'Per-core CPU load' },
         (sys.cpu.per_core || []).map((c, i) => {
@@ -323,7 +427,7 @@ const render = {
       const table = h('table', { class: 't' }, h('thead', {}, h('tr', {}, h('th', {}, 'App'), h('th', { class: 'r' }, 'CPU'), h('th', { class: 'r' }, 'RAM'))),
         h('tbody', {}, procs.slice(0, 6).map(r => h('tr', {}, h('td', { title: r.name }, r.count > 1 ? `${r.name} ×${r.count}` : r.name),
           h('td', { class: 'r' }, `${r.cpu}%`), h('td', { class: 'r' }, r.mem_mb >= 1024 ? `${(r.mem_mb / 1024).toFixed(1)} GB` : `${r.mem_mb} MB`)))));
-      fill(b, ...frag, cores,
+      fill(b._vit.rest, ...frag, cores,
         disks.length ? h('div', { class: 'sub-h' }, 'Drives') : null, ...disks,
         h('div', { class: 'sub-h', style: { display: 'flex', alignItems: 'center', gap: '8px' } }, 'Heaviest apps', seg), table,
         S.optimizer ? renderFindings(S.optimizer) : null);
@@ -1259,7 +1363,8 @@ const NOTICES = [];
 function notice(n) {
   if (NOTICES.some(x => x.key && x.key === n.key)) return;
   NOTICES.unshift(n); NOTICES.length = Math.min(NOTICES.length, 50);
-  if (n.level !== 'quiet') toast(n.text);
+  if (n.level !== 'quiet') toast(n.text, { source: n.source, level: n.level });
+  feed({ source: n.source, text: n.text, level: n.level, ts: n.ts, key: n.key });
   for (const fn of Vesper._noticeListeners) fn(n, NOTICES);
 }
 /* The HUD side of a skill: Vesper.skill('weather', { panels: [...], render(data) {...} }) */
@@ -1279,6 +1384,8 @@ const Vesper = window.Vesper = {
       h('div', { class: 'body' }, empty('Loading…')));
     const ref = after && $(`.panel[data-panel="${after}"]`, section);
     if (ref) ref.after(art); else if (first) section.prepend(art); else section.append(art);
+    stagger(section);
+    if (typeof render.systems === 'function') queueSystems();
   },
   skill(name, { panels: list = [], render: fn }) {
     for (const p of list) this.panel({ name, ...p });
@@ -1335,11 +1442,11 @@ async function tool(name, args) {
 }
 async function command(text) {
   if (!text.trim()) return;
-  $('#reply').textContent = '…';
+  strip.pending();
   try {
     const res = await post('/api/command', { text });
-    if (res.data && (res.kind === 'briefing' || res.kind === 'recap')) { S.data.briefing = res.data; render.briefing(); }
-  } catch (err) { $('#reply').textContent = `Couldn't reach the assistant (${err.message}).`; }
+    if (res.data && (res.kind === 'briefing' || res.kind === 'recap')) { S.data.briefing = res.data; render.briefing(); setActive(panelFor('briefing')); }
+  } catch (err) { strip.reply(`Couldn't reach the assistant (${err.message}).`); }
 }
 async function refreshTasks() { S.data.tasks = await api('/api/tasks'); render.tasks(); render.stats(); }
 async function delegate(project) {
@@ -1353,6 +1460,7 @@ document.addEventListener('click', async e => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const action = btn.dataset.action;
+  setActive(btn.closest('.panel'), { ms: 1800 });
   if (action === 'briefing') {
     btn.disabled = true; const label = btn.textContent; btn.textContent = 'Building…';
     try { S.data.briefing = await post(`/api/briefing/${btn.dataset.kind}`); render.briefing(); } finally { btn.disabled = false; btn.textContent = label; }
@@ -1382,7 +1490,9 @@ document.addEventListener('click', async e => {
 
 $('#cmd-form').addEventListener('submit', e => { e.preventDefault(); const i = $('#cmd'); command(i.value); i.value = ''; });
 document.addEventListener('keydown', e => {
-  if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') { e.preventDefault(); $('#cmd').focus(); }
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); togglePalette(); return; }
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable;
+  if (e.key === '/' && !typing && !document.querySelector('dialog[open]')) { e.preventDefault(); $('#cmd').focus(); }
 });
 $('#confirm-btn').addEventListener('click', () => post('/api/confirm', { id: S.pending?.id }));
 $('#cancel-btn').addEventListener('click', () => post('/api/cancel', { id: S.pending?.id }));
@@ -1394,20 +1504,49 @@ $('#mute-btn').addEventListener('click', e => {
   post('/api/voice/mute', { muted });
 });
 for (const t of $$('.tabs button')) t.addEventListener('click', () => setView(t.dataset.view));
+const VIEWS = ['command', 'work', 'stream', 'setup'];
 function setView(view) {
+  const prev = S.view;
   S.view = view;
   try { localStorage.setItem('hud.view', view); } catch { /* storage unavailable */ }
   for (const t of $$('.tabs button')) t.setAttribute('aria-selected', String(t.dataset.view === view));
-  for (const v of $$('.view')) v.hidden = v.dataset.view !== view;
+  for (const v of $$('.view')) {
+    v.hidden = v.dataset.view !== view;
+    if (!v.hidden && prev !== view && FX.motion.full) {
+      v.classList.remove('enter', 'back'); void v.offsetWidth;
+      v.classList.add('enter'); if (VIEWS.indexOf(view) < VIEWS.indexOf(prev)) v.classList.add('back');
+    }
+  }
+  moveInk();
   renderAll();
 }
+function moveInk(instant) {
+  const ink = $('.tab-ink'), btn = $('.tabs button[aria-selected="true"]');
+  if (!ink || !btn || !btn.offsetWidth) return;
+  const pad = parseFloat(getComputedStyle(btn).paddingLeft) || 0;
+  if (instant) ink.style.transition = 'none';
+  ink.style.transform = `translateX(${btn.offsetLeft + pad}px) scaleX(${Math.max(1, btn.offsetWidth - pad * 2)})`;
+  if (instant) { void ink.offsetWidth; ink.style.transition = ''; }
+}
+addEventListener('resize', () => moveInk(true));
 
 // ---------------------------------------------------------------- voice / status chrome
-const orb = $('#orb');
+FX.orb.attach($('#orb'));
+FX.orb.attach($('#orb-mini'), { mini: true });
 const orbState = { voice: 'off', thinking: false, speaking: false };
+const ORB_STATE = { armed: 'listen', hearing: 'listen', transcribing: 'listen', listening: 'standby', muted: 'muted', off: 'off',
+  disabled: 'off', unavailable: 'off', loading: 'loading', error: 'error' };
+const ORB_LABEL = { listen: 'Listening', think: 'Thinking', speak: 'Speaking', standby: 'Standby', muted: 'Mic muted', off: 'Voice off',
+  loading: 'Loading', error: 'Voice error' };
 function paintOrb() {
-  // The mark is an <svg>: its className is read-only, so set the attribute.
-  orb.setAttribute('class', `orb ${orbState.speaking ? 'speaking' : orbState.thinking ? 'thinking' : orbState.voice}`);
+  const st = orbState.speaking ? 'speak' : orbState.thinking ? 'think' : ORB_STATE[orbState.voice] || 'off';
+  FX.orb.setState(st);
+  const wrap = $('#orb-wrap');
+  if (wrap._st !== st) {
+    wrap._st = st; wrap.dataset.state = st;
+    FX.reveal($('.lbl', wrap), ORB_LABEL[st], { mode: 'decode' });
+  }
+  wrap.classList.toggle('idle', !['listen', 'think', 'speak', 'loading'].includes(st));
   const a = S.data.assistant || {};
   const labels = {
     listening: `Listening for “${(a.wake_words || ['vesper'])[0]}”`, hearing: 'Hearing you…', transcribing: 'Transcribing…',
@@ -1453,6 +1592,7 @@ $('#theme-btn').addEventListener('click', () => {
   const next = current === 'light' ? 'dark' : 'light';
   document.documentElement.dataset.theme = next;
   try { localStorage.setItem('hud.theme', next); } catch { /* storage unavailable */ }
+  FX.orb.refresh();
   renderAll();  // charts read colours at draw time
 });
 
@@ -1473,51 +1613,666 @@ function speak({ text, voice_hint, rate }) {
   speechSynthesis.speak(u);
 }
 
+// ---------------------------------------------------------------- HUD 2.0 chrome: panels that assemble, the live strip,
+// the active-panel glow, notification center, command palette, service constellation, display settings, boot.
+
+/* Panels reveal once (top-down scan, brackets drawing out), staggered 38 ms, capped so a view assembles in < 600 ms.
+   data-shown marks a panel as done, so data refreshes and tab switches never replay it. */
+function stagger(section) {
+  $$('.panel', section).forEach((p, i) => p.style.setProperty('--i', Math.min(i, 10)));
+}
+document.addEventListener('animationend', e => {
+  if (e.animationName === 'brackets-in') e.target.closest?.('.panel')?.setAttribute('data-shown', '');
+});
+
+/* The panel Vesper is working on gets one light running round its edge (iris for tools, ember otherwise). One at a time. */
+let activeP = null, activeTimer = 0;
+function setActive(p, { ms = 2600, color = '' } = {}) {
+  if (!p || p.closest('.view')?.hidden) return;
+  if (activeP && activeP !== p) clearActive();
+  activeP = p;
+  p.classList.add('active');
+  let edge = $(':scope > .edge', p);
+  if (!edge) { edge = h('span', { class: 'edge', 'aria-hidden': 'true' }); p.append(edge); }
+  edge.style.setProperty('--s', `${Math.ceil(Math.hypot(p.offsetWidth, p.offsetHeight)) + 24}px`);
+  if (color) p.style.setProperty('--edge-c', color); else p.style.removeProperty('--edge-c');
+  requestAnimationFrame(() => edge.classList.add('on'));
+  clearTimeout(activeTimer);
+  activeTimer = setTimeout(clearActive, ms);
+}
+function clearActive() {
+  const p = activeP;
+  activeP = null;
+  if (!p) return;
+  p.classList.remove('active');
+  const edge = $(':scope > .edge', p);
+  if (edge) { edge.classList.remove('on'); setTimeout(() => { if (!p.classList.contains('active')) edge.remove(); }, 300); }
+}
+function panelFor(name) { return name ? panels(name).find(p => !p.closest('.view')?.hidden) : null; }
+const TOOL_PANEL = [[/calendar|agenda|schedule|event/, 'agenda'], [/gmail|email|mail|inbox/, 'inbox'], [/^obs_|prestream|scene/, 'obs'],
+  [/^twitch_|clip|marker/, 'twitch'], [/library|document|docs/, 'library'], [/task/, 'tasks'], [/weather/, 'weather'],
+  [/brief|plan|recap/, 'briefing'], [/job|research|claude_code|delegate/, 'jobs'], [/optimi|system|close_app|clean_temp|process/, 'vitals'],
+  [/remind|timer|routine|automation/, 'automations'], [/news|headline/, 'news'], [/project|repo|github/, 'projects'],
+  [/nudge|quiet/, 'nudges'], [/activity|focus|time_/, 'activity'], [/goal/, 'tasks']];
+function toolPanel(name) { const hit = TOOL_PANEL.find(([re]) => re.test(name || '')); return hit ? hit[1] : null; }
+
+// ---------------------------------------------------------------- live strip: J (ion) -> Vesper (ember), tools (iris)
+function announce(text) { const r = $('#sr-live'); if (r) { r.textContent = ''; setTimeout(() => { r.textContent = text; }, 30); } }
+const strip = {
+  hint() {
+    const name = S.data.assistant?.name || 'Vesper';
+    const you = $('#heard');
+    you.classList.add('hint'); you.textContent = `Say “${name}, …”, type below, or press Ctrl K`;
+  },
+  you(text, { ignored = false } = {}) {
+    const el = $('#heard');
+    $('#strip-you').removeAttribute('data-empty');
+    el.classList.remove('hint'); el.classList.toggle('ignored', ignored);
+    el.title = text;
+    FX.reveal(el, text, { mode: text.length <= 64 && !ignored ? 'decode' : 'type' });
+    if (!ignored) announce(`You: ${text}`);
+  },
+  restore() {  // after a (re)load: the last exchange, shown still
+    const lastUser = [...S.log].reverse().find(m => m.role === 'user'), lastVes = [...S.log].reverse().find(m => m.role === 'assistant');
+    if (lastUser && $('#strip-you').hasAttribute('data-empty')) {
+      $('#strip-you').removeAttribute('data-empty'); const el = $('#heard'); el.classList.remove('hint'); el.textContent = lastUser.text; el.title = lastUser.text;
+    }
+    if (lastVes && $('#strip-ves').hasAttribute('data-empty')) {
+      $('#strip-ves').removeAttribute('data-empty'); $('#reply').textContent = lastVes.text; $('#reply').title = lastVes.text;
+    }
+  },
+  pending() {
+    const el = $('#reply');
+    $('#strip-ves').removeAttribute('data-empty');
+    el._fx = (el._fx || 0) + 1;
+    el.replaceChildren(h('span', { class: 'muted' }, 'on it'), h('span', { class: 'caret' }));
+  },
+  reply(text) {
+    const el = $('#reply');
+    $('#strip-ves').toggleAttribute('data-empty', !text);
+    el.title = text;
+    FX.reveal(el, text, { mode: 'type' });
+    if (text) announce(`${S.data.assistant?.name || 'Vesper'}: ${text}`);
+  },
+};
+const chips = {
+  thinking: null, fadeTimer: 0,
+  box() { return $('#tool-chips'); },
+  think(on) {
+    if (on) {
+      clearTimeout(this.fadeTimer);
+      for (const c of $$('.tchip', this.box())) c.remove();
+      if (!this.thinking) {
+        this.thinking = h('span', { class: 'tchip thinking', role: 'status' }, h('span', { class: 'dots', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')), 'thinking');
+        this.box().append(this.thinking);
+      }
+    } else {
+      this.out(this.thinking); this.thinking = null;
+      this.fadeSoon(2600);
+    }
+  },
+  tool(name, result) {
+    const failed = result && typeof result === 'object' && result.ok === false;
+    const chip = h('span', { class: 'tchip run', title: (name || '').replace(/_/g, ' ') }, (name || 'tool').replace(/_/g, '.'));
+    if (this.thinking) this.thinking.before(chip); else this.box().append(chip);
+    setTimeout(() => chip.classList.replace('run', failed ? 'fail' : 'done'), 450);
+    const all = $$('.tchip:not(.thinking):not(.out)', this.box());
+    for (const old of all.slice(0, Math.max(0, all.length - 3))) this.out(old);
+    if (!this.thinking) this.fadeSoon(3200);
+  },
+  out(chip) { if (!chip) return; chip.classList.add('out'); setTimeout(() => chip.remove(), 260); },
+  fadeSoon(ms) {
+    clearTimeout(this.fadeTimer);
+    this.fadeTimer = setTimeout(() => { for (const c of $$('.tchip:not(.thinking)', this.box())) this.out(c); }, ms);
+  },
+};
+function wakeFlare() {
+  FX.flare($('#orb').getBoundingClientRect().width ? $('#orb') : $('#orb-mini'));
+  const bar = $('#topbar');
+  bar.classList.remove('flare'); void bar.offsetWidth; bar.classList.add('flare');
+}
+
+// ---------------------------------------------------------------- notification center (bell + drawer)
+const FEED = [];
+let feedSeen = 0;
+try { feedSeen = Number(localStorage.getItem('hud.feedSeen')) || 0; } catch { /* storage unavailable */ }
+function feed(item) {
+  if (!item || !item.text) return;
+  if (item.key && FEED.some(x => x.key === item.key)) return;
+  FEED.unshift({ ...item, ts: item.ts || Date.now() / 1000 });
+  FEED.sort((a, b) => b.ts - a.ts);
+  FEED.length = Math.min(FEED.length, 100);
+  paintBell(true);
+  if ($('#drawer').open) renderDrawer();
+}
+/* After a reload: the updates the nudges skill already delivered, so the drawer isn't empty. */
+function hydrateFeed() {
+  for (const n of (S.data.nudges?.feed || []).slice(0, 30)) {
+    feed({ source: n.source, text: n.text, level: n.priority, ts: n.delivered, key: n.key });
+  }
+}
+function unread() { return FEED.filter(n => n.ts > feedSeen).length; }
+function paintBell(bump) {
+  const n = unread(), badge = $('#bell-count'), btn = $('#bell-btn');
+  const was = badge.textContent;
+  badge.textContent = n > 99 ? '99+' : String(n);
+  badge.classList.toggle('hidden', !n);
+  btn.setAttribute('aria-label', n ? `Notifications, ${n} unread` : 'Notifications');
+  if (bump && n && was !== badge.textContent && FX.motion.full) { badge.classList.remove('bump'); void badge.offsetWidth; badge.classList.add('bump'); }
+}
+function markRead() {
+  feedSeen = Date.now() / 1000;
+  try { localStorage.setItem('hud.feedSeen', String(feedSeen)); } catch { /* storage unavailable */ }
+  paintBell();
+}
+let drawerSeenAt = 0;
+function openDrawer() {
+  const d = $('#drawer');
+  if (d.open) return;
+  drawerSeenAt = feedSeen;
+  renderDrawer();
+  d.showModal();
+  setTimeout(markRead, 900);
+}
+function renderDrawer() {
+  const box = $('#drawer-body');
+  $('#drawer-meta').textContent = FEED.length ? `${FEED.length} · ${unread()} new` : '';
+  if (!FEED.length) {
+    return fill(box, h('div', { class: 'n-empty' },
+      s('svg', { viewBox: '0 0 60 60', 'aria-hidden': 'true' }, s('path', { d: 'M30 4 52.5 17v26L30 56 7.5 43V17z' }), s('path', { d: 'M21 24l9 15 9-15' })),
+      h('div', {}, 'All quiet.'), h('div', {}, 'Meetings, emails that need you, reminders and stream alerts land here.')));
+  }
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const t0 = today.getTime() / 1000, now = Date.now() / 1000;
+  const groupOf = ts => (now - ts < 600 ? 'Just now' : ts >= t0 ? 'Earlier today' : ts >= t0 - 86400 ? 'Yesterday' : 'Older');
+  const out = [];
+  let last = '';
+  for (const n of FEED) {
+    const g = groupOf(n.ts);
+    if (g !== last) { out.push(h('div', { class: 'n-group' }, g)); last = g; }
+    const lv = n.level || 'info';
+    out.push(h('div', { class: `n-item${n.ts > drawerSeenAt ? ' unread' : ''}`, 'data-level': lv },
+      h('span', { class: 'n-ic' }, icon(n.source)),
+      h('div', {}, h('div', { class: 'n-meta' }, h('span', {}, SOURCE_LABEL_N[n.source] || (n.source || 'Vesper').replace(/_/g, ' ')),
+        ['urgent', 'error', 'critical', 'warning', 'warn'].includes(lv) ? h('span', { class: 'lv' }, lv === 'urgent' ? 'urgent' : lv) : null,
+        h('span', { class: 'time', title: new Date(n.ts * 1000).toLocaleString() }, ago(n.ts))),
+      h('div', { class: 'n-txt' }, n.text))));
+  }
+  fill(box, out);
+}
+
+// ---------------------------------------------------------------- services: constellation, readouts, boot lines
+function services() {
+  const d = S.data, a = d.assistant || {};
+  const br = d.brain || a.brain || {};
+  const out = [];
+  out.push({ id: 'brain', label: 'Brain', status: br.active ? (br.active === 'local' && br.local?.can_act === false ? 'warn' : 'ok') : 'warn',
+    detail: br.active === 'claude' ? `Claude ${a.model || ''}` : br.active === 'local' ? `${br.local?.model} on ${br.local?.server}` : 'no AI model: built-in commands only' });
+  const v = d.voice || {};
+  const vs = v.state || 'off';
+  out.push({ id: 'voice', label: 'Voice', status: ['listening', 'armed', 'hearing', 'transcribing'].includes(vs) ? 'ok' : ['muted', 'loading'].includes(vs) ? 'warn'
+    : ['error', 'unavailable'].includes(vs) ? 'down' : 'off', detail: v.error || vs });
+  const obs = d.obs;
+  out.push({ id: 'obs', label: 'OBS', status: obs?.connected ? 'ok' : obs && obs.enabled !== false && obs.error ? 'down' : 'off',
+    detail: obs?.connected ? `scene ${obs.current_scene || '—'}${obs.streaming?.active ? ' · LIVE' : ''}` : obs?.error || 'not connected' });
+  const tw = d.twitch;
+  out.push({ id: 'twitch', label: 'Twitch', status: !tw?.enabled ? 'off' : tw.error ? 'down' : tw.auth?.connected || !tw.needs_login ? 'ok' : 'warn',
+    detail: !tw?.enabled ? 'not set up' : tw.error || (tw.live ? `live · ${tw.viewers} watching` : tw.channel || 'connected') });
+  const g = d.google;
+  const accts = g?.accounts || [];
+  out.push({ id: 'google', label: 'Google', status: !g?.configured ? 'off' : accts.some(x => x.error) ? 'down' : !accts.length || accts.some(x => x.missing?.length) ? 'warn' : 'ok',
+    detail: !g?.configured ? 'not set up' : `${accts.length} account${accts.length === 1 ? '' : 's'}` });
+  const gm = d.gmail;
+  out.push({ id: 'gmail', label: 'Gmail', status: gm?.error ? 'down' : gm?.accounts?.length ? (gm.accounts.some(x => x.error) ? 'warn' : 'ok') : gm?.missing?.length ? 'warn' : 'off',
+    detail: gm?.accounts?.length ? `${gm.accounts.reduce((n, x) => n + (x.waiting || 0), 0)} waiting` : 'not connected' });
+  const cal = d.calendar;
+  const cals = cal?.calendars || [];
+  out.push({ id: 'calendar', label: 'Calendar', status: !cals.length ? 'off' : cals.some(c => c.error) ? (cals.every(c => c.error) ? 'down' : 'warn') : 'ok',
+    detail: cals.length ? `${cals.length} calendar${cals.length === 1 ? '' : 's'}` : 'none connected' });
+  const lib = d.library;
+  out.push({ id: 'library', label: 'Library', status: !lib || lib.enabled === false ? 'off' : lib.files ? 'ok' : 'warn',
+    detail: !lib || lib.enabled === false ? 'off' : `${(lib.files || 0).toLocaleString()} documents${lib.running ? ' · reading' : ''}` });
+  const sk = d.skills || {};
+  for (const x of sk.loaded || []) {
+    const data = d[x.name];
+    out.push({ id: `skill:${x.name}`, label: x.title || x.name, skill: x.name,
+      status: sk.errors?.[x.name] ? 'down' : data && data.ok === false ? 'warn' : 'ok', detail: sk.errors?.[x.name] || (data && data.error) || 'skill' });
+  }
+  return out;
+}
+const SYSTEM_EVENTS = new Set(['obs', 'twitch', 'calendar']);
+let systemsQueued = false;
+function queueSystems() {
+  if (systemsQueued) return;
+  systemsQueued = true;
+  requestAnimationFrame(() => { systemsQueued = false; render.systems(); });
+}
+const STATUS_WORD = { ok: 'connected', warn: 'needs you', down: 'down', off: 'off' };
+const hexPts = (r, cx = 0, cy = 0) => Array.from({ length: 6 }, (_, i) => {
+  const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
+  return `${(cx + Math.cos(a) * r).toFixed(2)},${(cy + Math.sin(a) * r).toFixed(2)}`;
+}).join(' ');
+render.systems = function systems() {
+  const list = services();
+  paintReadouts(list);
+  for (const p of panels('systems')) {
+    const b = body(p);
+    const sig = list.map(n => n.id).join(',');
+    if (!b._c || b._c.sig !== sig) b._c = buildConstellation(b, list, sig);
+    const ok = list.filter(n => n.status === 'ok').length;
+    meta(p, `${ok}/${list.length} online`);
+    for (const n of list) {
+      const node = b._c.nodes[n.id];
+      if (!node) continue;
+      node.g.setAttribute('class', `node-g n-${n.status}`);
+      node.edge.setAttribute('class', `edge-l ${n.status}`);
+      node.title.textContent = `${n.label}: ${STATUS_WORD[n.status]} · ${n.detail}`;
+    }
+  }
+};
+function buildConstellation(b, list, sig) {
+  const svgEl = s('svg', { class: 'constellation', viewBox: '-175 -104 350 212', role: 'img', 'aria-label': 'Vesper and the services it talks to' });
+  const RX = 140, RY = 74;
+  svgEl.append(s('ellipse', { class: 'c-ring', cx: 0, cy: 0, rx: RX, ry: RY }), s('circle', { class: 'c-ring', cx: 0, cy: 0, r: 36 }));
+  const nodes = {};
+  const edges = s('g', {}), dots = s('g', {}), ng = s('g', {});
+  list.forEach((n, i) => {
+    const a = (i / list.length) * Math.PI * 2 - Math.PI / 2;
+    const x = Math.cos(a) * RX, y = Math.sin(a) * RY;
+    const len = Math.hypot(x, y), ux = x / len, uy = y / len;
+    const edge = s('line', { class: 'edge-l', x1: (ux * 24).toFixed(2), y1: (uy * 24).toFixed(2), x2: (x - ux * 11).toFixed(2), y2: (y - uy * 11).toFixed(2) });
+    edges.append(edge);
+    const title = s('title', {});
+    const below = y > -10;
+    const label = s('text', { class: 'lbl', x: x.toFixed(2), y: (below ? y + 19 : y - 14).toFixed(2), 'text-anchor': 'middle' });
+    label.textContent = n.label.length > 12 ? `${n.label.slice(0, 11)}…` : n.label;
+    const bang = s('text', { class: 'bang', x: x.toFixed(2), y: (y + 3).toFixed(2), 'text-anchor': 'middle' });
+    bang.textContent = '!';
+    const g = s('g', { class: 'node-g', tabindex: 0 }, title, s('polygon', { class: 'hx', points: hexPts(9, x, y) }),
+      s('line', { class: 'x', x1: x - 4.5, y1: y - 4.5, x2: x + 4.5, y2: y + 4.5 }), s('line', { class: 'x', x1: x - 4.5, y1: y + 4.5, x2: x + 4.5, y2: y - 4.5 }),
+      bang, label);
+    ng.append(g);
+    nodes[n.id] = { g, edge, title, x, y };
+  });
+  const core = s('g', { class: 'core' },
+    s('circle', { class: 'core-ring', cx: 0, cy: 0, r: 25 }), s('polygon', { class: 'core-hx', points: hexPts(18) }),
+    s('path', { class: 'core-v', d: 'M-7.5 -5.5 0 7 7.5 -5.5' }));
+  svgEl.append(edges, dots, ng, core);
+  const legend = h('div', { class: 'c-legend', 'aria-hidden': 'true' },
+    [['ok', 'connected'], ['warn', 'needs you'], ['down', 'down'], ['off', 'off']].map(([k, label]) => h('span', {},
+      s('svg', { viewBox: '-10 -10 20 20', class: 'constellation' }, s('g', { class: `n-${k}` }, s('polygon', { class: 'hx', points: hexPts(8) }),
+        s('line', { class: 'x', x1: -4, y1: -4, x2: 4, y2: 4 }), s('line', { class: 'x', x1: -4, y1: 4, x2: 4, y2: -4 }))), label)),
+    h('span', {}, s('svg', { viewBox: '-10 -10 20 20', class: 'constellation' }, s('circle', { class: 'packet', r: 3 })), 'traffic'));
+  fill(b, svgEl, legend);
+  return { sig, nodes, dots };
+}
+/* A dot travels the edge when a service actually talks (inbound ion, outbound iris). Event-driven, never looped. */
+const EVENT_NODE = { brain: 'brain', brain_bench: 'brain', assistant_said: 'brain', voice_state: 'voice', wake: 'voice', heard: 'voice',
+  user_said: 'voice', speaking: 'voice', tts: 'voice', obs: 'obs', prestream: 'obs', stream_alert: 'obs', twitch: 'twitch', twitch_auth: 'twitch',
+  twitch_event: 'twitch', twitch_events_state: 'twitch', highlight: 'twitch', google: 'google', gmail: 'gmail', calendar: 'calendar', library: 'library' };
+const lastPulse = {};
+function pulse(type, data) {
+  if (S.view !== 'setup' || document.hidden) return;
+  let id = EVENT_NODE[type], out = false;
+  if (type === 'thinking' && data?.active) { id = 'brain'; out = true; }
+  if (type === 'tool') {
+    const hit = { agenda: 'calendar', inbox: 'gmail', obs: 'obs', twitch: 'twitch', library: 'library' }[toolPanel(data?.name)];
+    id = hit || (SKILL_RENDER[toolPanel(data?.name)] ? `skill:${toolPanel(data?.name)}` : 'brain'); out = true;
+  }
+  if (type === 'notice' && data?.source) id = `skill:${data.source}`;
+  if (!id && SKILL_RENDER[type]) id = `skill:${type}`;
+  if (!id) return;
+  const now = performance.now();
+  if (now - (lastPulse[id] || 0) < 450) return;
+  lastPulse[id] = now;
+  for (const p of panels('systems')) {
+    const c = body(p)._c, node = c?.nodes[id];
+    if (!node) continue;
+    node.g.classList.add('ping');
+    setTimeout(() => node.g.classList.remove('ping'), 450);
+    if (!FX.motion.full) continue;
+    const dot = s('circle', { class: `packet${out ? ' out' : ''}`, r: 2.4, cx: 0, cy: 0 });
+    c.dots.append(dot);
+    const far = `translate(${node.x.toFixed(1)}px, ${node.y.toFixed(1)}px)`, near = 'translate(0px, 0px)';
+    const anim = dot.animate([{ transform: out ? near : far, opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 1, offset: 0.85 }, { transform: out ? far : near, opacity: 0 }],
+      { duration: 720, easing: 'cubic-bezier(.65,0,.35,1)', fill: 'forwards' });
+    anim.onfinish = () => dot.remove();
+  }
+}
+function paintReadouts(list = services()) {
+  const a = S.data.assistant || {}, br = S.data.brain || a.brain || {};
+  const set = (id, text, cls) => { const el = $(`#${id}`); if (!el) return; el.textContent = text; el.title = text; el.className = cls || ''; };
+  set('ro-brain', br.active === 'claude' ? `Claude · ${a.model || ''}` : br.active === 'local' ? (br.local?.model || 'local') : 'built-in only', br.active ? 'iris' : 'warn');
+  const ok = list.filter(n => n.status === 'ok').length;
+  set('ro-links', `${ok}/${list.length} online`, list.some(n => n.status === 'down') ? 'warn' : 'ok');
+  const sk = S.data.skills?.loaded || [];
+  set('ro-skills', sk.length ? `${sk.length} · ${sk.map(x => x.name).join(' ')}` : 'none', '');
+}
+
+// ---------------------------------------------------------------- display settings (Setup)
+render.display = function display() {
+  const stored = FX.motion.stored();
+  const theme = document.documentElement.dataset.theme || 'auto';
+  for (const p of panels('display')) {
+    const seg = (opts, cur, fn) => h('span', { class: 'seg' }, opts.map(([id, label, note]) => h('button', { 'aria-pressed': String(cur === id), title: note || '', onclick: () => fn(id) }, label)));
+    fill(body(p),
+      h('div', { class: 'set-row' }, h('span', { class: 'k' }, 'Motion'),
+        seg([['auto', 'Auto', 'Follow Windows (Animation effects)'], ['full', 'Full'], ['reduced', 'Reduced', 'States change, nothing travels or loops'], ['off', 'Off', 'Nothing moves']],
+          stored || 'auto', id => { FX.motion.set(id === 'auto' ? null : id); render.display(); toast(`Motion: ${id === 'auto' ? `auto (${FX.motion.mode})` : id}.`); })),
+      h('div', { class: 'set-row' }, h('span', { class: 'k' }, 'Theme'),
+        seg([['auto', 'Auto', 'Follow Windows light/dark'], ['dark', 'Dark'], ['light', 'Light']], theme, id => setTheme(id))),
+      h('div', { class: 'set-row' }, h('span', { class: 'k' }, 'Boot'),
+        h('span', {}, h('button', { class: 'btn small', onclick: () => boot(true) }, 'Replay start-up'))),
+      h('div', { class: 't2', style: { marginTop: '8px' } },
+        `Now: ${FX.motion.mode}. Auto follows Windows → Settings → Accessibility → Visual effects → Animation effects. `
+        + 'Reduced keeps every state but drops travel and loops; Off stops all animation. Everything pauses while this window is hidden.'));
+  }
+};
+function setTheme(id) {
+  const root = document.documentElement;
+  if (id === 'auto') delete root.dataset.theme; else root.dataset.theme = id;
+  try { if (id === 'auto') localStorage.removeItem('hud.theme'); else localStorage.setItem('hud.theme', id); } catch { /* storage unavailable */ }
+  FX.orb.refresh();
+  renderAll();
+}
+
+// ---------------------------------------------------------------- command palette (Ctrl+K)
+const PAL_COMMANDS = [
+  ['Good morning', 'good morning', 'briefing: calendars, tasks, news'],
+  ['Plan my day', 'plan my day', 'ranked against your goals'],
+  ['Check my email', 'check my email', "who's waiting on a reply"],
+  ["What's the weather", "what's the weather", 'now and the next hours'],
+  ["What's on my calendar", "what's on my calendar today", 'today, every calendar'],
+  ['Start a 25 minute focus session', 'start a 25 minute focus session', 'timer + do not disturb'],
+  ['Quiet mode', 'quiet mode', 'no speaking for a while'],
+  ['Recap my day', 'recap my day', 'end-of-day summary'],
+  ['Where did my time go today', 'where did my time go today', 'activity'],
+  ['Remind me in 20 minutes to …', 'remind me in 20 minutes to ', 'a reminder', true],
+  ['Clip that', 'clip that', 'Twitch clip of the last 30 s'],
+  ['Stop everything', 'stop everything', 'kill switch: pause PC control'],
+];
+const PAL_ACTIONS = [
+  ['Push to talk', () => post('/api/voice/arm'), 'listen without the wake word'],
+  ['Mute or unmute the microphone', () => $('#mute-btn').click(), 'mic'],
+  ['Show notifications', () => openDrawer(), `${FEED.length} in the center`],
+  ['Switch light / dark theme', () => $('#theme-btn').click(), 'display'],
+  ['Motion: full', () => { FX.motion.set('full'); render.display(); }, 'display'],
+  ['Motion: reduced', () => { FX.motion.set('reduced'); render.display(); }, 'display'],
+  ['Motion: off', () => { FX.motion.set('off'); render.display(); }, 'display'],
+  ['Run a health check', () => { setView('setup'); $('.view[data-view="setup"] [data-action="doctor"]')?.click(); }, 'setup'],
+  ['Rescan this PC', () => { setView('setup'); $('.view[data-view="setup"] [data-action="rescan"]')?.click(); }, 'setup'],
+  ['Replay the start-up sequence', () => boot(true), 'display'],
+];
+const pal = { items: [], sel: 0 };
+function togglePalette() { const d = $('#palette'); if (d.open) d.close(); else openPalette(); }
+function openPalette(q = '') {
+  const d = $('#palette');
+  if ($('#drawer').open) $('#drawer').close();
+  const input = $('#pal-input');
+  input.value = q;
+  d.showModal();
+  renderPalette();
+  input.focus();
+}
+function fuzzy(q, text) {
+  const t = text.toLowerCase(), qq = q.toLowerCase().trim();
+  if (!qq) return { score: 0, idx: [] };
+  const sub = t.indexOf(qq);
+  if (sub >= 0) return { score: 100 + (sub === 0 ? 30 : /[\s·&/(-]/.test(t[sub - 1]) ? 15 : 0) - t.length * 0.05, idx: [...Array(qq.length).keys()].map(i => sub + i) };
+  let ti = 0, score = 0, prev = -2;
+  const idx = [];
+  for (const ch of qq) {
+    if (ch === ' ') continue;
+    const f = t.indexOf(ch, ti);
+    if (f < 0) return null;
+    score += 1 + (f === prev + 1 ? 3 : 0) + (f === 0 || /[\s·&/(-]/.test(t[f - 1]) ? 4 : 0) - Math.min(3, (f - ti) * 0.15);
+    idx.push(f); prev = f; ti = f + 1;
+  }
+  if (score < idx.length * 3) return null;  // scattered letters across words: not a match
+  return { score: score - t.length * 0.05, idx };
+}
+function marks(text, idx) {
+  if (!idx?.length) return [text];
+  const set = new Set(idx), out = [];
+  let run = '', on = false;
+  for (let i = 0; i < text.length; i++) {
+    const m = set.has(i);
+    if (m !== on && run) { out.push(on ? h('mark', {}, run) : run); run = ''; }
+    on = m; run += text[i];
+  }
+  if (run) out.push(on ? h('mark', {}, run) : run);
+  return out;
+}
+function paletteSources() {
+  const items = [];
+  for (const [label, text, sub, partial] of PAL_COMMANDS) items.push({ kind: 'cmd', group: 'Commands', label, sub, weight: 6, complete: text, run: () => partial ? openPalette(text) : command(text) });
+  const seen = new Set();
+  for (const m of [...S.log].reverse()) {
+    if (m.role !== 'user' || !m.text || seen.has(m.text.toLowerCase())) continue;
+    seen.add(m.text.toLowerCase());
+    items.push({ kind: 'recent', group: 'Recent', label: m.text, sub: m.ts ? ago(m.ts) : 'recent', weight: 3, complete: m.text, run: () => command(m.text) });
+    if (seen.size >= 6) break;
+  }
+  for (const b of $$('.tabs button')) {
+    const view = b.dataset.view, label = b.firstChild.textContent.trim();
+    items.push({ kind: 'view', group: 'Go to', label: `${label} view`, sub: 'tab', weight: 8, run: () => setView(view) });
+  }
+  for (const p of $$('.panel[data-panel]')) {
+    const view = p.closest('.view')?.dataset.view;
+    const title = $('h2', p)?.textContent.trim() || (p.dataset.panel === 'stats' ? `Headline numbers` : p.dataset.panel);
+    items.push({ kind: 'panel', group: 'Panels', label: title, sub: view, weight: view === S.view ? 2 : 0, run: () => jumpTo(p) });
+  }
+  for (const [label, fn, sub] of PAL_ACTIONS) items.push({ kind: 'act', group: 'Actions', label, sub, weight: 1, run: fn });
+  return items;
+}
+function renderPalette() {
+  const input = $('#pal-input'), list = $('#pal-list'), q = input.value;
+  $('#palette').classList.toggle('typing', !!q.trim());
+  const name = S.data.assistant?.name || 'Vesper';
+  const ask = q.trim() ? { kind: 'ask', group: '', label: `Ask ${name}: “${q.trim()}”`, sub: 'send as a command', run: () => command(q.trim()) } : null;
+  let items;
+  if (!q.trim()) {
+    const all = paletteSources();
+    const by = g => all.filter(x => x.group === g);
+    items = [...by('Commands').slice(0, 6), ...by('Recent').slice(0, 4), ...by('Go to'), ...by('Panels').filter(x => x.sub === S.view), ...by('Actions').slice(0, 3)];
+  } else {
+    items = paletteSources().map(x => ({ ...x, m: fuzzy(q, x.label) })).filter(x => x.m)
+      .sort((a, b) => (b.m.score + b.weight) - (a.m.score + a.weight)).slice(0, 14);
+    const strong = items.length && items[0].m.score >= 100;
+    if (ask) { if (strong) items.push({ ...ask, group: 'Ask' }); else items.unshift({ ...ask, group: '' }); }
+    items = items.map(x => ({ ...x, group: q.trim() ? (x.kind === 'ask' ? '' : 'Results') : x.group }));
+  }
+  pal.items = items;
+  pal.sel = 0;
+  const rows = [];
+  let last = null;
+  items.forEach((x, i) => {
+    if (x.group && x.group !== last) rows.push(h('li', { class: 'pal-group', role: 'presentation' }, x.group));
+    last = x.group;
+    rows.push(h('li', { class: 'pal-item', id: `pal-opt-${i}`, role: 'option', 'aria-selected': 'false', 'data-kind': x.kind,
+      onclick: () => runPalette(i), onpointermove: () => { if (pal.sel !== i) selectPalette(i); } },
+      h('span', { class: 'p-ic' }, icon({ cmd: 'cmd', recent: 'recent', view: 'view', panel: 'panel', act: 'gear', ask: 'ask' }[x.kind])),
+      h('span', { class: 'p-txt' }, marks(x.label, x.m?.idx)), x.sub ? h('span', { class: 'p-sub' }, x.sub) : null, h('span', { class: 'p-go', 'aria-hidden': 'true' }, '↵')));
+  });
+  if (!items.length) rows.push(h('li', { class: 'pal-empty', role: 'presentation' }, 'Type a command, or a panel to jump to.'));
+  fill(list, rows);
+  selectPalette(0);
+}
+function selectPalette(i) {
+  const list = $('#pal-list');
+  if (!pal.items.length) { $('.pal-bar').style.opacity = '0'; $('#pal-input').removeAttribute('aria-activedescendant'); return; }
+  pal.sel = (i + pal.items.length) % pal.items.length;
+  for (const el of $$('.pal-item', list)) el.setAttribute('aria-selected', 'false');
+  const row = $(`#pal-opt-${pal.sel}`);
+  if (!row) return;
+  row.setAttribute('aria-selected', 'true');
+  $('#pal-input').setAttribute('aria-activedescendant', row.id);
+  const bar = $('.pal-bar');
+  bar.style.opacity = '1';
+  bar.style.height = `${row.offsetHeight}px`;
+  bar.style.transform = `translateY(${list.offsetTop + row.offsetTop}px)`;
+  row.scrollIntoView({ block: 'nearest' });
+}
+function runPalette(i = pal.sel) {
+  const x = pal.items[i];
+  if (!x) return;
+  $('#palette').close();
+  x.run();
+}
+function jumpTo(p) {
+  const view = p.closest('.view')?.dataset.view;
+  if (view && view !== S.view) setView(view);
+  requestAnimationFrame(() => {
+    p.scrollIntoView({ behavior: FX.motion.full ? 'smooth' : 'auto', block: 'center' });
+    setActive(p, { ms: 2200 });
+    const f = p.querySelector('input, button, a, select, [tabindex]');
+    if (!f) { p.setAttribute('tabindex', '-1'); p.focus({ preventScroll: true }); }
+  });
+}
+
+// ---------------------------------------------------------------- boot: once a session, ~1.2 s, from real state
+let resolveState;
+const STATE_READY = new Promise(r => { resolveState = v => { r(v); resolveState = () => {}; }; });
+const wait = ms => new Promise(r => setTimeout(r, ms));
+function bootLines(st) {
+  if (!st) return [['LINK', 'waiting for Vesper…', 'warn']];
+  const a = st.assistant || {}, br = a.brain || {};
+  const v = st.voice || {};
+  const list = services();
+  const ok = list.filter(n => n.status === 'ok').length;
+  const sk = st.skills?.loaded || [];
+  return [
+    ['HUD', `2.0 · build ${(HUD_VERSION || 'dev').slice(0, 7)}`, 'ion'],
+    ['BRAIN', br.active === 'claude' ? `claude · ${a.model}` : br.active === 'local' ? `${br.local?.model} @ ${br.local?.server}` : 'built-in commands', br.active ? '' : 'warn'],
+    ['VOICE', v.state || 'off', ['listening', 'armed', 'hearing'].includes(v.state) ? '' : 'warn'],
+    ['LINKS', `${ok}/${list.length} online`, list.some(n => n.status === 'down') ? 'warn' : ''],
+    ['SKILLS', sk.length ? `${sk.length} loaded · ${sk.map(x => x.name).join(', ')}` : 'none', ''],
+    ['READY', a.user ? `hello, ${a.user}` : 'online', 'ion'],
+  ];
+}
+async function boot(replay = false) {
+  const root = document.documentElement;
+  if (replay) {
+    if (!FX.motion.full) { toast('The start-up sequence plays with motion set to Full.'); return; }
+    const mark = $('.boot-mark');
+    mark.replaceWith(mark.cloneNode(true));  // restart its draw-in
+    $('.boot-name').replaceWith($('.boot-name').cloneNode(true));
+    root.dataset.boot = 'on';
+  }
+  if (root.dataset.boot !== 'on') return;
+  try { sessionStorage.setItem('hud.booted', '1'); } catch { /* storage unavailable */ }
+  const started = performance.now();
+  const lines = $('#boot-lines');
+  fill(lines);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    removeEventListener('keydown', finish, true); removeEventListener('pointerdown', finish, true);
+    root.dataset.boot = 'out';
+    setTimeout(() => { if (root.dataset.boot === 'out') delete root.dataset.boot; moveInk(true); }, 440);
+    announce(`${S.data.assistant?.name || 'Vesper'} ready`);
+  };
+  addEventListener('keydown', finish, true); addEventListener('pointerdown', finish, true);
+  const st = await Promise.race([STATE_READY, wait(700)]);
+  await wait(Math.max(0, 420 - (performance.now() - started)));
+  for (const [k, v, cls] of bootLines(st)) {
+    if (done) return;
+    const val = h('span', { class: `v ${cls}` });
+    lines.append(h('li', {}, h('span', { class: 'k' }, k), h('span', { class: 'dots' }), val));
+    FX.reveal(val, v, { mode: 'decode', ms: 220 });
+    await wait(78);
+  }
+  await wait(300);
+  finish();
+}
+
+// ---------------------------------------------------------------- wiring
+function initChrome() {
+  for (const v of $$('.view')) stagger(v);
+  FX.spotlight($('main'));
+  strip.hint();
+  fill($('#quick'), PAL_COMMANDS.slice(0, 5).map(([label, text]) => h('button', { class: 'chip-btn', type: 'button', onclick: () => command(text) }, label)));
+  $('#palette-btn').addEventListener('click', () => openPalette());
+  $('#bell-btn').addEventListener('click', openDrawer);
+  $('#drawer-close').addEventListener('click', () => $('#drawer').close());
+  $('#drawer-read').addEventListener('click', () => { markRead(); drawerSeenAt = feedSeen; renderDrawer(); });
+  $('#drawer-clear').addEventListener('click', () => { FEED.length = 0; markRead(); renderDrawer(); });
+  for (const d of [$('#drawer'), $('#palette')]) d.addEventListener('click', e => { if (e.target === d) d.close(); });  // the backdrop
+  const input = $('#pal-input');
+  input.addEventListener('input', renderPalette);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); selectPalette(pal.sel + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); selectPalette(pal.sel - 1); }
+    else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); if (input.value.trim()) { $('#palette').close(); command(input.value.trim()); } }
+    else if (e.key === 'Enter') { e.preventDefault(); runPalette(); }
+    else if (e.key === 'Tab' && !e.shiftKey) {
+      const x = pal.items[pal.sel];
+      if (x && x.complete) { e.preventDefault(); input.value = x.complete; renderPalette(); }
+    }
+  });
+  $('#palette').addEventListener('close', () => { $('#palette').classList.remove('typing'); });
+  FX.motion.on(() => { render.display(); });
+  paintBell();
+  moveInk(true);
+  document.fonts?.ready.then(() => moveInk(true));
+}
+
 // ---------------------------------------------------------------- live updates
 const sticky = new Set(['system', 'obs', 'twitch', 'activity', 'projects', 'calendar', 'news', 'briefing', 'discovery', 'doctor', 'health', 'voice_profile']);
 function onEvent(ev) {
   const { type, data } = ev;
+  if (type === 'level') { FX.orb.setLevel(data?.rms); return; }  // up to 20/s while listening or speaking: nothing else
+  pulse(type, data);
   if (sticky.has(type)) {
     S.data[type] = data;
     const fns = { system: ['vitals', 'stats'], obs: ['obs', 'stats'], twitch: ['twitch', 'stats'], activity: ['activity', 'stats'],
       projects: ['projects', 'stats'], calendar: ['agenda', 'stats'], news: ['news'], briefing: ['briefing'],
       discovery: ['connections'], doctor: ['doctor'], health: ['health'], voice_profile: ['voice', 'triggers'] }[type];
     for (const f of fns) if (!(f === 'vitals' && document.hidden)) render[f]();
+    if (SYSTEM_EVENTS.has(type)) queueSystems();
     return;
   }
   switch (type) {
-    case 'user_said': S.log.push({ role: 'user', text: data.text, source: data.source, ts: ev.ts }); $('#heard').textContent = `“${data.text}”`; render.log(); break;
+    case 'user_said': S.log.push({ role: 'user', text: data.text, source: data.source, ts: ev.ts }); strip.you(data.text); render.log(); break;
     case 'assistant_said':
       if (data.text) { S.log.push({ role: 'assistant', text: data.text, source: data.source, ms: data.ms, ts: ev.ts }); render.log(); }
-      $('#reply').replaceChildren(h('b', {}, `${S.data.assistant?.name || 'Assistant'}: `), data.text || '');
+      strip.reply(data.text || '');
       if ('pending' in data) paintPending(data.pending);
       break;
-    case 'heard': if (!data.wake && !data.armed) { $('#heard').textContent = `(ignored) “${data.text}”`; } break;
-    case 'thinking': orbState.thinking = data.active; paintOrb(); break;
+    case 'heard': if (!data.wake && !data.armed) strip.you(`(ignored) “${data.text}”`, { ignored: true }); break;
+    case 'thinking': orbState.thinking = data.active; paintOrb(); chips.think(data.active); break;
     case 'speaking': orbState.speaking = data.active; paintOrb(); break;
-    case 'voice_state': orbState.voice = data.state; S.data.voice = data; paintOrb(); break;
-    case 'wake': orbState.voice = 'armed'; paintOrb(); break;
+    case 'voice_state': orbState.voice = data.state; S.data.voice = data; paintOrb(); queueSystems(); break;
+    case 'wake': orbState.voice = 'armed'; paintOrb(); wakeFlare(); break;
     case 'pending': paintPending(data); break;
     case 'pc_control': S.data.pc_control = data; paintHalt(); render.control(); break;
-    case 'stream_alert': toast(data.text); break;
+    case 'stream_alert': toast(data.text, { source: 'stream', level: data.level }); feed({ source: 'stream', text: data.text, level: data.level, ts: ev.ts }); break;
     case 'twitch_auth': twitchPatch(t => { t.auth = data; if (data.connected) t.needs_login = false; }); break;
     case 'twitch_events_state': twitchPatch(t => { t.events = data; }); break;
     case 'twitch_event': twitchPatch(t => { t.feed = t.feed || { events: [] }; t.feed.events = [{ ...data, ts: data.ts || ev.ts }, ...(t.feed.events || [])].slice(0, 25); }); break;
-    case 'highlight': twitchPatch(t => { t.highlights = [data, ...(t.highlights || [])].slice(0, 20); }); toast(`Highlight: ${data.reason}${data.marker ? ' (marker added)' : ''}`); break;
+    case 'highlight': {
+      twitchPatch(t => { t.highlights = [data, ...(t.highlights || [])].slice(0, 20); });
+      const text = `Highlight: ${data.reason}${data.marker ? ' (marker added)' : ''}`;
+      toast(text, { source: 'highlight', level: 'good' }); feed({ source: 'highlight', text, level: 'good', ts: ev.ts });
+      break;
+    }
     case 'prestream': S.data.prestream = data; render.obs(); break;
     case 'tool':
       if (S.data.pc_control) refreshControl();
       if (['add_task', 'complete_task'].includes(data.name)) refreshTasks();
+      chips.tool(data.name, data.result);
+      setActive(panelFor(toolPanel(data.name)), { color: 'var(--iris)' });
       break;
     case 'speak': speak(data); break;
     case 'speak_stop': if ('speechSynthesis' in window) speechSynthesis.cancel(); break;
     case 'tts': S.data.tts = data; render.speech(); break;
-    case 'brain': S.data.brain = data; render.brain(); paintOrb(); break;
+    case 'brain': S.data.brain = data; render.brain(); paintOrb(); queueSystems(); break;
     case 'brain_bench': S.data.brainBench = data; render.brain(); break;
     case 'goals': S.data.goals = data; if (!S.editGoals) render.tasks(); break;
-    case 'library': S.data.library = data; render.library(); break;
-    case 'google': S.data.google = data; render.google(); break;
-    case 'gmail': S.data.gmail = data; render.inbox(); break;
+    case 'library': S.data.library = data; render.library(); queueSystems(); break;
+    case 'google': S.data.google = data; render.google(); queueSystems(); break;
+    case 'gmail': S.data.gmail = data; render.inbox(); queueSystems(); break;
     case 'wake_word': (S.wakeScores = S.wakeScores || {})[data.name] = data.score; if (S.view === 'setup') render.triggers(); break;
     case 'calibration': {
       const prev = S.data.calibration;
@@ -1531,7 +2286,7 @@ function onEvent(ev) {
       }
       break;
     }
-    case 'announce': toast(data.text); break;
+    case 'announce': toast(data.text, { source: 'vesper', level: 'vesper' }); feed({ source: 'vesper', text: data.text, level: 'info', ts: ev.ts }); break;
     case 'profile': S.data.active_profile = data?.active; paintProfile(); render.stats(); break;
     case 'tasks': S.data.tasks = data; render.tasks(); render.stats(); break;
     case 'job': {
@@ -1543,7 +2298,7 @@ function onEvent(ev) {
     }
     case 'notice': notice(data); break;
     default:
-      if (SKILL_RENDER[type]) { S.data[type] = data; paintSkill(type); }
+      if (SKILL_RENDER[type]) { S.data[type] = data; paintSkill(type); queueSystems(); }
   }
 }
 
@@ -1570,7 +2325,10 @@ async function load() {
     $('#mute-btn').setAttribute('aria-pressed', String(!!st.voice?.muted));
     paintOrb(); paintPending(st.pending); paintProfile(); paintHalt();
     renderAll();
-  } catch (err) { console.error(err); }
+    hydrateFeed();
+    strip.restore();
+    resolveState(st);
+  } catch (err) { console.error(err); resolveState(null); }
 }
 
 try { const v = localStorage.getItem('hud.view'); if (v && $(`.view[data-view="${v}"]`)) setView(v); } catch { /* storage unavailable */ }
@@ -1578,5 +2336,7 @@ function viewFromHash() { const v = location.hash.slice(1); if (v && $(`.view[da
 window.addEventListener('hashchange', viewFromHash);
 viewFromHash();  // the tray's "Setup & health" opens #setup
 if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => {};
+initChrome();
 connect();
+boot();
 setInterval(() => { if (!document.hidden) { render.agenda(); render.projects(); } }, 60000);

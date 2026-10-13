@@ -281,6 +281,21 @@ class AudioOut:
     def playing(self) -> bool:
         return not self._idle.is_set()
 
+    def level(self, window_s: float = 0.05) -> float | None:
+        """0..1 loudness of what plays next (the HUD orb). None if the audio callback holds the lock:
+        the sample is dropped rather than making the callback wait."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if not self._chunks:
+                return 0.0
+            chunk, pos = self._chunks[0], self._pos
+        finally:
+            self._lock.release()
+        from .level import rms01
+
+        return rms01(chunk[pos:pos + max(1, int(self.sample_rate * window_s))], full_scale=1.0)
+
     def wait(self, cancel: threading.Event | None = None, timeout: float = 120.0) -> bool:
         """Block until everything queued has played. False if cancelled or timed out."""
         end = time.monotonic() + timeout

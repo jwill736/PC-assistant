@@ -30,7 +30,7 @@ ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "testserver"}
 
 def hud_version() -> str:
     """Changes whenever any of the HUD's files do, so an open HUD reloads onto an update and never runs cached code."""
-    files = [WEB / "app.js", WEB / "styles.css", WEB / "index.html", *sorted((WEB / "skills").glob("*.*"))]
+    files = [*sorted(WEB.glob("*.js")), WEB / "styles.css", WEB / "index.html", *sorted((WEB / "skills").glob("*.*"))]
     return hashlib.sha1(b"".join(f.read_bytes() for f in files)).hexdigest()[:10]
 
 
@@ -110,6 +110,7 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def index():
         html = (WEB / "index.html").read_text(encoding="utf-8")
         html = html.replace('/static/app.js"', f'/static/app.js?v={version}"').replace(
+            '/static/fx.js"', f'/static/fx.js?v={version}"').replace(
             '/static/styles.css"', f'/static/styles.css?v={version}"')
         # each loaded skill's HUD script (web/skills/<name>.js), after app.js so it can use its helpers
         loaded = [sk.name for sk in (runtime.svc.skills or [])]

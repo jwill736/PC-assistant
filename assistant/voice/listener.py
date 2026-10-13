@@ -23,6 +23,7 @@ from typing import Callable
 
 from ..bus import EventBus
 from . import stt as stt_mod
+from .level import LevelMeter
 from .tts import Speaker
 
 log = logging.getLogger(__name__)
@@ -188,6 +189,7 @@ class VoiceListener:
         self._name_hit_at = 0.0
         self._speech_started_at = 0.0
         self.heartbeat: Callable[[], None] = lambda: None  # set by the watchdog
+        self.level = LevelMeter(bus, "mic")  # the HUD orb's mic level, only while you're talking to it
 
     # ---- control ----------------------------------------------------------
     def start(self) -> None:
@@ -238,6 +240,8 @@ class VoiceListener:
 
     def _set_state(self, state: str, **extra) -> None:
         self.state = state
+        if state not in ("armed", "hearing"):
+            self.level.end()
         self.bus.publish("voice_state", {"state": state, "error": self.error, **extra}, sticky=True)
 
     def status(self) -> dict:
@@ -408,6 +412,8 @@ class VoiceListener:
                     self._on_hits(self.wake.feed(frame), speaking)
                 was_speech = segmenter.in_speech
                 frames = segmenter.feed(frame)
+                if self.state in ("armed", "hearing") and not speaking:
+                    self.level.feed(frame)  # returns at once unless a HUD is open and a sample is due
                 if segmenter.in_speech and not was_speech:
                     self._speech_started_at = time.time()
                 if frames is None:

@@ -1,7 +1,7 @@
 /* Updates: what Vesper brought up on its own, why it's holding the rest, and 👍 / ✕ so it learns. */
 (() => {
   const { h, fill, empty, meta, panels, body, ago, toast } = Vesper.ui;
-  const SRC = { calendar: 'Calendar', break: 'Break', tasks: 'Tasks', welcome: 'Welcome back', weather: 'Weather', inbox_zero: 'Email',
+  const SRC = { calendar: 'Calendar', break: 'Break', tasks: 'Tasks', welcome: 'Welcome back', weather: 'Weather', inbox_zero: 'Email', planner: 'Plan', habits: 'Habits', journal: 'Journal', bills: 'Money', travel: 'Travel', stream_copilot: 'Stream', spotify: 'Music', home: 'Home', phone: 'Phone', memory: 'Memory', screen: 'Screen', clipboard: 'Clipboard', rewind: 'Rewind', discord: 'Discord', youtube: 'YouTube',
     automations: 'Automation', focus: 'Focus', people: 'People', meetings: 'Meetings', janitor: 'PC', pulse: 'Pulse' };
   async function fb(action, key) {
     const r = await Vesper.act('nudges', action, { key });

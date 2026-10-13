@@ -250,9 +250,16 @@ class Assistant:
             self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner}
             self._tainted = False
             self.tools.guard.new_command()
-            if not self.off_record():
+            try:
+                intent = route(text, self.router_context())
+            except Exception:
+                log.exception("routing failed")
+                intent = None
+            # private words (a journal entry) never go into the conversation log or its search
+            private = intent is not None and intent.tool in PRIVATE_TOOLS
+            if not self.off_record() and not private:
                 self.svc.storage.log("user", text, source)
-            self.svc.bus.publish("user_said", {"text": text, "source": source})
+            self.svc.bus.publish("user_said", {"text": "(journal entry)" if private else text, "source": source})
             self.svc.bus.publish("thinking", {"active": True})
             started = time.time()
             speak = source == "voice" or self.svc.cfg["voice"].get("speak_typed")
@@ -260,7 +267,6 @@ class Assistant:
             self._stream_on = bool(speak and self.svc.cfg["voice"]["tts"].get("stream", True))
             self._speak_turn, self._streamed = turn, False
             try:
-                intent = route(text, self.router_context())
                 if intent is not None:
                     out = self._run_intent(intent)
                 else:
@@ -873,6 +879,9 @@ class Assistant:
         if resp is None or resp.stop_reason == "refusal":
             raise RuntimeError("research request was declined")
         return "\n".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+
+
+PRIVATE_TOOLS = {"journal_add"}  # what's said for these is kept only where the tool keeps it
 
 
 def _failed(result) -> bool:

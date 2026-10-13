@@ -141,3 +141,15 @@ def test_routes(svc, said, tool, args):
     sk = Skills(svc, ["journal"])
     intent = route(said, RouterContext(skill_route=sk.route))
     assert (intent.tool, intent.args) == (tool, args)
+
+
+def test_journal_words_stay_out_of_the_conversation_log(svc):
+    from assistant.brain.assistant import Assistant
+    from assistant.skills import Skills
+
+    svc.skills = Skills(svc, ["journal"])
+    a = Assistant(svc)
+    a.handle("journal: rough day, the client call went badly")
+    logged = " ".join(r["text"] for r in svc.storage.recent_log(20))
+    assert "client call went badly" not in logged
+    assert not svc.storage.search_memory("client call badly", 5)

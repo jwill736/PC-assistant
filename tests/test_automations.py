@@ -147,3 +147,11 @@ def test_routes(svc, said, tool, args):
     sk = Skills(svc, ["automations"])
     intent = route(said, RouterContext(skill_route=sk.route))
     assert (intent.tool, intent.args) == (tool, args)
+
+
+@pytest.mark.parametrize("text,secs", [
+    ("twenty minutes", 1200), ("two hours", 7200), ("forty-five minutes", 2700), ("ninety seconds", 90),
+    ("2 hours and twenty minutes", 8400), ("25 min", 1500), ("1h 30m", 5400), ("half an hour", 1800),
+])
+def test_parse_duration_spelled_and_short(text, secs):
+    assert au.parse_duration(text) == secs

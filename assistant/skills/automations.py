@@ -50,12 +50,19 @@ def parse_duration(text: str) -> float | None:
     if re.fullmatch(r"half an? hour", t):
         return 1800
     total, found = 0.0, False
-    for m in re.finditer(r"(\d+(?:\.\d+)?|an?|one|[a-z]+(?:[ -][a-z]+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b", t):
-        n = _num(m.group(1))
+    unit = r"(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)"
+    pattern = (r"(\d+(?:\.\d+)?)\s*(" + unit[1:-1] + r"|s|m|h|d)\b"  # 20 minutes, 20m
+               r"|\b(an?|one|[a-z]+(?:[ -][a-z]+)?)\s+" + unit + r"\b")  # twenty minutes, forty-five minutes
+    for m in re.finditer(pattern, t):
+        n = _num(m.group(1) or m.group(3))
+        if n is None and m.group(3):  # "and twenty minutes": the number is the last word or two
+            words = m.group(3).split()
+            n = _num(" ".join(words[-2:])) if len(words) > 1 else None
+            n = n if n is not None else _num(words[-1])
         if n is None:
             continue
-        unit = m.group(2)[0]
-        total += n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+        u = (m.group(2) or m.group(4))[0]
+        total += n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[u]
         found = True
     return total if found else None
 

@@ -1,0 +1,24 @@
+/* People skill */
+.pp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.pp-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; cursor: pointer; background: var(--panel);
+  min-width: 0; transition: border-color .15s ease, transform .15s ease; animation: pp-in .3s cubic-bezier(.23, 1, .32, 1) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 25ms); }
+.pp-card:hover { border-color: var(--line-2); transform: translateY(-1px); }
+.pp-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pp-card.open { grid-column: 1 / -1; border-color: var(--ink-2); cursor: default; transform: none; }
+.pp-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pp-main { flex: 1; min-width: 0; }
+.pp-main .t1 { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; font-size: 11.5px; font-weight: 600; color: var(--bg); }
+.pp-acct { font-size: 10px; vertical-align: 1px; }
+.pp-flag { color: var(--accent); font-size: 10px; align-self: flex-start; }
+.pp-subj { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-detail { display: grid; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--grid); }
+.pp-detail .addrow { margin: 2px 0 0; }
+.pp-note { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 3px 4px 3px 8px; background: var(--inset);
+  border-left: 2px solid var(--line-2); border-radius: 0 var(--radius) var(--radius) 0; }
+.pp-note span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pp-note.is-ask { border-left-color: var(--accent); }
+.pp-quiet { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+@keyframes pp-in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .pp-card { animation: none; transition: none; } .pp-card:hover { transform: none; } }

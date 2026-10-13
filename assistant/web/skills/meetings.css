@@ -1,0 +1,21 @@
+/* Meeting prep card */
+.mt-card { animation: mt-in .32s cubic-bezier(.23, 1, .32, 1); }
+.mt-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; align-items: start; margin-bottom: 8px; }
+.mt-title { font-family: var(--display); font-size: 20px; font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
+.mt-head .t2 { grid-column: 1; }
+.mt-join { grid-column: 2; grid-row: 1 / span 2; align-self: center; text-decoration: none; }
+.mt-until { color: var(--accent); font-variant-numeric: tabular-nums; }
+.mt-chip { position: relative; padding-left: 4px; animation: mt-in .3s cubic-bezier(.23, 1, .32, 1) both; animation-delay: calc(var(--i, 0) * 40ms); }
+.mt-av { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 9.5px; font-weight: 600;
+  color: var(--bg); letter-spacing: .02em; flex: none; }
+.mt-chip::after { content: ""; position: absolute; right: -2px; top: -2px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--muted); border: 2px solid var(--panel); }
+.mt-accepted::after { background: var(--good); }
+.mt-declined::after { background: var(--critical); }
+.mt-tentative::after { background: var(--warning); }
+.mt-declined { opacity: .6; }
+.mt-asks { display: grid; gap: 4px; margin: 6px 0 4px; }
+.mt-ask { font-size: 12.5px; color: var(--ink-2); padding: 4px 8px; border-left: 2px solid var(--line-2); background: var(--inset); border-radius: 0 var(--radius) var(--radius) 0; }
+.mt-ask.is-ask { border-left-color: var(--accent); }
+@keyframes mt-in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .mt-card, .mt-chip { animation: none; } }

@@ -46,6 +46,12 @@ priority="urgent"|"normal"|"low", key=..., expires_in=...)` to speak up at the r
 Save files under `svc.cfg.data_dir`. Network calls go through `httpx` with a timeout, and the client is injectable
 (`__init__(self, svc, http=None)`) so tests can use `httpx.MockTransport`.
 
+Connecting to an outside service: a sign-in page that sends the browser back to Vesper (an OAuth redirect) lands on
+`GET /api/skill/<name>/callback`, the one skill route that needs no token header (guard it with a single-use state),
+and calls the skill's `callback(params) -> (ok, title, line)` for the page the browser shows. `skills/_kit.py` has
+`pkce()`, `callback_url(svc, name)`, `save_secret(svc, NAME, value)` (a pasted key → .env), `save_setting(skill, key,
+value)` and `LiveEdge(svc)` ("start"/"end" when the stream just went live or stopped). See `spotify.py`.
+
 Rules:
 - **Untrusted text** (email, web pages, chat, documents, clipboard, screen text): tools that return it set
   `untrusted=True, untrusted_label="an email", untrusted_note=...` so any action after reading it needs a yes.

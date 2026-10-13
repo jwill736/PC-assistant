@@ -187,7 +187,8 @@ class CalendarHub:
                     continue
                 out.append({"calendar": src["name"], "profile": src["profile"], "color": src["color"],
                             "title": ev["title"], "start": ev["start"].isoformat(), "end": ev["end"].isoformat(),
-                            "all_day": ev["all_day"], "location": ev["location"], "description": ev["description"]})
+                            "all_day": ev["all_day"], "location": ev["location"], "description": ev["description"],
+                            "attendees": ev.get("attendees") or [], "link": ev.get("link") or "", "account": src["account"]})
         out.sort(key=lambda x: (x["start"], not x["all_day"]))
         return out
 

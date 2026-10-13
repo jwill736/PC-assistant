@@ -107,6 +107,7 @@ class Assistant:
         self._untrusted_ids: dict[str, str] = {}  # tool results to scrub from history once the command ends
         self._tainted_by = "chat"
         self.tools = toolbox or ToolBox(svc, context=lambda: self._ctx)
+        svc.think = self.think  # skills ask the model through this
         self.on_kill = None  # the runtime adds what only it can stop: speech, background jobs
         self.on_pending = None  # e.g. a Windows toast with Yes/No buttons
         self.macros = macro_mod.load_macros(svc.cfg)
@@ -154,6 +155,40 @@ class Assistant:
         if client is None:
             log.warning("Claude API not configured; running on the local command router only")
         return client
+
+    def think(self, prompt: str, schema: dict | None = None, max_tokens: int = 1200, private: bool = True):
+        """One question to the model for a skill (triage, summaries, plans): a dict when ``schema`` is given, else
+        text; None when no model is connected. ``private``: the prompt holds email/documents, so the local model is
+        preferred and Claude is only used when the user chose it (brain.provider: claude)."""
+        pref = (self.svc.cfg.get("brain") or {}).get("provider", "auto")
+        order = {"claude": ["claude", "local"], "local": ["local"]}.get(pref) or (
+            ["local", "claude"] if private else ["claude", "local"])
+        text = None
+        for which in order:
+            try:
+                if which == "local" and self.local.ready:
+                    llm = self.local.refresh()
+                    if llm is not None:
+                        text = llm.chat([{"role": "user", "content": prompt}], json_schema=schema, temperature=0.2,
+                                        max_tokens=max_tokens)["content"]
+                elif which == "claude" and self.claude_ready:
+                    ask = prompt + ("\n\nAnswer with JSON only, matching this schema: " + json.dumps(schema) if schema else "")
+                    msg = self.client.messages.create(model=self.cfg["model"], max_tokens=max_tokens,
+                                                      messages=[{"role": "user", "content": ask}])
+                    text = "".join(getattr(b, "text", "") for b in msg.content)
+            except Exception:
+                log.exception("think (%s) failed", which)
+            if text:
+                break
+        if not text:
+            return None
+        if schema is None:
+            return text.strip()
+        text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        try:
+            return json.loads(text[text.find("{"): text.rfind("}") + 1] if "{" in text else text)
+        except ValueError:
+            return None
 
     @property
     def claude_ready(self) -> bool:

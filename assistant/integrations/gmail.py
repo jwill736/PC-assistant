@@ -116,6 +116,38 @@ class Gmail:
                 return {"ok": True, **meta, "body": body[:MAX_BODY], "truncated": len(body) > MAX_BODY}
         return {"ok": False, "error": "I can't find that email." if self.accounts() else self._why_none()}
 
+    def thread(self, thread_id: str, account: str = "") -> dict:
+        """Every message in a conversation, oldest first: who wrote, when, and the text (quoted replies left out)."""
+        for email in self._pick(account) or []:
+            resp = self.google.get(email, f"{GMAIL}/threads/{thread_id}", {"format": "full"})
+            if resp.status_code == 200:
+                msgs = []
+                for m in resp.json().get("messages", []):
+                    meta = summarize(email, m)
+                    meta["to"] = _header(m, "to")
+                    meta["from_me"] = "SENT" in (m.get("labelIds") or [])
+                    meta["body"] = body_text(m.get("payload") or {})[:4000]
+                    msgs.append(meta)
+                return {"ok": True, "account": email, "thread_id": thread_id, "messages": msgs}
+        return {"ok": False, "error": "I can't find that conversation." if self.accounts() else self._why_none()}
+
+    def sent(self, days: int = 14, limit: int = 30, account: str = "") -> list[dict]:
+        """What the user sent recently (each with ``to``), newest first, across the accounts."""
+        out = []
+        for email in self._pick(account):
+            try:
+                ids = self._ids(email, f"in:sent newer_than:{int(days)}d", limit)
+            except GoogleError:
+                continue
+            for i in ids:
+                resp = self.google.get(email, f"{GMAIL}/messages/{i}", {
+                    "format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]})
+                if resp.status_code == 200:
+                    m = summarize(email, resp.json())
+                    m["to"] = _header(resp.json(), "to")
+                    out.append(m)
+        return sorted(out, key=lambda m: m["ts"], reverse=True)
+
     def _pick(self, account: str) -> list[str]:
         accounts = self.accounts()
         a = (account or "").strip().lower()
@@ -181,3 +213,10 @@ def _strip_html(text: str) -> str:
     text = re.sub(r"(?i)</t[dh]>", " ", text)
     text = html.unescape(re.sub(r"<[^>]+>", "", text)).replace("\xa0", " ")
     return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n"))
+
+
+def _header(msg: dict, name: str) -> str:
+    for h in (msg.get("payload") or {}).get("headers", []):
+        if h["name"].lower() == name:
+            return h["value"]
+    return ""

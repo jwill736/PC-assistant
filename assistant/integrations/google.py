@@ -274,8 +274,12 @@ def _event(ev: dict, tz: tzinfo) -> dict | None:
             all_day = True
     except (KeyError, ValueError):
         return None
+    people = [{"email": a.get("email", ""), "name": a.get("displayName") or "", "response": a.get("responseStatus", ""),
+               "self": bool(a.get("self")), "organizer": bool(a.get("organizer"))}
+              for a in ev.get("attendees") or [] if not a.get("resource")]
     return {"title": ev.get("summary") or "(no title)", "start": start, "end": end, "all_day": all_day,
-            "location": ev.get("location") or "", "description": (ev.get("description") or "")[:280]}
+            "location": ev.get("location") or "", "description": (ev.get("description") or "")[:280],
+            "attendees": people, "link": ev.get("hangoutLink") or "", "id": ev.get("id", "")}
 
 
 def _quote(calendar_id: str) -> str:

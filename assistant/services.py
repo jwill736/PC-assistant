@@ -54,6 +54,7 @@ class Services:
     google: Any = None  # signed-in Google accounts (integrations/google.GoogleAccounts)
     gmail: Any = None  # their Gmail, read-only (integrations/gmail.Gmail)
     skills: Any = None  # every skill (skills.Skills): one file per feature
+    think: Callable[..., Any] = field(default=lambda prompt, schema=None, **kw: None)  # ask the model (brain/assistant)
     nudge: Callable[..., Any] | None = None  # say something first, at the right moment (skills/nudges.py)
     live: Callable[[], bool] | None = None  # streaming right now (set by the runtime): what's said may be on air
 

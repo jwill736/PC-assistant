@@ -1,0 +1,30 @@
+/* Lights & home skill */
+.hm-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.hm-tile { position: relative; border: 1px solid var(--line); border-radius: var(--radius); background: var(--inset); overflow: hidden;
+  transition: border-color .2s; }
+.hm-tile.on { border-color: color-mix(in srgb, var(--warning) 45%, var(--line)); }
+.hm-tile.down { opacity: .55; }
+.hm-toggle { all: unset; position: relative; display: grid; gap: 2px; width: 100%; box-sizing: border-box; padding: 10px 12px; cursor: pointer; }
+.hm-toggle:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.hm-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+.hm-glow { position: absolute; inset: 0; pointer-events: none; opacity: 0; transform: scale(.85);
+  background: radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--warning) 22%, transparent), transparent 70%);
+  transition: opacity .35s ease, transform .35s cubic-bezier(.23,1,.32,1); }
+.hm-tile.on .hm-glow { opacity: 1; transform: none; }
+.hm-sliders { display: grid; gap: 2px; padding: 0 12px 10px; }
+.hm-sliders input[type=range] { width: 100%; accent-color: var(--warning); }
+.hm-sliders input[type=range] + input[type=range] { accent-color: var(--series-6); }
+.hm-scenes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.hm-err { color: var(--warning); margin-top: 6px; }
+.hm-onair { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.hm-onair-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--idle); }
+.hm-onair.on { color: var(--critical); }
+.hm-onair.on .hm-onair-dot { background: var(--critical); animation: hm-pulse 1.6s ease-in-out infinite; }
+.hm-setup { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.hm-setup summary { cursor: pointer; color: var(--muted); }
+.hm-setup .addrow input[type=number] { flex: 0 1 100px; }
+@keyframes hm-pulse { 50% { opacity: .35; transform: scale(.7); } }
+@media (prefers-reduced-motion: reduce) {
+  .hm-onair.on .hm-onair-dot { animation: none; }
+  .hm-glow { transition: none; }
+}

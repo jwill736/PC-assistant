@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import hmac
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from html import escape
@@ -26,6 +27,20 @@ from .runtime import Runtime
 
 WEB = Path(__file__).parent / "web"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "testserver"}
+# A sign-in page (Google, a skill's own service) sends the browser back with no token header: a single-use state
+# guards these instead. Only GET, so a skill's POST actions still need the token.
+SKILL_CALLBACK = re.compile(r"^/api/skill/[a-z0-9_]+/callback$")
+
+
+def token_exempt(method: str, path: str) -> bool:
+    return path == "/api/google/callback" or (method == "GET" and bool(SKILL_CALLBACK.match(path)))
+
+
+def done_page(title: str, line: str, ok: bool) -> HTMLResponse:
+    """The page a browser lands on after signing in somewhere."""
+    page = (f"<!doctype html><meta charset=utf-8><title>{escape(title)}</title><body style='font:16px system-ui;"
+            f"background:#111;color:#eee;padding:48px'><h2>{escape(title)}</h2><p>{escape(line)}</p></body>")
+    return HTMLResponse(page, status_code=200 if ok else 400)
 
 
 def hud_version() -> str:
@@ -92,8 +107,7 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def guard(request: Request, call_next):
         if not host_ok(request.headers.get("host")):
             return JSONResponse({"error": "bad host"}, status_code=403)
-        # Google's sign-in sends the browser back here with no token header; a single-use state guards it instead
-        if request.url.path.startswith("/api") and request.url.path != "/api/google/callback":
+        if request.url.path.startswith("/api") and not token_exempt(request.method, request.url.path):
             supplied = request.headers.get("x-assistant-token", "")
             if not hmac.compare_digest(supplied, token):
                 return JSONResponse({"error": "missing or bad token"}, status_code=401)
@@ -387,9 +401,7 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         title = f"Connected {said}" if ok else "Google sign-in didn't finish"
         line = ("Vesper can read this account's Google Docs and calendars now. You can close this tab."
                 if ok else f"{said} Go back to Vesper → Setup → Google accounts and try again.")
-        page = (f"<!doctype html><meta charset=utf-8><title>{escape(title)}</title><body style='font:16px system-ui;"
-                f"background:#111;color:#eee;padding:48px'><h2>{escape(title)}</h2><p>{escape(line)}</p></body>")
-        return HTMLResponse(page, status_code=200 if ok else 400)
+        return done_page(title, line, ok)
 
     @app.get("/api/skill/{name}")
     async def skill_status(name: str):
@@ -397,6 +409,21 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         if skill is None:
             raise HTTPException(404, f"no skill {name}")
         return await run_in_threadpool(lambda: skill.publish() or {})
+
+    @app.get("/api/skill/{name}/callback", response_class=HTMLResponse)
+    async def skill_callback(name: str, request: Request):
+        """A skill's sign-in (e.g. Spotify) comes back here: the skill's ``callback(params)`` -> (ok, title, line)."""
+        skill = runtime.svc.skills.get(name) if runtime.svc.skills is not None else None
+        fn = getattr(skill, "callback", None)
+        if fn is None:
+            raise HTTPException(404, f"no sign-in for {name}")
+        try:
+            ok, title, line = await run_in_threadpool(fn, dict(request.query_params))
+        except Exception as exc:  # never a stack trace in the browser
+            ok, title, line = False, "Sign-in didn't finish", f"{type(exc).__name__}: {exc}"[:200]
+        if ok:
+            await run_in_threadpool(skill.publish)
+        return done_page(title, line, ok)
 
     @app.post("/api/skill/{name}/{action}")
     async def skill_action(name: str, action: str, body: dict | None = None):

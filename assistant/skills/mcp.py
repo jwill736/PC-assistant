@@ -141,7 +141,7 @@ def shape_result(server: str, tool: str, res) -> dict:
 
 
 def describe_error(exc: BaseException) -> str:
-    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:  # noqa: F821 (built in since 3.11)
         exc = exc.exceptions[0]
     if isinstance(exc, FileNotFoundError):
         return f"Couldn't start it: {exc.filename or 'the command'} isn't installed or isn't on PATH."

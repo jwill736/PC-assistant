@@ -73,8 +73,14 @@ Rules:
 })();
 ```
 `Vesper.act('thing', 'reset', {...})` calls an action. `Vesper.data` is the HUD state. Build DOM with `h()` only
-(never innerHTML with data). Colours come from CSS variables (`--accent`, `--ink`, `--muted`, `--line`, `--inset`);
-animate only `transform`/`opacity`, and add a `prefers-reduced-motion` fallback.
+(never innerHTML with data). `toast(text)` also takes `{ level: 'good'|'warn'|'error', source: 'thing' }`; notices a
+skill sends (`self.notify(...)`) land in the bell's notification center and in `Vesper.notices`.
+
+Colours come from CSS variables, and each accent means one thing: `--ember` (Vesper itself, primary action; `--accent`
+is an alias), `--ion` (listening / J's input), `--iris` (thinking, tools, "AI did this"), `--phosphor` (healthy),
+`--amber` (needs J), `--alert` (error, on air); neutrals `--ink`, `--ink-2`, `--muted`, `--line`, `--panel`, `--inset`;
+`--mono` for numbers and readouts. Charts use `--series-1..8`, never the accents. Animate only `transform`/`opacity`
+and wrap loops in `:root[data-motion="full"]` (the Setup → Display setting, which also covers reduced motion).
 
 ## Tests
 

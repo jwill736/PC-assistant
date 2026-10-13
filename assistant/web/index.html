@@ -6,53 +6,111 @@
   <meta name="token" content="{{TOKEN}}">
   <meta name="hud-version" content="{{VERSION}}">
   <title>{{NAME}} HUD</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230b0b0c'/%3E%3Ccircle cx='16' cy='16' r='10' fill='none' stroke='%23f2f0ea' stroke-width='2'/%3E%3Cpath d='M16 6a10 10 0 0 1 10 10' fill='none' stroke='%23ff6a2b' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23f2f0ea'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23080a0d'/%3E%3Cpath d='M16 3.5 26.8 9.75v12.5L16 28.5 5.2 22.25V9.75z' fill='none' stroke='%2332373e' stroke-width='1.6'/%3E%3Cpath d='M10.5 11.5 16 21l5.5-9.5' fill='none' stroke='%23ff772d' stroke-width='2.4' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%2359e4f3'/%3E%3C/svg%3E">
   <link rel="preload" href="/static/fonts/jost.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/styles.css">
-  <script>try { const t = localStorage.getItem('hud.theme'); if (t) document.documentElement.dataset.theme = t; } catch { /* storage unavailable */ }</script>
+  <script>
+    /* Before first paint: theme, motion (Setup → Display; follows Windows "Animation effects" until set) and the
+       once-per-session boot sequence, so nothing flashes. */
+    (() => {
+      const root = document.documentElement;
+      const get = (store, k) => { try { return store.getItem(k); } catch { return null; } };
+      const theme = get(localStorage, 'hud.theme'); if (theme) root.dataset.theme = theme;
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const motion = get(localStorage, 'hud.motion') || (reduce ? 'reduced' : 'full');
+      root.dataset.motion = motion;
+      if (motion === 'full' && !get(sessionStorage, 'hud.booted') && !/[?&]noboot/.test(location.search)) root.dataset.boot = 'on';
+    })();
+  </script>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <svg class="orb off" id="orb" viewBox="0 0 40 40" aria-hidden="true">
-      <circle class="ripple" cx="20" cy="20" r="17"/>
-      <circle class="ring" cx="20" cy="20" r="17"/>
-      <path class="arc" d="M20 3a17 17 0 0 1 17 17"/>
-      <circle class="core" cx="20" cy="20" r="5"/>
-      <line class="slash" x1="9" y1="31" x2="31" y2="9"/>
+<div class="backdrop" aria-hidden="true">
+  <div class="bd-aura"></div>
+  <div class="bd-hex"></div>
+  <div class="bd-sweep"><div class="bd-hex lit"></div></div>
+</div>
+
+<div class="boot" id="boot" aria-hidden="true">
+  <div class="boot-core">
+    <svg class="boot-mark" viewBox="0 0 120 120">
+      <circle class="b-ring" cx="60" cy="60" r="56" pathLength="1"/>
+      <path class="b-hex" d="M60 12 101.6 36v48L60 108 18.4 84V36z" pathLength="1"/>
+      <path class="b-v" d="M38 42 60 80l22-38" pathLength="1"/>
+      <circle class="b-core" cx="60" cy="60" r="5"/>
     </svg>
-    <div>
-      <div class="brand-name">{{NAME}}</div>
-      <div class="brand-sub" id="voice-status">connecting…</div>
+    <div class="boot-name">{{NAME}}</div>
+    <ol class="boot-lines" id="boot-lines"></ol>
+    <div class="boot-skip">click or press any key to skip</div>
+  </div>
+</div>
+
+<header class="topbar" id="topbar">
+  <div class="topbar-row">
+    <div class="brand">
+      <canvas class="orb-mini" id="orb-mini" width="40" height="40" aria-hidden="true"></canvas>
+      <div class="brand-text">
+        <div class="brand-name">{{NAME}}</div>
+        <div class="brand-sub" id="voice-status">connecting…</div>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Views">
+      <button role="tab" data-view="command" aria-selected="true">Command</button>
+      <button role="tab" data-view="work" aria-selected="false">Work</button>
+      <button role="tab" data-view="stream" aria-selected="false">Stream</button>
+      <button role="tab" data-view="setup" aria-selected="false">Setup <span class="tab-badge hidden" id="setup-badge"></span></button>
+      <span class="tab-ink" aria-hidden="true"></span>
+    </nav>
+    <div class="top-right">
+      <button class="search-btn" id="palette-btn" aria-haspopup="dialog" aria-controls="palette" title="Search views, panels and commands (Ctrl+K)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg>
+        <span class="search-label">Search or command</span><kbd>Ctrl K</kbd></button>
+      <span class="chip hidden" id="profile-chip"></span>
+      <button class="icon-btn bell" id="bell-btn" aria-haspopup="dialog" aria-controls="drawer" aria-label="Notifications" title="Notifications">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1.2 1.3H2.8zM6.5 14a1.6 1.6 0 0 0 3 0"/></svg>
+        <span class="bell-count hidden" id="bell-count" aria-hidden="true"></span></button>
+      <button class="icon-btn" id="theme-btn" title="Light / dark" aria-label="Switch light or dark theme">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" stroke="none"/></svg></button>
+      <button class="icon-btn" id="mic-btn" title="Push to talk (skip the wake word)" aria-label="Push to talk">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg></button>
+      <button class="icon-btn" id="mute-btn" title="Mute the microphone" aria-label="Mute microphone" aria-pressed="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5M2 14 14 2"/></svg></button>
+      <div class="clock"><div class="t num" id="clock-t">--:--</div><div class="d" id="clock-d"></div></div>
     </div>
   </div>
-  <nav class="tabs" role="tablist" aria-label="Views">
-    <button role="tab" data-view="command" aria-selected="true">Command</button>
-    <button role="tab" data-view="work" aria-selected="false">Work</button>
-    <button role="tab" data-view="stream" aria-selected="false">Stream</button>
-    <button role="tab" data-view="setup" aria-selected="false">Setup <span class="tab-badge hidden" id="setup-badge"></span></button>
-  </nav>
-  <div class="top-right">
-    <span class="chip hidden" id="profile-chip"></span>
-    <button class="icon-btn" id="theme-btn" title="Light / dark" aria-label="Switch light or dark theme">
-      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" stroke="none"/></svg></button>
-    <button class="icon-btn" id="mic-btn" title="Push to talk (skip the wake word)" aria-label="Push to talk">
-      <svg viewBox="0 0 16 16"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg></button>
-    <button class="icon-btn" id="mute-btn" title="Mute the microphone" aria-label="Mute microphone" aria-pressed="false">
-      <svg viewBox="0 0 16 16"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5M2 14 14 2"/></svg></button>
-    <div class="clock"><div class="t num" id="clock-t">--:--</div><div class="d" id="clock-d"></div></div>
+  <!-- Live strip: what J said (ion), Vesper's reply (ember), tools it's using (iris). -->
+  <div class="strip" id="strip">
+    <div class="strip-line you" id="strip-you" data-empty="">
+      <span class="tag">You</span><span class="txt" id="heard" aria-hidden="true"></span></div>
+    <span class="strip-arrow" aria-hidden="true"></span>
+    <div class="strip-line ves" id="strip-ves" data-empty="">
+      <span class="tag">{{NAME}}</span><span class="txt" id="reply" aria-hidden="true"></span></div>
+    <div class="tool-chips" id="tool-chips" aria-label="What it's doing"></div>
   </div>
 </header>
+<div class="sr-only" id="sr-live" aria-live="polite" aria-atomic="true"></div>
 
-<div class="commandbar">
-  <form id="cmd-form" autocomplete="off">
-    <input id="cmd" placeholder="Type a command — or just say “{{NAME}}, …”   ( / to focus )" aria-label="Command">
-    <button class="btn primary" type="submit">Send</button>
-  </form>
-  <div class="heard" id="heard"></div>
-  <div class="reply" id="reply"></div>
-</div>
+<section class="console" aria-label="Command">
+  <div class="orb-wrap" id="orb-wrap" data-state="off">
+    <canvas class="orb" id="orb" width="144" height="144" aria-hidden="true"></canvas>
+    <div class="orb-state" id="orb-state"><span class="dot" aria-hidden="true"></span><span class="lbl">Connecting</span></div>
+  </div>
+  <div class="console-main">
+    <div class="console-kicker"><span>Command</span><span class="rule" aria-hidden="true"></span><span class="hint">type it, say it, or press <kbd>/</kbd></span></div>
+    <form id="cmd-form" autocomplete="off">
+      <input id="cmd" placeholder="Type a command — or just say “{{NAME}}, …”" aria-label="Command">
+      <button class="btn primary" type="submit">Send <span class="kbd-ret" aria-hidden="true">↵</span></button>
+    </form>
+    <div class="quick" id="quick" aria-label="Quick commands"></div>
+  </div>
+  <dl class="readouts" id="readouts">
+    <div><dt>Brain</dt><dd id="ro-brain">—</dd></div>
+    <div><dt>Links</dt><dd id="ro-links">—</dd></div>
+    <div><dt>Skills</dt><dd id="ro-skills">—</dd></div>
+  </dl>
+</section>
+
 <div class="pending halt hidden" id="halt" role="alert">
   <span class="status critical"><span class="dot"></span>Hands off</span>
   <span class="msg">PC control is paused. It can still answer and read, but won't act until you resume.</span>
@@ -68,12 +126,12 @@
 <main>
   <!-- ===================== COMMAND: everything at once ===================== -->
   <section class="view" data-view="command">
-    <article class="panel span-7" data-panel="briefing"><div class="panel-head"><h2>Daily briefing</h2><span class="spacer"></span>
+    <article class="panel span-8" data-panel="briefing"><div class="panel-head"><h2>Daily briefing</h2><span class="spacer"></span>
       <button class="btn small" data-action="briefing" data-kind="morning">Good morning</button>
       <button class="btn small" data-action="briefing" data-kind="recap">Recap day</button>
       <button class="btn small" data-action="speak-briefing" title="Read it aloud" aria-label="Read the briefing aloud">
         <svg viewBox="0 0 16 16"><path d="M2 6h3l4-3v10l-4-3H2zM11.5 5.5a3.5 3.5 0 0 1 0 5M13.5 3.5a6.5 6.5 0 0 1 0 9"/></svg></button></div><div class="body"></div></article>
-    <article class="panel span-5" data-panel="agenda" data-days="1"><div class="panel-head"><h2>Today · all calendars</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="agenda" data-days="1"><div class="panel-head"><h2>Today · all calendars</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
     <article class="panel span-12" data-panel="stats" data-mode="all"><div class="body"></div></article>
     <article class="panel span-12" data-panel="inbox"><div class="panel-head"><h2>Inbox · who's waiting on you</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span><button class="btn small" data-action="inbox-refresh">Refresh</button></div><div class="body"></div></article>
     <article class="panel span-4" data-panel="vitals"><div class="panel-head"><h2>System</h2><span class="spacer"></span><button class="btn small" data-action="optimize">Optimize</button></div><div class="body"></div></article>
@@ -110,10 +168,12 @@
 
   <!-- ===================== SETUP ===================== -->
   <section class="view" data-view="setup" hidden>
-    <article class="panel span-8" data-panel="connections"><div class="panel-head"><h2>Connections on this PC</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span>
-      <button class="btn small" data-action="rescan">Rescan PC</button></div><div class="body"></div></article>
+    <article class="panel span-8" data-panel="systems"><div class="panel-head"><h2>Systems · live links</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
     <article class="panel span-4" data-panel="doctor"><div class="panel-head"><h2>Health check</h2><span class="spacer"></span>
       <button class="btn small" data-action="doctor">Run check</button></div><div class="body"></div></article>
+    <article class="panel span-8" data-panel="connections"><div class="panel-head"><h2>Connections on this PC</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span>
+      <button class="btn small" data-action="rescan">Rescan PC</button></div><div class="body"></div></article>
+    <article class="panel span-4" data-panel="display"><div class="panel-head"><h2>Display · motion &amp; theme</h2></div><div class="body"></div></article>
     <article class="panel span-12" data-panel="google"><div class="panel-head"><h2>Google accounts · Docs &amp; calendars</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
     <article class="panel span-12" data-panel="brain"><div class="panel-head"><h2>Brain · what answers you</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
     <article class="panel span-6" data-panel="voice"><div class="panel-head"><h2>Your voice</h2><span class="spacer"></span><span class="meta" data-slot="meta"></span></div><div class="body"></div></article>
@@ -124,7 +184,35 @@
   </section>
 </main>
 
+<!-- Command palette (Ctrl+K) -->
+<dialog class="palette" id="palette" aria-label="Command palette">
+  <div class="pal-edge" aria-hidden="true"></div>
+  <div class="pal-search">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg>
+    <input id="pal-input" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list"
+      placeholder="Jump to a panel, run a command, or ask {{NAME}} anything" autocomplete="off" spellcheck="false">
+    <kbd>Esc</kbd>
+  </div>
+  <div class="pal-scroll"><span class="pal-bar" aria-hidden="true"></span><ul class="pal-list" id="pal-list" role="listbox" aria-label="Results"></ul></div>
+  <div class="pal-foot" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span>
+    <span><kbd>Tab</kbd> complete</span><span><kbd>Ctrl ↵</kbd> ask {{NAME}}</span></div>
+</dialog>
+
+<!-- Notification center -->
+<dialog class="drawer" id="drawer" aria-labelledby="drawer-title">
+  <div class="drawer-head">
+    <h2 id="drawer-title">Notifications</h2><span class="meta" id="drawer-meta"></span><span class="spacer"></span>
+    <button class="btn small" id="drawer-read">Mark all read</button>
+    <button class="btn small ghost" id="drawer-clear">Clear</button>
+    <button class="icon-btn" id="drawer-close" aria-label="Close notifications">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</dialog>
+
+<div class="toasts" id="toasts" role="region" aria-label="Alerts"></div>
 <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<script src="/static/fx.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

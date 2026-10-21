@@ -559,7 +559,9 @@ def test_qr_encoder_matches_the_reference():
     script = ("const Q = require(process.argv[1]);"
               "console.log(JSON.stringify(Q.matrix('http://192.168.1.23:8766/', { ecl: 'M', mask: 2 }).map(r => r.map(b => b ? '#' : '.').join(''))));"
               "const a = Q.matrix('http://192.168.1.23:8766/'); console.log(a.length);")
-    out = subprocess.run(["node", "-e", script, str(WEB / "qr.js")], capture_output=True, text=True, timeout=30, check=True).stdout.splitlines()
+    # stdin closed: on a Windows runner node otherwise sat on the inherited console handle until the timeout
+    out = subprocess.run([shutil.which("node"), "-e", script, str(WEB / "qr.js")], stdin=subprocess.DEVNULL,
+                         capture_output=True, text=True, timeout=120, check=True).stdout.splitlines()
     assert json.loads(out[0]) == GOLDEN
     assert out[1] == "25"
 

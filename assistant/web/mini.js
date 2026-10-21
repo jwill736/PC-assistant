@@ -142,6 +142,17 @@
     $('#mini-onair').hidden = !live;
   }
 
+  // ---- recording (skills/recorder.py): a REC badge with the time, amber while paused
+  function paintRec() {
+    const r = D.recorder && D.recorder.rec, el = $('#mini-rec');
+    el.hidden = !r;
+    if (!r) return;
+    el.classList.toggle('off', !!r.paused);
+    const t = r.paused ? r.elapsed : r.elapsed + Math.max(0, Date.now() / 1000 - (D.recorder.at || Date.now() / 1000));
+    el.textContent = `${r.paused ? 'PAUSED' : 'REC'} ${clock(t)}`;
+  }
+  setInterval(() => { if (!document.hidden && D.recorder && D.recorder.rec) paintRec(); }, 1000);
+
   // ---- buttons
   $('#mini-mic').addEventListener('click', () => post('/api/voice/arm').catch(() => {}));
   $('#mini-mute').addEventListener('click', e => {
@@ -166,6 +177,7 @@
       case 'obs': air.obs = !!(data && data.streaming && data.streaming.active); paintAir(); break;
       case 'stream_copilot': air.copilot = !!(data && data.live); paintAir(); break;
       case 'automations': D.automations = data; paintTimers(); break;
+      case 'recorder': D.recorder = data; paintRec(); break;
       case 'notice': update(data.source, data.text, data.ts || ts, data.level); break;
       case 'announce': update('vesper', data.text, ts, 'vesper'); break;
       case 'stream_alert': update('stream', data.text, ts, data.level); break;
@@ -182,7 +194,7 @@
       $('#mini-mute').setAttribute('aria-pressed', String(!!st.voice?.muted));
       D.calendar = st.calendar || D.calendar;
       const sk = st.skills?.data || {};
-      D.spotify = sk.spotify || null; D.automations = sk.automations || null;
+      D.spotify = sk.spotify || null; D.automations = sk.automations || null; D.recorder = sk.recorder || null;
       const feed = (sk.nudges && sk.nudges.feed) || [];
       if (feed[0]) update(feed[0].source, feed[0].text, feed[0].delivered || 0, feed[0].priority);
       const log = st.log || [];
@@ -190,7 +202,7 @@
       if (you) { $('#mini-you').textContent = you.text; $('#mini-you').parentElement.removeAttribute('data-empty'); }
       if (ves) { $('#mini-ves').textContent = ves.text; $('#mini-ves').parentElement.removeAttribute('data-empty'); }
       air.obs = !!st.obs?.streaming?.active; air.copilot = !!sk.stream_copilot?.live;
-      paintOrb(); paintNext(); paintMusic(); paintTimers(); paintUpdate(false); paintAir();
+      paintOrb(); paintNext(); paintMusic(); paintTimers(); paintUpdate(false); paintAir(); paintRec();
     } catch (err) { console.error(err); }
   }
   let retry = 0;

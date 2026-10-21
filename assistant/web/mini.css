@@ -76,5 +76,8 @@ body.mini.stale > :not(.backdrop) { opacity: .55; transition: opacity .3s; }
 /* live: private lines blur until hovered (the stream may catch this corner of the screen) */
 .mini-name .badge-live { margin-left: 0; font-size: 9px; padding: 1px 6px; letter-spacing: .14em; vertical-align: 1px; }
 .mini-name .badge-live[hidden] { display: none; }
+.mini-name .mini-rec { font-variant-numeric: tabular-nums; }
+.mini-name .mini-rec.off { background: var(--amber); color: var(--on-accent); border: 0; }
+.mini-name .mini-rec.off::before { background: currentColor; animation: none; }
 body.live-private .mini-private { filter: blur(6px); transition: filter var(--dur-fast); }
 body.live-private .mini-private:hover { filter: none; }

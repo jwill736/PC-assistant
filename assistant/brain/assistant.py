@@ -244,6 +244,7 @@ class Assistant:
             out += convo_mod.ON_STREAM.format(user=user)
         if self.convo.summary:
             out += f"\nEarlier in this conversation (summary): {self.convo.summary}"
+        out += self.convo.asides()  # background jobs that just finished (skills/tasks_agent.py)
         return out
 
     def _fold(self, msgs: list, is_turn) -> list:

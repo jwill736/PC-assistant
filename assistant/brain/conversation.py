@@ -59,6 +59,9 @@ GREETINGS = ("I'm listening. What's on your mind?", "Sure. What are we talking a
              "Go for it. I'm all ears.", "Happy to. What's up?")
 ON_STREAM_GREETING = "We're on air, so I'll keep it public. What's up?"
 GOODBYE = "Okay. I'm here when you need me."
+ASIDE = """
+Background jobs that just finished (mention one in a short line at a natural pause, not mid-thought, and only once):
+{items}"""
 
 START_RE = (r"(?:let'?s|can we|could we|i (?:want|wanna|would like|'d like) to|i'?d like to|wanna) "
             r"(?:have a |do some |have a little )?(?:talk|chat|conversation|catch up)"
@@ -114,6 +117,7 @@ class Conversation:
         self.transcript: list[dict] = []  # {"role": "user"|"assistant", "text", "ts", "source"}
         self.interrupted = False  # J cut the last reply short: the model is told on the next turn
         self.ended: dict | None = None  # {"reason", "ts"} of the last one
+        self.asides_seen = 0.0  # background jobs (skills/tasks_agent.py) finished before this were already mentioned
         self.speaker = None  # the runtime's Speaker: talking now counts as activity
         self.brain: Callable[[], str | None] = lambda: None  # set by the assistant: which model answers, if any
         self.on_change: list[Callable[[dict], None]] = []
@@ -144,6 +148,7 @@ class Conversation:
             now = self.clock()
             if not already:
                 self.started, self.turns, self.interrupted = now, 0, False
+                self.asides_seen = now
                 if self.ended is None or now - self.ended["ts"] > float(self.setting("summary_keep_minutes", 30)) * 60:
                     self.summary, self.summarised_until = "", 0.0
                     self.transcript = []
@@ -222,6 +227,24 @@ class Conversation:
         self.transcript = self.transcript[-200:]
         if role == "user":
             self.turns += 1
+
+    def asides(self) -> str:
+        """Jobs that finished since the last turn (svc.tasks.done_since), for the model to mention at a pause. Each is
+        told once, and its nudge (held until the conversation ends) is dropped. Never on stream: results are private."""
+        tasks = getattr(self.svc, "tasks", None)
+        if tasks is None or self.on_stream:
+            return ""
+        try:
+            done = tasks.done_since(self.asides_seen, mark=True)
+        except Exception:
+            log.exception("job asides failed")
+            return ""
+        self.asides_seen = self.clock()
+        user = self.svc.cfg["assistant"].get("user_name") or "J"
+        lines = [f"- {d['title']}: " + (f"didn't work ({d['line']})" if d["state"] == "failed" else
+                                        f"waiting on {user}'s OK to {d['waiting']}" if d.get("waiting") else
+                                        d["line"] or "done") for d in done[-3:]]
+        return ASIDE.format(items="\n".join(lines)) if lines else ""
 
     def take_interrupted(self) -> bool:
         was, self.interrupted = self.interrupted, False

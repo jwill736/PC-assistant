@@ -441,9 +441,32 @@ BOOK = [
     ("prep me for my next meeting", "meeting_prep", {}),
     ("meeting prep", "meeting_prep", {}),
     ("prep me for the contract review", "meeting_prep", {"title": "contract review"}),
-    ("prep me for the stream", MODEL),
+    # the stream-prep job (skills/tasks_agent.py): title idea, pre-stream check, gear, PC health, then one approval card
+    ("prep me for the stream", "job_start", {"recipe": "stream_prep"}),
     ("who's in my next meeting", "next_meeting", {}),
     ("who am i meeting next", "next_meeting", {}),
+    # ---- background jobs (skills/tasks_agent.py): several multi-step jobs at once
+    ("research the best 4k capture cards under $300 and email me a summary", "job_start",
+     {"recipe": "research_brief", "inputs": {"topic": "the best 4k capture cards under $300"}, "deliver": ["email"]}),
+    ("while i stream triage my inbox and draft replies", "job_start", {"recipe": "inbox_triage"}),
+    ("prep me for tomorrow", "job_start", {"recipe": "tomorrow_prep"}),
+    ("run the week wrap", "job_start", {"recipe": "week_wrap"}),
+    ("start the stream prep", "job_start", {"recipe": "stream_prep"}),
+    ("do a research brief on standing desks", "job_start", {"recipe": "research_brief", "inputs": {"topic": "standing desks"}}),
+    ("find a time with dana", "job_start", {"recipe": "find_time", "inputs": {"person": "dana"}}),
+    ("in the background compare standing desks under 400 dollars", "job_start",
+     {"goal": "compare standing desks under 400 dollars"}),
+    ("look into that while we talk", MODEL),  # "that" is the conversation's: the model writes the goal
+    ("what are you working on", "job_status", {}),
+    ("how's the research going", "job_status", {"ref": "research"}),
+    ("pause the inbox job", "job_control", {"action": "pause", "ref": "inbox"}),
+    ("resume the inbox job", "job_control", {"action": "resume", "ref": "inbox"}),
+    ("cancel the research job", "job_control", {"action": "cancel", "ref": "research"}),
+    ("make that one a priority", "job_control", {"action": "priority", "ref": ""}),
+    ("add to that also check best buy", "job_add", {"ref": "", "text": "check best buy"}),
+    ("approve the inbox job", "job_approve", {"ref": "inbox"}),
+    ("what did the research find", "job_result", {"ref": "research"}),
+    ("every friday at 4 do the week wrap", "add_routine", {"every": "friday at 4", "command": "start the week wrap"}),
     # ---- screen, clipboard, rewind
     ("look at this", "look_at_screen", {"question": "", "whole_screen": False, "explicit": True}),
     ("look at my screen", "look_at_screen", {"question": "", "whole_screen": True, "explicit": True}),
@@ -585,6 +608,8 @@ INTENDED_OVERRIDES = {
     "who's in my next meeting": "meetings",
     "youtube stats": "youtube",
     "what am i looking at": "screen",
+    # a ready-made job by name, not an app called "week wrap" / "stream prep"
+    **{p: "tasks_agent" for p in ["run the week wrap", "start the stream prep"]},
 }
 
 

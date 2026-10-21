@@ -181,6 +181,7 @@ class VoiceListener:
         self.muted = False
         self.paused = False  # calibration borrows the mic
         self.tap: Callable | None = None  # gets every mic frame, paused or not (dictation records through it)
+        self.taps: list[Callable] = []  # more frame consumers alongside it (the recorder): add_tap / remove_tap
         self.verifier = verifier  # SpeakerVerifier or None
         self.armed_until = 0.0
         self.armed_by = ""
@@ -239,6 +240,22 @@ class VoiceListener:
 
     def stop(self) -> None:
         self._stop.set()
+
+    # ---- mic taps: every frame, paused or muted or not, to dictation (``tap``) and any number of others (``taps``)
+    def add_tap(self, fn: Callable) -> None:
+        if fn not in self.taps:
+            self.taps = [*self.taps, fn]  # copy on write: the audio loop iterates it
+
+    def remove_tap(self, fn: Callable) -> None:
+        self.taps = [t for t in self.taps if t != fn]  # ==, not is: a bound method is a new object each time
+
+    def _feed_taps(self, frame) -> None:
+        for fn in (self.tap, *self.taps):
+            if fn is not None:
+                try:
+                    fn(frame)
+                except Exception:  # one bad consumer never stops the mic or the others
+                    log.exception("mic tap failed")
 
     def arm(self, seconds: float = 8, source: str = "hotkey") -> None:
         """Accept the next utterance without the wake word.
@@ -430,9 +447,7 @@ class VoiceListener:
                     frame = self._audio.get(timeout=0.5)
                 except queue.Empty:
                     continue
-                tap = self.tap
-                if tap is not None:
-                    tap(frame)
+                self._feed_taps(frame)
                 speaking = self.speaker.speaking.is_set()
                 barge_in = self.cfg.get("barge_in", True)
                 if self.muted or self.paused or (speaking and not barge_in):
@@ -478,12 +493,14 @@ class VoiceListener:
         return sum(1 for t in self.speech_times if t >= cutoff)
 
     def _drain(self) -> None:
-        """Drop audio captured while we were busy (it's mostly our own voice)."""
+        """Drop audio captured while we were busy (it's mostly our own voice); the taps still get it, so a recording
+        has no gap where a command was being understood."""
         while True:
             try:
-                self._audio.get_nowait()
+                frame = self._audio.get_nowait()
             except queue.Empty:
                 return
+            self._feed_taps(frame)
 
     def _arm_source(self, started_at: float | None = None) -> str | None:
         """Why an utterance needs no wake word: hotkey/button/wake, conversation (talking with Vesper),

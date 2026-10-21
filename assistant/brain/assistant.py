@@ -316,7 +316,8 @@ class Assistant:
             private = intent is not None and intent.tool in PRIVATE_TOOLS
             if not self.off_record() and not private:
                 self.svc.storage.log("user", redact(text), source)  # a pasted key never lands in the log
-            self.svc.bus.publish("user_said", {"text": "(journal entry)" if private else text, "source": source,
+            shown = (PRIVATE_TOOLS[intent.tool] or text) if private else text
+            self.svc.bus.publish("user_said", {"text": shown, "source": source,
                                                **({"conversation": True} if in_convo else {})})
             self.svc.bus.publish("thinking", {"active": True})
             started = time.time()
@@ -324,7 +325,7 @@ class Assistant:
             speak = (source == "voice" or self.svc.cfg["voice"].get("speak_typed")
                      or (in_convo and convo.last_source == "voice" and source != "automation"))
             if in_convo:
-                convo.turn_started("(journal entry)" if private else text, source)
+                convo.turn_started(shown, source)
             # Claude's reply is spoken sentence by sentence as it streams in, not after the last word.
             self._stream_on = bool(speak and self.svc.cfg["voice"]["tts"].get("stream", True))
             self._speak_turn, self._streamed, self._early = turn, False, self._stream_on
@@ -355,7 +356,7 @@ class Assistant:
                 convo.turn_done(reply, source, said=None if in_convo else text, started=in_convo)
                 out["conversation"] = convo.active
             if reply:
-                if not self.off_record():
+                if not self.off_record() and not private:
                     self.svc.storage.log("assistant", redact(reply), source)
             self.svc.bus.publish("assistant_said", {
                 "text": reply, "kind": out.get("kind"), "source": source, "ms": out["ms"],
@@ -989,7 +990,8 @@ class Assistant:
         return "\n".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
 
 
-PRIVATE_TOOLS = {"journal_add"}  # what's said for these is kept only where the tool keeps it
+# What's said for these, and the reply, is kept only where the tool keeps it; the HUD shows the label ("": the words).
+PRIVATE_TOOLS = {"journal_add": "(journal entry)", "recording_mark": "(recording note)", "recordings_search": ""}
 # In a conversation "yeah" / "no" answer a question; these still cancel.
 HARD_CANCEL = {"stop", "cancel", "abort", "never mind", "nevermind", "forget it", "cancel that", "cancel it"}
 

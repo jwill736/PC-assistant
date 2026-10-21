@@ -121,8 +121,13 @@ BOOK = [
     ("start the stream", "obs_control", {"action": "start_stream"}),
     ("end stream", "obs_control", {"action": "stop_stream"}),
     ("stop the stream", "obs_control", {"action": "stop_stream"}),
-    ("start recording", "obs_control", {"action": "start_recording"}),
-    ("stop recording", "obs_control", {"action": "stop_recording"}),
+    # "start recording" is the recorder's (audio → notes); OBS's when said by name, or while live
+    ("start recording", "recording_start", {}),
+    ("start obs recording", "obs_control", {"action": "start_recording"}),
+    ("take notes of this meeting", "recording_start", {"system_audio": True}),
+    ("record this", "recording_start", {}),
+    ("record on stream", "recording_start", {"on_stream": True}),
+    ("stop recording", "obs_control", {"action": "stop_recording"}),  # nothing being recorded: OBS's
     ("pause recording", "obs_control", {"action": "pause_recording"}),
     ("clip that", "obs_control", {"action": "save_replay"}),
     ("save replay", "obs_control", {"action": "save_replay"}),
@@ -584,6 +589,9 @@ INTENDED_OVERRIDES = {
     "prep me for my next meeting": "meetings",
     "who's in my next meeting": "meetings",
     "youtube stats": "youtube",
+    # J asked for "Vesper, start recording" to record his audio for notes; OBS's recording is "start obs recording"
+    "start recording": "recorder",
+    "start obs recording": "recorder",  # the core read it as "open the app 'obs recording'"
     "what am i looking at": "screen",
 }
 

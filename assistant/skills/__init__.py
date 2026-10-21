@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 # Load order is the order on the HUD and in the briefing.
 MODULES = ["conversation", "nudges", "ambient", "memory", "weather", "automations", "inbox_zero", "drafts",
-           "meetings", "debrief", "people", "planner", "focusblocks", "focus", "habits", "journal", "bills",
+           "meetings", "debrief", "recorder", "people", "planner", "focusblocks", "focus", "habits", "journal", "bills",
            "travel", "review", "pulse", "screen", "selection", "dictation", "clipboard", "rewind", "janitor", "mcp",
            "phone", "spotify", "home", "youtube", "discord", "stream_copilot", "stream_moments", "stream_raid",
            "stream_privacy", "gtasks", "diagnostics"]

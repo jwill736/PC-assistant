@@ -38,3 +38,14 @@ a.mn-row:hover .t1, .mn-sub a.t1:hover { color: var(--accent); text-decoration: 
 @keyframes mn-beacon { 50% { opacity: .3; transform: scale(.7); } }
 @media (max-width: 720px) { .mn-top { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .mn-trial, .mn-list .mn-row, .mn-beacon { animation: none; } .mn-hide { transition: none; } }
+
+/* Subscription audit */
+.mn-audit { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 6px; }
+.mn-audit-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; }
+.mn-savings { margin-left: auto; color: var(--warning); font-size: 13px; }
+.mn-flag { border-left: 2px solid var(--warning); padding-left: 10px; }
+.mn-audit-btns { display: flex; gap: 6px; align-items: center; }
+.mn-set { border-color: var(--good); color: var(--good); }
+.mn-usage { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.mn-usage .mn-kept { border-color: var(--good); }
+@media (max-width: 720px) { .mn-flag { flex-wrap: wrap; } .mn-audit-btns { width: 100%; } }

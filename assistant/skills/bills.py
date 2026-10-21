@@ -7,6 +7,11 @@ or a year apart. A model, when there is one, only helps with the receipts the pa
 
 Nudges: a free trial ending in the next two days (normal), a renewal tomorrow (low: the HUD feed only).
 On air, amounts are never said out loud. The shared Gmail and date helpers here are used by travel.py too.
+
+Subscription audit ("audit my subscriptions"): each subscription is matched to the apps and window titles that mean
+you used it (USAGE below; add your own under skills.bills.usage), and the activity tracker says when you last did.
+Nothing opened in 60 days (skills.bills.audit_days) is flagged with what it costs: "Remind me to cancel" sets a
+reminder two days before it renews, "Keep" hides it for 90 days. The flagged ones add up to the potential savings.
 """
 
 from __future__ import annotations
@@ -55,6 +60,41 @@ SUBWORDS = re.compile(r"subscription|membership|\bplan\b|renew|recurring|premium
 NEXT = re.compile(r"next (?:billing|payment|charge|renewal|bill)(?: date)?|renews? on|renewal date|will renew on|"
                   r"(?:will be )?(?:charged|billed) on|due (?:date|on|by)|ends? on|expires? on|trial ends?|until", re.I)
 CADENCE_DAYS = {"weekly": 7, "monthly": 30.44, "yearly": 365.25}
+# What using a subscription looks like to the activity tracker: process names (lower case, no .exe) and words in the
+# window title (browser tabs). Extend or override per merchant with skills.bills.usage: {Merchant: {apps, titles}}.
+USAGE = {
+    "Adobe": {"apps": ["photoshop", "illustrator", "adobe premiere pro", "afterfx", "acrobat", "lightroom", "lightroomclassic",
+                       "indesign", "adobe audition", "adobe media encoder", "creative cloud"],
+              "titles": ["photoshop", "illustrator", "premiere pro", "after effects", "lightroom", "acrobat", "indesign"]},
+    "Netflix": {"apps": ["netflix"], "titles": ["netflix"]},
+    "Disney+": {"apps": ["disney+"], "titles": ["disney+", "disney plus"]},
+    "Hulu": {"apps": ["hulu"], "titles": ["hulu"]},
+    "Max": {"apps": ["max"], "titles": ["hbo max", "max.com"]},
+    "Paramount+": {"apps": [], "titles": ["paramount+", "paramount plus"]},
+    "Peacock": {"apps": [], "titles": ["peacock"]},
+    "Spotify": {"apps": ["spotify"], "titles": ["spotify"]},
+    "YouTube": {"apps": [], "titles": ["youtube"]},
+    "Xbox": {"apps": ["xboxpcapp", "xboxapp", "xbox"], "titles": ["xbox", "game pass"]},
+    "PlayStation": {"apps": ["remoteplay", "playstation plus"], "titles": ["playstation"]},
+    "Discord": {"apps": ["discord"], "titles": []},
+    "Twitch": {"apps": [], "titles": ["twitch"]},
+    "Audible": {"apps": ["audible"], "titles": ["audible"]},
+    "Canva": {"apps": ["canva"], "titles": ["canva"]},
+    "Notion": {"apps": ["notion"], "titles": ["notion"]},
+    "Figma": {"apps": ["figma"], "titles": ["figma"]},
+    "Dropbox": {"apps": ["dropbox"], "titles": ["dropbox"]},
+    "GitHub": {"apps": ["github desktop", "githubdesktop"], "titles": ["github"]},
+    "OpenAI": {"apps": ["chatgpt"], "titles": ["chatgpt"]},
+    "Anthropic": {"apps": ["claude"], "titles": ["claude"]},
+    "Midjourney": {"apps": [], "titles": ["midjourney"]},
+    "ElevenLabs": {"apps": [], "titles": ["elevenlabs"]},
+    "New York Times": {"apps": [], "titles": ["new york times", "nytimes", "wordle"]},
+    "Microsoft": {"apps": ["winword", "excel", "powerpnt", "outlook", "onenote"], "titles": []},
+    "Apple": {"apps": ["itunes", "applemusic", "appletv"], "titles": ["apple music", "apple tv"]},
+    "Patreon": {"apps": [], "titles": ["patreon"]},
+    "StreamElements": {"apps": [], "titles": ["streamelements"]},
+    "NVIDIA": {"apps": ["geforcenow"], "titles": ["geforce now"]},
+}
 
 
 # ---- shared Gmail helpers (travel.py uses these too) -----------------------------------------------------------
@@ -302,6 +342,7 @@ class Bills(Skill):
                    "amount REAL, currency TEXT, ts REAL, due TEXT, cadence TEXT, sub INTEGER, subject TEXT, link TEXT)")
         db.execute("CREATE TABLE IF NOT EXISTS bills_seen (id TEXT PRIMARY KEY, ts REAL)")
         db.execute("CREATE TABLE IF NOT EXISTS bills_hidden (merchant TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE IF NOT EXISTS bills_audit (merchant TEXT PRIMARY KEY, kept_until REAL, reminder_at REAL)")
 
     def today(self) -> date:
         return datetime.fromtimestamp(self.clock(), self.svc.tz).date()
@@ -381,13 +422,118 @@ class Bills(Skill):
         return {"ok": True, "currency": cur, "monthly": totals, "monthly_total": totals.get(cur, 0.0),
                 "subscriptions": subs, "upcoming": soon, "trials": sorted(trials, key=lambda t: t["ends"]), "days": days}
 
+    # ---- the audit: what you pay for but don't use -------------------------------------------------------
+    def usage_map(self) -> dict[str, dict]:
+        out = {k.lower(): {"apps": list(v["apps"]), "titles": list(v["titles"])} for k, v in USAGE.items()}
+        for k, v in (self.setting("usage") or {}).items():
+            if isinstance(v, dict):
+                out[str(k).lower()] = {"apps": [str(a).lower().removesuffix(".exe") for a in v.get("apps") or []],
+                                       "titles": [str(t).lower() for t in v.get("titles") or [] if str(t).strip()]}
+        return out
+
+    @staticmethod
+    def _usage_for(merchant: str, umap: dict) -> dict | None:
+        m = merchant.lower()
+        return umap.get(m) or next((v for k, v in umap.items() if len(k) > 3 and k in m), None)
+
+    def last_used(self, apps: list[str], titles: list[str], since: float) -> tuple[float | None, float]:
+        """(when any of ``apps`` / a window title with one of ``titles`` was last on screen, seconds of it since ``since``)."""
+        conds, params = [], []
+        if apps:
+            conds.append(f"lower(app) IN ({','.join('?' * len(apps))})")
+            params += [a.lower() for a in apps]
+        for t in titles:
+            conds.append("instr(lower(title), ?) > 0")
+            params.append(t.lower())
+        if not conds:
+            return None, 0.0
+        where = "category != 'idle' AND (" + " OR ".join(conds) + ")"
+        db = self.svc.storage
+        last = db.query(f"SELECT MAX(end) AS last FROM activity WHERE {where}", tuple(params))[0]["last"]
+        used = db.query(f"SELECT COALESCE(SUM(end - MAX(start, ?)), 0) AS s FROM activity WHERE end > ? AND {where}",
+                        (since, since, *params))[0]["s"]
+        return last, float(used or 0)
+
+    def audit(self) -> dict:
+        now, days = self.clock(), int(self.setting("audit_days", 60))
+        db = self.svc.storage
+        first = db.query("SELECT MIN(start) AS s FROM activity")[0]["s"]
+        history = max(0.0, (now - first) / 86400) if first else 0.0
+        marks = {r["merchant"]: r for r in db.query("SELECT * FROM bills_audit")}
+        ov, umap = self.overview(), self.usage_map()
+        items = []
+        for s in ov["subscriptions"]:
+            if s["lapsed"]:
+                continue
+            u = self._usage_for(s["merchant"], umap)
+            mark = marks.get(s["merchant"].lower()) or {}
+            kept = (mark.get("kept_until") or 0) > now
+            per = {"monthly": "month", "yearly": "year", "weekly": "week"}.get(s["cadence"], "month")
+            item = {"merchant": s["merchant"], "amount": s["amount"], "currency": s["currency"], "cadence": s["cadence"],
+                    "monthly": s["monthly"], "next": s["next"], "link": s["link"], "price": f"{money(s['amount'], s['currency'])}/{per}",
+                    "tracked": u is not None, "last_used": None, "days_since": None, "used_30d_min": 0, "idle_days": None,
+                    "kept": kept, "kept_until": mark.get("kept_until") if kept else None,
+                    "reminder_at": mark.get("reminder_at") if (mark.get("reminder_at") or 0) > now - 86400 else None,
+                    "flag": False, "line": ""}
+            if u:
+                last, secs = self.last_used(u["apps"], u["titles"], now - 30 * 86400)
+                item.update(last_used=last, days_since=int((now - last) // 86400) if last else None, used_30d_min=round(secs / 60))
+                idle = item["days_since"] if last else (int(history) if history >= days else None)
+                if idle is not None and idle >= days:
+                    item.update(idle_days=idle, flag=not kept,
+                                line=f"You haven't opened {s['merchant']} in {idle} days — {item['price']}")
+            items.append(item)
+        flagged = sorted((i for i in items if i["flag"]), key=lambda i: -i["monthly"])  # the biggest saving first
+        cur = ov["currency"]
+        save = round(sum(i["monthly"] for i in flagged if i["currency"] == cur), 2)
+        tracking = bool((self.svc.cfg.get("tracking") or {}).get("enabled", True))
+        return {"ok": True, "days": days, "history_days": int(history), "ready": history >= days, "tracking": tracking,
+                "items": sorted(items, key=lambda i: (not i["flag"], -(i["idle_days"] or i["days_since"] or 0))),
+                "flagged": flagged, "currency": cur, "savings": save, "savings_year": round(save * 12, 2),
+                "untracked": [i["merchant"] for i in items if not i["tracked"]]}
+
+    def _keep(self, b: dict) -> dict:
+        m = str(b.get("merchant") or "").strip().lower()
+        if not m:
+            return {"ok": False, "error": "Which one?"}
+        until = self.clock() + float(self.setting("keep_days", 90)) * 86400
+        self.svc.storage.execute("INSERT INTO bills_audit (merchant, kept_until) VALUES (?,?) "
+                                 "ON CONFLICT(merchant) DO UPDATE SET kept_until=excluded.kept_until", (m, until))
+        return {"ok": True, "kept_until": until}
+
+    def _remind_cancel(self, b: dict) -> dict:
+        m = str(b.get("merchant") or "").strip().lower()
+        sub = next((s for s in self.overview()["subscriptions"] if s["merchant"].lower() == m), None)
+        if sub is None:
+            return {"ok": False, "error": "I can't find that subscription."}
+        auto = self.svc.skills.get("automations") if self.svc.skills is not None else None
+        if auto is None:
+            return {"ok": False, "error": "Reminders are turned off (skills.automations)."}
+        nxt = date.fromisoformat(sub["next"])
+        at = datetime.combine(nxt - timedelta(days=2), datetime.min.time(), tzinfo=self.svc.tz).replace(hour=10)
+        if at.timestamp() <= self.clock() + 1800:
+            at = datetime.fromtimestamp(self.clock() + 3600, self.svc.tz)
+        per = {"monthly": "month", "yearly": "year", "weekly": "week"}.get(sub["cadence"], "month")
+        text = (f"Cancel {sub['merchant']} before it renews on {nxt.strftime('%b %d').replace(' 0', ' ')} "
+                f"({money(sub['amount'], sub['currency'])}/{per})")
+        r = auto.add("reminder", text, at=at.timestamp())
+        if not r.get("ok"):
+            return r
+        self.svc.storage.execute("INSERT INTO bills_audit (merchant, reminder_at) VALUES (?,?) "
+                                 "ON CONFLICT(merchant) DO UPDATE SET reminder_at=excluded.reminder_at", (m, at.timestamp()))
+        return {"ok": True, "at": at.timestamp(), "when": r["item"].get("when"), "text": text}
+
     def status(self) -> dict:
         why = why_no_gmail(self.svc.gmail)
         data = self.overview()
         if why and not data["subscriptions"] and not data["upcoming"]:
             return {"ok": False, "error": why}
+        try:
+            audit = self.audit()
+        except Exception as exc:  # the audit is extra: never lose the panel over it
+            audit = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         return {**data, "warning": why or self.error, "scanned_at": self._scanned or None,
-                "live": bool(self.svc.live and self.svc.live())}
+                "live": bool(self.svc.live and self.svc.live()), "audit": audit}
 
     def tick(self) -> None:
         try:
@@ -407,6 +553,12 @@ class Bills(Skill):
             if u["kind"] == "renewal" and u["days"] == 1:
                 self.nudge(f"{u['merchant']} renews tomorrow, {money(u['amount'], u['currency'])}.", priority="low",
                            key=f"bills:renew:{u['merchant']}:{u['date']}")
+        if not (self.svc.live and self.svc.live()):  # once a month per unused subscription, in the feed only
+            month = datetime.fromtimestamp(self.clock(), self.svc.tz).strftime("%Y-%m")
+            for i in self.audit()["flagged"]:
+                if not i["reminder_at"]:
+                    self.nudge(i["line"] + ".", priority="low", key=f"bills:audit:{i['merchant'].lower()}:{month}",
+                               expires_in=7 * 86400)
 
     def briefing(self):
         d = self.overview(days=3)
@@ -416,7 +568,8 @@ class Bills(Skill):
                              for u in d["upcoming"][:5]]}
 
     def actions(self):
-        return {"scan": lambda b: self.scan(force=True), "hide": self._hide}
+        return {"scan": lambda b: self.scan(force=True), "hide": self._hide, "keep": self._keep,
+                "remind_cancel": self._remind_cancel}
 
     def _hide(self, b: dict) -> dict:
         m = str(b.get("merchant") or "").strip().lower()
@@ -435,7 +588,15 @@ class Bills(Skill):
                  obj({"ask": {"type": "string", "enum": ["list", "total"]}}), self._subscriptions, **kw),
             Tool("upcoming_bills", "Charges, bills due and free trials ending in the next days (default 14), from Gmail.",
                  obj({"days": {"type": "integer"}}), self._upcoming, **kw),
+            Tool("subscription_audit", "Audit the user's subscriptions against what they actually use (the activity "
+                                       "tracker): which ones haven't been opened in 60 days, what each costs, and the "
+                                       "monthly savings from cancelling them.", obj(), self._audit, **kw),
         ]
+
+    def _audit(self) -> dict:
+        self.scan()
+        a = self.audit()
+        return {**a, **({"error": self.error} if self.error and not a["items"] else {})}
 
     def _subscriptions(self, ask: str = "list") -> dict:
         self.scan()
@@ -455,6 +616,10 @@ class Bills(Skill):
         if re.fullmatch(r"(?:what|which|any) bills (?:are )?(?:due|coming up)(?: this week| soon)?|what'?s due(?: this week| soon)?|"
                         r"any (?:free )?trials ending(?: soon)?|what charges are coming up", t):
             return Intent("tool", "upcoming_bills", {"days": 7 if "week" in t else 14})
+        if re.fullmatch(r"(?:audit|review|check) my subscriptions|(?:do|run) (?:a |my )?subscriptions? audit|subscriptions? audit|"
+                        r"(?:what|which) subscriptions (?:am i not using|don'?t i use|should i cancel|can i cancel)|"
+                        r"am i (?:wasting money|paying) (?:on|for) (?:subscriptions|anything i don'?t use)", t):
+            return Intent("tool", "subscription_audit", {})
         return None
 
     def say(self, tool, args, result):
@@ -483,4 +648,24 @@ class Bills(Skill):
                       f"{u['merchant']} {u['when']}" + (f", {money(u['amount'], u['currency'])}" if u["amount"] else ""))
                      for u in up[:3]]
             return "Coming up: " + "; ".join(parts) + (f"; and {len(up) - 3} more on the HUD." if len(up) > 3 else ".")
+        if tool == "subscription_audit":
+            items, flagged = result.get("items") or [], result.get("flagged") or []
+            if not items:
+                return result.get("error") or "I haven't found any subscriptions in your receipts to check."
+            if not flagged:
+                if not result.get("tracking") and not result.get("history_days"):
+                    return "Activity tracking is off, so I can't tell what you use. Turn it on in config.yaml under tracking."
+                if not result.get("ready"):
+                    return (f"Nothing to cut yet: I've only tracked {result['history_days']} days of app use, and I flag "
+                            f"what you haven't opened in {result['days']}.")
+                skip = len(result.get("untracked") or [])
+                return (f"You've used everything you pay for in the last {result['days']} days." +
+                        (f" {skip} I can't track from your apps." if skip else ""))
+            n = f"{len(flagged)} subscription{'s' if len(flagged) != 1 else ''}"
+            if live:
+                return f"{n} look unused. The details are on the HUD."
+            parts = [f"{i['merchant']}, not opened in {i['idle_days']} days, {i['price'].replace('/', ' a ')}" for i in flagged[:3]]
+            save = money(result["savings"], result["currency"])
+            return (f"{n} you're not using: " + "; ".join(parts) + f". Cancelling saves {save} a month."
+                    " Tap “Remind me to cancel” on the HUD and I'll remind you before they renew.")
         return None

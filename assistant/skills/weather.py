@@ -32,6 +32,21 @@ CODES = {0: ("clear", "sun"), 1: ("mostly clear", "sun"), 2: ("partly cloudy", "
          95: ("thunderstorms", "storm"), 96: ("thunderstorms with hail", "storm"), 99: ("severe thunderstorms", "storm")}
 
 
+NOT_PLACES = re.compile(r"(?:the |this |that |next |my )?(?:today|tonight|tomorrow|morning|afternoon|evening|night|weekend|week|"
+                        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|here|my area|my city|my town|now|"
+                        r"the next (?:few |\w+ )?(?:hours?|days?))(?: .*)?|(?:an? )?(?:hour|minute|day)s?(?: .*)?|\d.*")
+
+
+def asked_place(t: str) -> str | None:
+    """'Denver' from "what's the weather in denver" / "is it raining in new york"; None for "the weather tomorrow"."""
+    m = re.fullmatch(r"(?:what'?s|what is|how'?s|how is|tell me|give me|get|check)? ?(?:the |)?(?:weather|forecast|temperature)"
+                     r"(?: like| going to be(?: like)?| looking)? (?:in|for|at|over) (.+?)(?: (?:today|tomorrow|this week|right now|now))?|"
+                     r"(?:is it|will it be|will it) (?:raining|snowing|cold|hot|warm|sunny|rain|snow) in (.+?)"
+                     r"(?: (?:today|tomorrow|this week|right now|now))?", t)
+    place = (m.group(1) or m.group(2)).strip() if m else None
+    return None if not place or NOT_PLACES.fullmatch(place) else place
+
+
 def describe(code) -> tuple[str, str]:
     return CODES.get(int(code or 0), ("unknown", "cloud"))
 
@@ -161,6 +176,8 @@ class Weather(Skill):
         m = re.search(r"^(?:set|change|update) my (?:location|city|town) to (.+)$|^i (?:live|am|'m) (?:in|at) (.+)$", t)
         if m:
             return Intent("tool", "set_location", {"name": m.group(1) or m.group(2)})
+        if asked_place(t):
+            return None  # "the weather in Denver": travel.py's weather_in answers
         if re.search(r"\b(?:weather|forecast|temperature)\b|\bwill it (?:rain|snow|storm)\b|\bis it (?:going to )?(?:rain|snow)"
                      r"|\bdo i need (?:an? )?(?:umbrella|jacket|coat|sunscreen)\b|^how (?:hot|cold|warm) is it", t) \
                 and not re.search(r"\b(?:stream|twitch|obs|document|email)\b", t):

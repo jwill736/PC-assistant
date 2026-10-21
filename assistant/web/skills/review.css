@@ -1,0 +1,38 @@
+/* Week in review skill */
+.panel[data-panel="review"].rv-fresh { border-color: color-mix(in srgb, var(--ember) 55%, var(--line)); box-shadow: 0 0 0 1px var(--ember-soft), var(--shadow); }
+.rv-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(260px, 2fr); gap: 16px 28px; }
+.rv-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 4px; }
+.rv-tile { animation: rv-in .45s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 50ms); }
+.rv-tile .value { font-family: var(--display); font-size: 30px; font-weight: 300; }
+.rv-bar { display: flex; gap: 2px; height: 14px; border-radius: var(--radius); overflow: hidden; }
+.rv-bar i { display: block; transform-origin: left center; animation: rv-grow .7s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 60ms); }
+.rv-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+.rv-legend b { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.rv-legend em { font-style: normal; color: var(--muted); font-family: var(--mono); }
+.rv-cols { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; height: 92px; margin-top: 12px; }
+.rv-col { display: grid; grid-template-rows: 1fr auto; justify-items: center; gap: 4px; font-size: 10.5px; color: var(--muted); }
+.rv-stack { width: 22px; height: 100%; display: flex; flex-direction: column-reverse; gap: 1px; transform-origin: bottom center;
+  animation: rv-rise .6s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 40ms); }
+.rv-stack i { display: block; border-radius: 2px; }
+.rv-wins { list-style: none; margin: 0 0 6px; padding: 0; }
+.rv-wins li { position: relative; padding: 4px 0 4px 16px; animation: rv-in .4s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 45ms); }
+.rv-wins li::before { content: ""; position: absolute; left: 2px; top: 11px; width: 6px; height: 6px; border-radius: 50%; background: var(--ember); }
+.rv-rows { display: grid; gap: 2px; }
+.rv-rows .sub-h { margin-top: 8px; }
+.rv-mood { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; height: 40px; }
+.rv-md { display: grid; grid-template-rows: 1fr auto; justify-items: center; font-size: 10px; color: var(--muted); }
+.rv-md i { width: 14px; align-self: end; height: 100%; border-radius: 2px; transform-origin: bottom center; transform: scaleY(calc(.15 + var(--m) * .85)); }
+.rv-md i.pos { background: var(--series-4); }
+.rv-md i.neg { background: var(--series-5); }
+.rv-md i.none { background: var(--grid); transform: scaleY(.15); }
+.rv-save { color: var(--warning); }
+.rv-next { margin-top: 14px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--iris) 45%, var(--line)); border-radius: var(--radius);
+  background: var(--iris-soft); }
+.rv-next-l { font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--iris); }
+.rv-by { font-size: 11px; color: var(--muted); }
+.rv-next p { margin: 4px 0; font-family: var(--display); font-size: 17px; line-height: 1.35; }
+@keyframes rv-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes rv-grow { from { transform: scaleX(0); } }
+@keyframes rv-rise { from { transform: scaleY(0); } }
+@media (max-width: 900px) { .rv-grid { grid-template-columns: 1fr; } .rv-tiles { grid-template-columns: repeat(2, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .rv-tile, .rv-bar i, .rv-stack, .rv-wins li { animation: none; } }

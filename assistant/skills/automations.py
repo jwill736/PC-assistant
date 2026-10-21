@@ -167,6 +167,7 @@ def describe_schedule(s: dict) -> str:
 class Automations(Skill):
     name, title = "automations", "Automations"
     poll_s = 5
+    essential = True  # timers and reminders ring on time, game or not
     delay_s = 5
 
     def __init__(self, svc, clock=time.time):
@@ -434,8 +435,10 @@ class Automations(Skill):
                          r"(?:" + "|".join(DAYS) + r").*)$", t)
         if m:
             return Intent("tool", "remind", {"text": m.group(1), "when": m.group(2)})
+        # A "focus timer" is a focus session (skills/focus.py), never a plain timer: leave those to it.
+        focus = re.search(r"\b(?:focus|deep work) timer\b", t)
         m = re.fullmatch(r"(?:set |start )?(?:a |an )?(?:timer (?:for )?(.+?)|(.+?) timer)(?: (?:called|for|named) (.+))?", t)
-        if m and (m.group(1) or m.group(2)):
+        if m and (m.group(1) or m.group(2)) and not focus:
             secs = parse_duration(m.group(1) or m.group(2))
             if secs:
                 return Intent("tool", "set_timer", {"seconds": secs, **({"label": m.group(3)} if m.group(3) else {})})
@@ -449,7 +452,7 @@ class Automations(Skill):
                         r"|what (?:reminders|timers) do i have|how (?:long|much time) is left(?: on (?:the|my) timer)?", t):
             return Intent("tool", "list_automations")
         m = re.fullmatch(r"(?:cancel|stop|delete|remove|clear) (?:the |my )?(timer|timers|(?:reminder|routine)(?: (?:about|to|for) .+)?|.+ (?:timer|reminder|routine))", t)
-        if m:
+        if m and not focus:
             return Intent("tool", "cancel_automation", {"what": m.group(1)})
         return None
 

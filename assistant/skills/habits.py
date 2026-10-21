@@ -83,6 +83,7 @@ def week_of(d: date) -> date:
 class Habits(Skill):
     name, title = "habits", "Habits"
     poll_s = 300
+    game_poll_s = 1200
     delay_s = 40
 
     def __init__(self, svc, clock=time.time):

@@ -15,6 +15,8 @@ from . import Skill
 class Thing(Skill):
     name, title = "thing", "Thing"      # name = bus event, HUD panel, /api/skill/<name>
     poll_s = 300                         # tick() every 5 min (0 = never); delay_s before the first one
+    game_poll_s = 1200                   # in low-power mode (a fullscreen game, or live): every 20 min (0 = paused);
+                                         # or essential = True to keep poll_s (only if a game or a stream needs it)
 
     def tools(self):                     # what the model may call (and the fast path routes to)
         return [Tool("thing_status", "When to use it, in one or two sentences.", obj({"q": {"type": "string"}}),
@@ -60,6 +62,10 @@ Rules:
 - **Never break Vesper**: no network at import or in `__init__`; catch errors in `tick` and show them in `status`.
 - Secrets live in `.env` (read with `self.svc.cfg.secret("NAME")`), never in config.yaml or logs.
 - Skills must work on Windows (the real target) and import fine on Linux CI (guard `ctypes.windll`, `winreg`).
+- A skill that polls says how it behaves in a game (`essential` or `game_poll_s`; the default is 4× slower), and its
+  run time shows on Setup → Running parts. A route that a core pattern also knows must be added, with the reason, to
+  `INTENDED_OVERRIDES` in `tests/test_phrasebook.py`. A `callback()` needs a single-use state from `begin()` (see
+  docs/SECURITY.md).
 
 ## The HUD side
 

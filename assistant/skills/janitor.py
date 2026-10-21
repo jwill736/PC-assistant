@@ -287,6 +287,7 @@ def gb(n: float | None) -> str:
 class Janitor(Skill):
     name, title = "janitor", "PC Health"
     poll_s = 60
+    essential = True  # the GPU heat/power watch matters most in a game
     delay_s = 20
 
     def __init__(self, svc, runner=run_smi, list_drives=drives, read_cpu=cpu_temp, recycle=recycle_bin_bytes,

@@ -189,6 +189,7 @@ def _named(fn):
 class MCP(Skill):
     name, title = "mcp", "Tool servers (MCP)"
     poll_s = 60
+    game_poll_s = 300
     delay_s = 60
 
     def __init__(self, svc):

@@ -51,6 +51,7 @@ def new_code() -> str:
 class Phone(Skill):
     name, title = "phone", "Phone"
     poll_s = 20
+    game_poll_s = 60  # you're at the PC: nothing waits to be pushed
     delay_s = 20
 
     def __init__(self, svc, http: httpx.Client | None = None, idle=None, clock=time.time):
@@ -72,7 +73,7 @@ class Phone(Skill):
         self.error = ""
         self.last_poll = self.last_message = 0.0
         self._pushed: dict[str, float] = {}
-        self._bad, self._locked_until = 0, 0.0
+        self._bad, self._locked_until = int(self.state.get("bad") or 0), float(self.state.get("locked_until") or 0)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.ntfy_suggest = "vesper-" + secrets.token_urlsafe(12).replace("_", "x").replace("-", "y").lower()
@@ -211,7 +212,7 @@ class Phone(Skill):
         m = re.fullmatch(r"/start(?:@\w+)?\s+(\S+)", text)
         if m and hmac.compare_digest(m.group(1).encode(), str(self.state["code"]).encode()):
             who = " ".join(x for x in (chat.get("first_name"), chat.get("last_name")) if x) or chat.get("username") or "your phone"
-            self.state.update(chat_id=cid, chat_name=who, paired_at=self.clock(), code=None)
+            self.state.update(chat_id=cid, chat_name=who, paired_at=self.clock(), code=None, bad=0, lockouts=0)
             self._save()
             self._bad = 0
             self.send(f"Paired with Vesper. Send me anything you'd say to it.\n\n{HELP}")
@@ -219,11 +220,19 @@ class Phone(Skill):
             self.publish()
             return
         self._bad += 1
-        if self._bad >= 5:  # someone guessing: new code, and no more tries for 10 minutes
-            self.state["code"], self._bad, self._locked_until = new_code(), 0, self.clock() + 600
+        self.state["bad"] = self._bad  # kept across restarts: a restart is no fresh set of guesses
+        if self._bad >= 5:
+            # Someone guessing: a new code, and no tries at all for 10 minutes, doubling each time (at most a day), so
+            # a million codes at 5 guesses a lockout stays out of reach. The lockout survives a restart too.
+            strikes = int(self.state.get("lockouts") or 0) + 1
+            self._bad, self._locked_until = 0, self.clock() + min(600 * 2 ** (strikes - 1), 86400)
+            self.state.update(code=new_code(), bad=0, lockouts=strikes, locked_until=self._locked_until)
             self._save()
+            self.notify("Someone sent your Telegram bot wrong pairing codes. Pairing is locked for a while and the "
+                        "code changed.", level="warning", key="phone:guessing")
             self.publish()
             return
+        self._save()
         self.send("That code doesn't match. Check Vesper's HUD (Setup → Phone)." if m else
                   "Send /start followed by the 6-digit code on Vesper's HUD (Setup → Phone).", chat_id=cid)
 

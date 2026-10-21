@@ -152,7 +152,15 @@ def set_yaml_value(text: str, dotted: str, value: Any) -> str:
 
 
 def set_env_value(text: str, key: str, value: str) -> str:
-    """Set KEY=value in .env text: the existing line, else a new one at the end."""
+    """Set KEY=value in .env text: the existing line, else a new one at the end.
+
+    A value is one line: a pasted key with a line break inside ("abc\\nOPENAI_BASE_URL=…") would otherwise add a
+    second setting of the paster's choosing, so it's refused (ValueError) instead. Surrounding spaces are trimmed."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key or ""):
+        raise ValueError(f"{key!r} isn't a valid setting name.")
+    value = str(value).strip()
+    if re.search(r"[\r\n\x00\x0b\x0c\x1c-\x1e\x85\u2028\u2029]", value):  # every line break splitlines() knows
+        raise ValueError("That value has a line break in it. Paste just the key, on one line.")
     lines = text.split("\n")
     pattern = re.compile(rf"^\s*(export\s+)?{re.escape(key)}\s*=")
     for i, line in enumerate(lines):

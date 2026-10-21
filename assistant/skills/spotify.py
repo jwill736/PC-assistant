@@ -44,6 +44,7 @@ class SpotifyError(Exception):
 class Spotify(Skill):
     name, title = "spotify", "Spotify"
     poll_s = 10
+    essential = True  # the stream-safe music check runs while live
     delay_s = 10
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time, opener=webbrowser.open):
@@ -347,14 +348,17 @@ class Spotify(Skill):
         if re.fullmatch(r"what(?:'s| is) (?:playing|this song|this track|that song)(?: on spotify)?|what song is "
                         r"(?:this|playing)|what am i listening to|now playing|who(?:'s| is) (?:singing|playing) this", t):
             return Intent("tool", "spotify_now_playing")
-        if not self.connected or re.search(r"\byoutube\b|\b(?:ads?|commercial)\b", t):
+        # "put on my list …" is a task (the core router's), never a song
+        if not self.connected or re.search(r"\byoutube\b|\b(?:ads?|commercial)\b", t) \
+                or re.match(r"put on (?:my|the) (?:to-?do )?list\b", t):
             return None
         now = self.now or {}
         active = bool(now.get("playing"))
         if re.fullmatch(r"(?:pause|stop) (?:the )?(?:music|song|spotify)" + ("|pause" if active else ""), t):
             return Intent("tool", "spotify_control", {"action": "pause"})
+        # A bare "play" while Spotify already plays stays here: the generic play/pause media key would pause it.
         if re.fullmatch(r"(?:play|resume|unpause|start) (?:the |some )?(?:music|song|spotify)"
-                        + ("|play|resume|unpause" if now.get("track") and not active else ""), t):
+                        + ("|play|resume|unpause" if now.get("track") or active else ""), t):
             return Intent("tool", "spotify_control", {"action": "play"})
         if re.fullmatch(r"(?:next|skip)(?: the)? (?:song|track)|skip (?:this )?song|next one"
                         + ("|next|skip|skip (?:this|it)" if active else ""), t):
@@ -379,7 +383,9 @@ class Spotify(Skill):
         if m:
             return Intent("tool", "spotify_play", {"query": m.group(1), "kind": "artist"})
         m = re.fullmatch(r"(?:play|put on) (?:some )?(.+?)(?: on spotify)?", t)
-        if m and not re.fullmatch(r"(?:the |some )?(?:music|song|spotify|video|media|it|that|something)", m.group(1)):
+        apps = {str(a).lower() for a in (self.svc.cfg.get("apps") or {})}  # "play valorant": the game, not a song
+        if m and not re.fullmatch(r"(?:the |some )?(?:music|song|spotify|video|media|it|that|something)", m.group(1)) \
+                and m.group(1) not in apps:
             return Intent("tool", "spotify_play", {"query": m.group(1), "kind": "auto"})
         return None
 

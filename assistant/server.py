@@ -1,8 +1,9 @@
 """Local HTTP + WebSocket API that the dashboard talks to.
 
 Bound to 127.0.0.1. Every /api and /ws call must carry the per-install token
-(injected into the dashboard page) and a localhost Host header, so a random
-website open in your browser can't drive your PC through this port.
+(injected into the dashboard page) and a localhost Host header (and, from a
+browser, a localhost Origin), so a random website open in your browser can't
+drive your PC through this port. docs/SECURITY.md has the whole model.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import secrets
 from contextlib import asynccontextmanager
 from html import escape
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
@@ -34,6 +36,18 @@ SKILL_CALLBACK = re.compile(r"^/api/skill/[a-z0-9_]+/callback$")
 
 def token_exempt(method: str, path: str) -> bool:
     return path == "/api/google/callback" or (method == "GET" and bool(SKILL_CALLBACK.match(path)))
+
+
+def origin_ok(origin: str | None) -> bool:
+    """A browser names the page that made a request in ``Origin``: only Vesper's own (localhost) pages may call it.
+    No header (a sign-in redirect, the tray, curl) is fine: the Host check and the token still apply."""
+    if origin is None:
+        return True
+    try:
+        host = urlsplit(origin).hostname or ""
+    except ValueError:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1", "testserver"}
 
 
 def done_page(title: str, line: str, ok: bool) -> HTMLResponse:
@@ -107,6 +121,8 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def guard(request: Request, call_next):
         if not host_ok(request.headers.get("host")):
             return JSONResponse({"error": "bad host"}, status_code=403)
+        if not origin_ok(request.headers.get("origin")):  # a web page in your browser calling Vesper's port
+            return JSONResponse({"error": "bad origin"}, status_code=403)
         if request.url.path.startswith("/api") and not token_exempt(request.method, request.url.path):
             supplied = request.headers.get("x-assistant-token", "")
             if not hmac.compare_digest(supplied, token):
@@ -519,7 +535,8 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
         supplied = socket.query_params.get("token", "")
-        if not host_ok(socket.headers.get("host")) or not hmac.compare_digest(supplied, token):
+        if not host_ok(socket.headers.get("host")) or not origin_ok(socket.headers.get("origin")) \
+                or not hmac.compare_digest(supplied, token):
             await socket.close(code=4401)
             return
         await socket.accept()

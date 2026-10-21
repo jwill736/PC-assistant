@@ -290,6 +290,7 @@ def subscriptions(rows: list[dict], today: date, tz=None) -> list[dict]:
 class Bills(Skill):
     name, title = "bills", "Money"
     poll_s = 1800
+    game_poll_s = 7200
     delay_s = 90
 
     def __init__(self, svc, clock=time.time):

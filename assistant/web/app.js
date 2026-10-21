@@ -791,6 +791,10 @@ render.connections = function connections() {
 const PART_STATUS = { ok: ['good', 'OK'], error: ['critical', 'Error'], stalled: ['warning', 'Stalled'], restarting: ['warning', 'Restarting'],
   starting: ['idle', 'Starting'], disabled: ['idle', 'Off'], stopped: ['idle', 'Stopped'] };
 
+// Low-power mode (a fullscreen game or live): what the watchdog is doing to a healthy part right now
+const PART_THROTTLE = { paused: ['idle', 'Paused'], slowed: ['good', 'Slower'] };
+const partMs = ms => ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : String(ms < 10 ? ms : Math.round(ms));
+
 function unhealthyParts() { return (S.data.health || []).filter(p => ['error', 'stalled', 'restarting'].includes(p.state)); }
 
 render.health = function health() {
@@ -799,13 +803,18 @@ render.health = function health() {
     const b = body(p);
     if (!parts.length) { fill(b, empty('The watchdog starts with the app.')); continue; }
     const bad = unhealthyParts().length;
-    meta(p, bad ? `${bad} need attention` : 'all healthy');
+    const low = (parts.find(x => x.low_power) || {}).low_power;
+    meta(p, [low ? `low-power: ${low}` : '', bad ? `${bad} need attention` : 'all healthy'].filter(Boolean).join(' · '));
     fill(b, h('table', { class: 't' },
       h('thead', {}, h('tr', {}, h('th', {}, 'Part'), h('th', {}, 'State'), h('th', {}, 'Last OK'), h('th', { class: 'r wide-only' }, 'Runs'),
+        h('th', { class: 'r wide-only', title: 'Average time of a run (milliseconds)' }, 'ms'),
         h('th', { class: 'r wide-only' }, 'Restarts'), h('th', {}, 'Last problem'))),
       h('tbody', {}, parts.map(x => h('tr', {},
-        h('td', { class: 'fit' }, x.name), h('td', {}, status(...(PART_STATUS[x.state] || PART_STATUS.starting))),
+        h('td', { class: 'fit' }, x.name),
+        h('td', { class: 'fit' }, status(...((['ok', 'starting'].includes(x.state) && PART_THROTTLE[x.throttle]) || PART_STATUS[x.state] || PART_STATUS.starting))),
         h('td', {}, x.last_ok ? ago(x.last_ok) : '—'), h('td', { class: 'r wide-only' }, x.kind === 'poller' ? x.runs : '·'),
+        h('td', { class: 'r wide-only fit', title: x.runs ? `slowest ${x.max_ms} ms` : '' },
+          x.kind === 'poller' && x.runs ? partMs(x.avg_ms) : '·'),
         h('td', { class: 'r wide-only' }, x.restarts || '·'), h('td', { class: 'muted', title: x.last_error || '' }, x.last_error || '—'))))));
   }
   paintSetupBadge();

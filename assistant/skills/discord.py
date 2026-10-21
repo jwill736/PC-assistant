@@ -34,6 +34,7 @@ ONE_STREAM_S = 6 * 3600
 class Discord(Skill):
     name, title = "discord", "Discord"
     poll_s = 20
+    essential = True  # the go-live post; no network unless something changed
     delay_s = 20
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time):

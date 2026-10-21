@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from ..integrations import controls, desktop
 from ..integrations.calendars import free_blocks
+from ..privacy import has_secret_value
 from ..services import Services
 from .policy import CONFIRM_FROM, AuditLog, Guard
 
@@ -317,8 +318,7 @@ class ToolBox:
             Tool("open_document", "Open one of the user's documents in its app, by name (e.g. 'the Q3 plan').",
                  obj({"name": {"type": "string"}}, ["name"]), self._open_document, tier=1),
             Tool("remember", "Save a note the user wants remembered; notes feed future briefings.",
-                 obj({"text": {"type": "string"}}, ["text"]), lambda text: {"ok": True, "note": s.storage.add_note(text)},
-                 tier=1),
+                 obj({"text": {"type": "string"}}, ["text"]), self._remember, tier=1),
             Tool("run_routine", f"Set up a whole workspace in one go: {', '.join(profiles)}. Opens its apps, tabs and OBS scene.",
                  obj({"profile": {"type": "string", "enum": profiles}}, ["profile"]), self._run_routine, tier=1),
             Tool("start_job", "Run work in the background while the user does something else. kind=claude_code runs "
@@ -332,6 +332,12 @@ class ToolBox:
         ]
 
     # ---- handlers that need more than one line ---------------------------
+    def _remember(self, text: str) -> dict:
+        if has_secret_value(text):  # notes are plain text in the database: a password or a key never goes there
+            return {"ok": False, "error": "That has a password, a code or a key in it, and I don't keep those. "
+                                          "Your password manager is the place for it."}
+        return {"ok": True, "note": self.svc.storage.add_note(text)}
+
     def _close_app(self, name: str) -> dict:
         names = self.svc.launcher.process_names_for(name)
         return desktop.close_processes(names, set(self.svc.cfg["optimizer"]["protected_processes"]))

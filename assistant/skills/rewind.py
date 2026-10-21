@@ -145,6 +145,7 @@ def _join(xs: list[str]) -> str:
 class Rewind(Skill):
     name, title = "rewind", "Rewind"
     poll_s = 60
+    game_poll_s = 300
     delay_s = 20
 
     def __init__(self, svc, clock=time.time):

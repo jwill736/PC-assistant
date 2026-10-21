@@ -24,6 +24,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+from ..privacy import redact
+
 TIER_NAMES = {0: "read-only", 1: "reversible", 2: "needs a yes", 3: "needs a yes, every time"}
 CONFIRM_FROM = 2
 
@@ -88,6 +90,7 @@ _SECRETISH = ("password", "token", "secret", "key")
 
 def _clip(value, limit: int = 200):
     if isinstance(value, str):
+        value = redact(value)  # "remember the password is …" never reaches the action log either
         return value if len(value) <= limit else value[:limit] + "…"
     if isinstance(value, dict):
         return {k: ("[redacted]" if any(s in k.lower() for s in _SECRETISH) else _clip(v, limit)) for k, v in value.items()}

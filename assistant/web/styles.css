@@ -907,3 +907,19 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
 
 /* Life and PC tabs: panels keep their own height instead of stretching to the tallest in the row */
 .view[data-view="life"] > .panel, .view[data-view="pc"] > .panel { align-self: start; }
+
+/* ============================================================== on air: private panels (skills/stream_privacy) */
+/* <body class="live-private"> while live with the Stream tab's "Privacy while live" on (app.js). These panels and the
+   text of notifications blur; a click on the cover peeks at one panel for 10 s (.peek, set by stream_privacy.js). */
+body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body {
+  min-height: 96px; cursor: pointer; }
+body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body > * {
+  filter: blur(14px) saturate(.4); opacity: .55; pointer-events: none; user-select: none; }
+body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body::after {
+  content: "Hidden while live · click to peek"; position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
+  font: 500 10.5px/1.3 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--alert);
+  border: 1px dashed oklch(from var(--alert) l c h / .45); border-radius: var(--radius); background: oklch(from var(--panel) l c h / .35); }
+body.live-private :is(.toast .t-txt, .n-txt, .nudge-feed .t1):not(.peek) { filter: blur(6px); cursor: pointer; user-select: none; }

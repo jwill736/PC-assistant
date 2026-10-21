@@ -31,12 +31,12 @@ DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 SCOPES = (
     "clips:edit channel:manage:broadcast channel:edit:commercial moderator:manage:shoutouts channel:manage:polls "
     "user:write:chat user:read:chat moderator:read:followers channel:read:subscriptions bits:read "
-    "channel:read:redemptions channel:read:hype_train"
+    "channel:read:redemptions channel:read:hype_train channel:manage:raids"
 )
 # What each scope unlocks, for "reconnect Twitch to allow X" messages.
 NEEDS = {"clips:edit": "clips", "channel:manage:broadcast": "markers and title changes",
          "channel:edit:commercial": "ads", "moderator:manage:shoutouts": "shoutouts", "channel:manage:polls": "polls",
-         "user:write:chat": "sending chat messages"}
+         "user:write:chat": "sending chat messages", "channel:manage:raids": "raids"}
 
 
 class TwitchAuth:
@@ -409,7 +409,7 @@ class TwitchClient:
             if r.status_code != 200:
                 return _fail(r, "add the marker")
             m = r.json()["data"][0]
-            return {"ok": True, "position_s": m.get("position_seconds"), "description": m.get("description")}
+            return {"ok": True, "id": m.get("id"), "position_s": m.get("position_seconds"), "description": m.get("description")}
         return self._act("add a marker", "channel:manage:broadcast", run)
 
     def find_category(self, name: str) -> dict | None:
@@ -421,6 +421,28 @@ class TwitchClient:
             return None
         exact = next((g for g in found if g["name"].lower() == name.lower()), None)
         return exact or found[0]
+
+    def live_streams(self, game_id: str, language: str | None = None, first: int = 100) -> list[dict]:
+        """Who's live in a category right now (Helix GET /streams), most watched first."""
+        params: dict = {"game_id": game_id, "type": "live", "first": max(1, min(100, int(first)))}
+        if language:
+            params["language"] = language
+        return self._get("streams", params)
+
+    def start_raid(self, user: str) -> dict:
+        """Send your viewers to another channel (Twitch counts down 90 s; cancel it on Twitch if you change your mind)."""
+        def run(bid: str) -> dict:
+            target = self._user_id_of(user)
+            if not target:
+                return {"ok": False, "error": f"There's no Twitch user called {user}."}
+            r = self._call("POST", "raids", params={"from_broadcaster_id": bid, "to_broadcaster_id": target})
+            if r.status_code == 429:
+                return {"ok": False, "error": "Twitch allows 10 raid requests every 10 minutes. Try again in a bit."}
+            if r.status_code != 200:
+                return _fail(r, f"raid {user}", extra=" Raids need you live, and the other channel must accept raids.")
+            d = (r.json().get("data") or [{}])[0]
+            return {"ok": True, "user": user.lower().lstrip("@"), "is_mature": d.get("is_mature")}
+        return self._act("start a raid", "channel:manage:raids", run)
 
     def set_channel(self, title: str | None = None, category: str | None = None) -> dict:
         def run(bid: str) -> dict:

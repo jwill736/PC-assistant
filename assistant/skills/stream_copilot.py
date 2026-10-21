@@ -6,7 +6,9 @@
   a mood gauge from emotes and words, first-time chatters and regulars to greet.
 - After: a recap with VOD chapters ("00:12:30 Clutch round") and post drafts for X and Discord.
 - Before: 30 minutes ahead of a "stream" calendar event, the plan from its title and the pre-stream check.
-- Live in a game that isn't the Twitch category: a card offers to switch it (that still asks for a yes).
+- Live in a game that isn't the Twitch category for a minute: a HUD card (never spoken) "Switch category to Hades II?";
+  its Yes is your yes (the change runs as confirmed on the HUD). Going live with a stream block on the calendar: a
+  card offers the block's title ("Use title 'Ranked grind + Q&A'?").
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from ..brain.router import Intent
 from ..brain.tools import Tool, obj
 from ..integrations.desktop import normalize_app
 from . import Skill
+from ._stream import Cards, run_on_click, stream_event_now
 from .nudges import fullscreen_state
 
 log = logging.getLogger(__name__)
@@ -48,7 +51,7 @@ NOT_GAMES = {"obs64", "obs", "chrome", "msedge", "firefox", "discord", "explorer
 INCIDENT = {"network": "dropped frames", "encoder": "encoder overload", "render": "render lag", "reconnecting": "reconnect",
             "obs_lost": "OBS connection lost", "offline": "unexpected offline", "mic_muted": "muted mic",
             "mic_silent": "silent mic", "mic_clipping": "mic clipping"}
-RANK = {"raid": 5, "hype_train": 5, "clip": 4, "manual": 4, "cheer": 3, "gift": 3, "chat_spike": 2}
+RANK = {"raid": 5, "hype_train": 5, "clip": 4, "manual": 4, "moment": 4, "cheer": 3, "gift": 3, "chat_spike": 2}
 
 
 # ---- chat reading -----------------------------------------------------------------------------------------------
@@ -112,6 +115,21 @@ def detect_game(app: str, title: str, extra: dict | None = None, fullscreen=full
 def same_game(a: str, b: str) -> bool:
     x, y = _squash(a), _squash(b)
     return bool(x and y) and (x == y or x in y or y in x)
+
+
+def plan_title(event_title: str, category: str = "", games: dict | None = None) -> str:
+    """The stream title a calendar block suggests: 'Stream: Elden Ring | Boss rush' -> 'Boss rush'; 'Stream: Ranked
+    grind + Q&A' -> the whole thing; 'Stream: Elden Ring' (just a game) -> ''."""
+    plan = parse_plan(event_title)
+    if plan["title"]:
+        return plan["title"][:140]
+    one = plan["game"]
+    if re.fullmatch(r"(?:twitch\s+)?(?:stream(?:ing)?|live(?:stream)?|going live)", one.strip(), re.I):
+        return ""
+    known = {*GAMES.values(), *(games or {}).values()}
+    if not one or _squash(one) in {_squash(g) for g in (*known, category) if g}:  # just a game's name
+        return ""
+    return one[:140]
 
 
 def parse_plan(title: str) -> dict:
@@ -210,6 +228,11 @@ class StreamCopilot(Skill):
         self.chat_times, self.moods = deque(), deque()  # message times; (time, mood) for the gauge
         self.error: str | None = None
         self.run_command = None  # set at start: runtime.command
+        self.run_tool = None  # set at start: the ToolBox (a HUD card's Yes runs a tool as confirmed on the HUD)
+        self.cards = Cards(clock)  # one-tap questions on the HUD: switch category, use the calendar's title
+        self._mismatch: dict | None = None  # {"game", "since"}: playing something that isn't the category
+        self._declined: set = set()  # games J said "not now" to, this stream
+        self._title_checked = 0.0  # when the calendar was last looked at for this stream's title
         self._last_chat, self._off_since, self._next_plan = self.clock(), 0.0, 0.0
         self._prepped, self._seen = set(), set()  # go-live nudges sent; chatters seen this session
         st = svc.storage
@@ -222,6 +245,8 @@ class StreamCopilot(Skill):
 
     def start(self, runtime) -> None:
         self.run_command = lambda text: runtime.command(text, source="hud")
+        tools = getattr(getattr(runtime, "assistant", None), "tools", None)
+        self.run_tool = getattr(tools, "run", None)
 
     def _twitch(self) -> dict:
         return (self.svc.bus.latest.get("twitch") or {}).get("data") or {}
@@ -248,6 +273,9 @@ class StreamCopilot(Skill):
             if ended:
                 self._close(ended, self._off_since)
             self._read_chat(now)
+            if live:
+                self._check_category()
+                self._offer_title(now)
             if now >= self._next_plan:
                 self._next_plan = now + 60
                 self._go_live_prep(now)
@@ -267,6 +295,8 @@ class StreamCopilot(Skill):
             cur = self.svc.storage.execute("INSERT INTO stream_copilot_sessions (start, data) VALUES (?, '{}')", (start,))
             self.session = new_session(cur.lastrowid, start, tw)
         self._seen, self.questions, self.greet, self.hint, self.plan = set(), [], [], None, None
+        self._mismatch, self._declined, self._title_checked = None, set(), 0.0
+        self.cards.drop()
         self._save()
 
     def _sample(self, now: float, tw: dict) -> None:
@@ -286,7 +316,8 @@ class StreamCopilot(Skill):
     def _close(self, s: dict, end: float) -> None:
         self.recap = s["recap"] = self.build_recap(s, end)
         self._save(s, end)
-        self.hint = None
+        self.hint, self._mismatch = None, None
+        self.cards.drop()
         self.nudge("Stream recap is ready on the HUD.", priority="normal", key=f"stream_recap:{s['id']}")
 
     def build_recap(self, s: dict, end: float) -> dict:
@@ -414,31 +445,86 @@ class StreamCopilot(Skill):
             elif typ == "highlight":
                 s["highlights"].append(d)
 
-    def _check_category(self, seg: dict) -> None:
+    def _check_category(self, seg: dict | None = None) -> None:
+        """Playing a game that isn't the Twitch category for ``category_after_s`` (60 s): a card asks to switch."""
         if not self._live():
+            self._mismatch = None
             return
+        if seg is None:
+            seg = (self.svc.bus.latest.get("activity_now") or {}).get("data") or {}
         game = detect_game(seg.get("app", ""), seg.get("title", ""), self.setting("games") or {}, self.fullscreen)
         cat = self._twitch().get("game") or ""
         if not game or not cat:
             return
         if same_game(game, cat):
-            self.hint = None
+            self.hint, self._mismatch = None, None
+            self.cards.drop("category")
             return
-        self.hint = {"game": game, "category": cat, "ts": self.clock()}
-        self.nudge(f"You're playing {game} but the category is {cat}. Switch?", priority="low",
-                   key=f"category:{_squash(game)}", expires_in=1800,
-                   action={"label": f"Switch to {game}", "command": f"set category to {game}"})
+        now = self.clock()
+        if self._mismatch is None or not same_game(self._mismatch["game"], game):
+            self._mismatch = {"game": game, "since": now}
+            self.cards.drop("category")
+        self.hint = {"game": game, "category": cat, "ts": now, "since": self._mismatch["since"]}
+        if now - self._mismatch["since"] >= float(self.setting("category_after_s", 60)) and _squash(game) not in self._declined:
+            sid = (self.session or {}).get("id")
+            card = self.cards.add("category", f"Switch category to {game}?", yes=f"Switch to {game}",
+                                  data={"game": game, "from": cat}, ttl=1800, key=f"category:{_squash(game)}:{sid}")
+            if card:  # on the HUD only, never said: it would go out on air
+                self.notify(f"You're playing {game}, the category says {cat}. Switch it from the HUD card.",
+                            level="urgent", key=card["key"])
         self.publish()
 
     def switch_category(self, game: str = "") -> dict:
+        """J clicked Switch: that's the yes, so the change runs as confirmed on the HUD."""
         game = game or (self.hint or {}).get("game") or ""
         if not game:
             return {"ok": False, "error": "Which game?"}
-        if self.run_command is None:
-            return {"ok": False, "error": "Vesper is still starting up."}
-        out = self.run_command(f"set category to {game}") or {}
-        self.hint = None
-        return {"ok": True, "game": game, "reply": out.get("reply") if isinstance(out, dict) else None}
+        out = run_on_click(self.run_tool, self.svc.bus, "twitch_set_channel", {"category": game},
+                           f"switch category to {game}")
+        if out.get("ok"):
+            self.hint, self._mismatch = None, None
+            self.cards.drop("category")
+            tw = self.svc.bus.latest.get("twitch")
+            if tw and isinstance(tw.get("data"), dict):  # don't ask again before the next Twitch poll catches up
+                tw["data"]["game"] = out.get("category") or game
+        return {"ok": bool(out.get("ok")), "game": out.get("category") or game, "error": out.get("error"),
+                "reply": f"Category is now {out.get('category') or game}." if out.get("ok") else out.get("error")}
+
+    def _offer_title(self, now: float) -> None:
+        """Just went live with a stream block on the calendar: offer its title (once per stream)."""
+        s = self.session
+        if s is None or now - s["start"] > 1800 or now - self._title_checked < 60:
+            return
+        self._title_checked = now
+        ev = stream_event_now(self.svc, now)
+        if not ev:
+            return
+        current = self._twitch().get("title") or s.get("title") or ""
+        title = plan_title(ev.get("title") or "", self._twitch().get("game") or s.get("game") or "", self.setting("games"))
+        if not title or title.strip().lower() == current.strip().lower():
+            return
+        self.cards.add("title", f"Use title “{title}”?", yes="Use it", data={"title": title, "event": ev.get("title")},
+                       ttl=1800, key=f"title:{s['id']}:{title}")
+
+    def answer_card(self, card_id: str, answer: str) -> dict:
+        card = self.cards.take(card_id)
+        if card is None:
+            return {"ok": False, "error": "That question has expired."}
+        d = card["data"]
+        if answer != "yes":
+            if card["kind"] == "category":
+                self._declined.add(_squash(d.get("game", "")))
+            return {"ok": True, "answer": "no"}
+        if card["kind"] == "category":
+            return self.switch_category(d["game"])
+        if card["kind"] == "title":
+            out = run_on_click(self.run_tool, self.svc.bus, "twitch_set_channel", {"title": d["title"]},
+                               f"set the stream title to {d['title']}")
+            if out.get("ok") and self.session is not None:
+                self.session["title"] = d["title"]
+            return {"ok": bool(out.get("ok")), "error": out.get("error"),
+                    "reply": "Title updated." if out.get("ok") else out.get("error")}
+        return {"ok": False, "error": "Unknown card."}
 
     # ---- go-live prep -----------------------------------------------------------------------------------------
     def _go_live_prep(self, now: float) -> None:
@@ -530,7 +616,7 @@ class StreamCopilot(Skill):
                     "start": self.session["start"] if self.session else None,
                     "viewers": [v for _, v in (self.session or {}).get("viewers", [])][-90:],
                     "mood": self.mood(), "questions": self.open_questions(), "greet": self.greet[:12], "hint": self.hint,
-                    "plan": self.plan, "titles": self.titles, "recap": self.recap}
+                    "plan": self.plan, "titles": self.titles, "recap": self.recap, "cards": self.cards.live()}
 
     def briefing(self):
         r = self.recap
@@ -543,6 +629,7 @@ class StreamCopilot(Skill):
         return {"dismiss": lambda b: self.dismiss(str(b.get("id") or "")),
                 "greeted": lambda b: self.greeted(str(b.get("user") or "")),
                 "switch_category": lambda b: self.switch_category(str(b.get("game") or "")),
+                "card": lambda b: self.answer_card(str(b.get("id") or ""), str(b.get("answer") or "no")),
                 "suggest_title": lambda b: self.suggest_title(str(b.get("game") or ""), str(b.get("idea") or "")),
                 "prestream": lambda b: self.svc.prestream() if self.svc.prestream else
                 {"ok": False, "error": "The pre-stream check needs Vesper's runtime (OBS)."}}

@@ -2273,6 +2273,13 @@ function initChrome() {
   document.fonts?.ready.then(() => moveInk(true));
 }
 
+// ---------------------------------------------------------------- on air: private panels blur (styles.css lists them)
+function paintPrivacy() {  // skills/stream_privacy: the Stream tab's "Privacy while live" switch, and recording the screen
+  const p = S.data.stream_privacy, obs = S.data.obs || {};
+  const live = !!(obs.connected && obs.streaming?.active) || !!S.data.twitch?.live;
+  document.body.classList.toggle('live-private', !!p && p.on !== false && (live || !!p.private));
+}
+
 // ---------------------------------------------------------------- live updates
 const sticky = new Set(['system', 'obs', 'twitch', 'activity', 'projects', 'calendar', 'news', 'briefing', 'discovery', 'doctor', 'health', 'voice_profile']);
 function onEvent(ev) {
@@ -2281,6 +2288,7 @@ function onEvent(ev) {
   pulse(type, data);
   if (sticky.has(type)) {
     S.data[type] = data;
+    if (type === 'obs' || type === 'twitch') paintPrivacy();
     const fns = { system: ['vitals', 'stats'], obs: ['obs', 'stats'], twitch: ['twitch', 'stats'], activity: ['activity', 'stats'],
       projects: ['projects', 'stats'], calendar: ['agenda', 'stats'], news: ['news'], briefing: ['briefing'],
       discovery: ['connections'], doctor: ['doctor'], health: ['health'], voice_profile: ['voice', 'triggers'] }[type];
@@ -2355,6 +2363,7 @@ function onEvent(ev) {
     case 'notice': notice(data); break;
     default:
       if (SKILL_RENDER[type]) { S.data[type] = data; paintSkill(type); queueSystems(); }
+      if (type === 'stream_privacy') paintPrivacy();
   }
 }
 
@@ -2382,6 +2391,7 @@ async function load() {
     S.confirmWindow = st.confirm_window || null;
     paintOrb(); paintPending(st.pending); paintProfile(); paintHalt();
     renderAll();
+    paintPrivacy();
     hydrateFeed();
     strip.restore();
     resolveState(st);

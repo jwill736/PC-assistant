@@ -602,16 +602,17 @@ class Runtime:
             listener.paused = True  # the wizard owns the mic; nothing it hears is a command
             result: dict = {"error": "calibration crashed"}
             try:
-                if calibrator is None and self.verifier:
-                    cal.emit(step="prepare", prompt="Getting the voice model ready (first run downloads ~26 MB)…")
-                    cal.embedder = self.verifier.embedder()
-                result = cal.run()
+                try:
+                    if calibrator is None and self.verifier:
+                        cal.emit(step="prepare", prompt="Getting the voice model ready (first run downloads ~26 MB)…")
+                        cal.embedder = self.verifier.embedder()
+                    result = cal.run()
+                finally:
+                    listener.paused = False
+                if not result.get("cancelled") and not result.get("error"):
+                    self.apply_voice_calibration()
             finally:
-                listener.paused = False
-                self.calibrator = None
-            if not result.get("cancelled") and not result.get("error"):
-                self.apply_voice_calibration()
-            else:
+                self.calibrator = None  # only once the new settings are live: "done" means applied
                 self.bus.publish("voice_profile", self.voice_status(), sticky=True)
 
         threading.Thread(target=run, name="calibration", daemon=True).start()

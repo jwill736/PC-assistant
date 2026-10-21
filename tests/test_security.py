@@ -134,7 +134,7 @@ def test_a_missing_wrong_replayed_or_stale_state_is_refused(hud, svc, monkeypatc
         calls = _ready(skill, monkeypatch)
         base = f"/api/skill/{skill.name}/callback"
         good = _state(skill)
-        for query in ("", "?code=abc", "?state=&code=abc", "?state=forged&code=abc", f"?state={good[:-1]}x&code=abc"):
+        for query in ("", "?code=abc", "?state=&code=abc", "?state=forged&code=abc", f"?state={good[:-1]}{'y' if good.endswith('x') else 'x'}&code=abc"):
             r = hud.get(base + query)
             assert r.status_code == 400, (skill.name, query)
         assert calls == []  # a refused state never reaches the service's token endpoint

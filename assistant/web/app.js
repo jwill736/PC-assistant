@@ -1404,6 +1404,10 @@ function notice(n) {
 /* The HUD side of a skill: Vesper.skill('weather', { panels: [...], render(data) {...} }) */
 const Vesper = window.Vesper = {
   _noticeListeners: [],
+  _hooks: {},
+  /* Vesper.on('<bus event>', fn(data, ev)) for any live event; 'hud:view' fires on a tab change (view, previous). */
+  on(type, fn) { (this._hooks[type] = this._hooks[type] || []).push(fn); },
+  emit(type, ...args) { for (const fn of this._hooks[type] || []) { try { fn(...args); } catch (err) { console.error(type, err); } } },
   ui: { h, fill, empty, status, ago, toast, api, post, panels, body, meta, $, $$, meter },
   get data() { return S.data; },
   notices: NOTICES,
@@ -1555,6 +1559,7 @@ function setView(view) {
   }
   moveInk();
   renderAll();
+  Vesper.emit('hud:view', view, prev);
 }
 function moveInk(instant) {
   const ink = $('.tab-ink'), btn = $('.tabs button[aria-selected="true"]');
@@ -2286,6 +2291,7 @@ function onEvent(ev) {
   const { type, data } = ev;
   if (type === 'level') { FX.orb.setLevel(data?.rms); return; }  // up to 20/s while listening or speaking: nothing else
   pulse(type, data);
+  if (Vesper._hooks[type]) Vesper.emit(type, data, ev);
   if (sticky.has(type)) {
     S.data[type] = data;
     if (type === 'obs' || type === 'twitch') paintPrivacy();

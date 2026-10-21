@@ -11,6 +11,7 @@
   <link rel="preload" href="/static/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/surfaces.css">
   <script>
     /* Before first paint: theme, motion (Setup → Display; follows Windows "Animation effects" until set) and the
        once-per-session boot sequence, so nothing flashes. */
@@ -72,6 +73,8 @@
       <button class="icon-btn bell" id="bell-btn" aria-haspopup="dialog" aria-controls="drawer" aria-label="Notifications" title="Notifications">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1.2 1.3H2.8zM6.5 14a1.6 1.6 0 0 0 3 0"/></svg>
         <span class="bell-count hidden" id="bell-count" aria-hidden="true"></span></button>
+      <button class="icon-btn" id="layout-btn" title="Edit layout: move, resize and hide panels" aria-label="Edit layout" aria-pressed="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h5v6H2zM9 2.5h5v3H9zM9 7.5h5v6H9zM2 10.5h5v3H2z"/></svg></button>
       <button class="icon-btn" id="theme-btn" title="Light / dark" aria-label="Switch light or dark theme">
         <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" stroke="none"/></svg></button>
       <button class="icon-btn" id="mic-btn" title="Push to talk (skip the wake word)" aria-label="Push to talk">
@@ -224,6 +227,9 @@
 <div class="toasts" id="toasts" role="region" aria-label="Alerts"></div>
 <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
 <script src="/static/fx.js"></script>
+<script src="/static/qr.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/layout.js"></script>
+<script src="/static/surfaces.js"></script>
 </body>
 </html>

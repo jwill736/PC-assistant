@@ -1,0 +1,80 @@
+/* Mini HUD (/mini): the HUD 2.0 tokens from styles.css, packed into a ~360×520 corner window. Ion = you,
+   ember = Vesper, amber = soon, phosphor = done. */
+body.mini { min-height: 100vh; display: flex; flex-direction: column; gap: 8px; padding: 12px 12px 14px; overflow: hidden; }
+.mini .t1 { font-weight: 500; overflow-wrap: anywhere; }
+.mini .t2 { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+body.mini.stale > :not(.backdrop) { opacity: .55; transition: opacity .3s; }
+
+.mini-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 2px 2px 6px; }
+.mini-orb { width: 64px; height: 64px; display: grid; place-items: center; }
+.mini-orb .orb { width: 64px; height: 64px; }
+:root[data-motion="full"] .mini-orb.idle .orb { animation: breathe 6s var(--ease-in-out) infinite; }
+.mini-name { display: flex; align-items: center; gap: 4px; white-space: nowrap; font: 500 13px/1.2 var(--display); letter-spacing: .34em; text-transform: uppercase; }
+.mini-state { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; font: 600 10px/1 var(--mono); letter-spacing: .16em;
+  text-transform: uppercase; color: var(--muted); white-space: nowrap; transition: color var(--dur-base); }
+.mini-state .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px oklch(from currentColor l c h / 0.18); }
+.mini-state[data-state="listen"] { color: var(--ion); }
+.mini-state[data-state="think"] { color: var(--iris); }
+.mini-state[data-state="speak"] { color: var(--ember); }
+.mini-state[data-state="error"] { color: var(--alert); }
+.mini-state[data-state="standby"] { color: var(--ink-2); }
+.mini-state[data-state="standby"] .dot { background: var(--ion); }
+.mini-btns { display: flex; gap: 6px; }
+.mini-btns .icon-btn { width: 32px; height: 32px; }
+
+/* what was said */
+.mini-said { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.mini-line { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px; align-items: baseline; min-width: 0; }
+.mini-line .tag { justify-self: start; font: 600 9px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; padding: 3px 5px;
+  border: 1px solid currentColor; border-radius: 2px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-line.you .tag { color: var(--ion); } .mini-line.ves .tag { color: var(--ember); }
+.mini-line[data-empty] .tag { opacity: .45; }
+.mini-line .txt { min-width: 0; font-size: 13px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mini-line.you .txt { color: color-mix(in oklch, var(--ion) 55%, var(--ink)); font-family: var(--mono); font-size: 12px; }
+.mini-line[data-empty].you .txt { color: var(--muted); font-family: var(--font); }
+.mini-line .txt.ignored { color: var(--muted); font-style: italic; }
+.mini-line .txt .caret { display: inline-block; width: 6px; height: 12px; margin-left: 2px; vertical-align: -2px; background: var(--ember); opacity: .8; }
+
+/* cards */
+.mini-card { position: relative; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); min-width: 0;
+  animation: fade-up var(--dur-base) var(--ease-out) backwards; }
+.mini-card[hidden] { display: none; }
+.mini-k { display: flex; align-items: center; gap: 8px; font: 500 9.5px/1.3 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.mini-src { color: var(--ink-2); }
+.mini-ago { margin-left: auto; letter-spacing: .04em; text-transform: none; }
+.mini-next-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: center; }
+.mini-cd { font: 300 30px/1 var(--display); letter-spacing: -.01em; min-width: 82px; }
+.mini-next[data-soon="soon"] { border-color: oklch(from var(--amber) l c h / 0.6); }
+.mini-next[data-soon="soon"] .mini-cd { color: var(--amber); }
+.mini-next[data-soon="now"] { border-color: var(--ember); box-shadow: 0 0 24px -10px var(--ember-glow); }
+.mini-next[data-soon="now"] .mini-cd { color: var(--ember); }
+.mini-next .t1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-update { box-shadow: inset 2px 0 0 var(--iris); }
+.mini-update[data-level="warning"], .mini-update[data-level="warn"] { box-shadow: inset 2px 0 0 var(--amber); }
+.mini-update[data-level="urgent"], .mini-update[data-level="error"], .mini-update[data-level="critical"] { box-shadow: inset 2px 0 0 var(--alert); }
+.mini-update .t1 { font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+.mini-music { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 12px; align-items: center; }
+.mini-art { width: 52px; height: 52px; border-radius: 3px; overflow: hidden; background: var(--grid); }
+.mini-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mini-art-none { display: block; width: 100%; height: 100%; background: linear-gradient(135deg, var(--ember-soft), var(--iris-soft)); }
+.mini-music .t1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-music .t2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-music .mini-k { margin-bottom: 2px; }
+.mini-bar { height: 3px; margin-top: 6px; background: var(--grid); border-radius: 2px; overflow: hidden; }
+.mini-bar i { display: block; height: 100%; background: var(--ember); transform-origin: left; transform: scaleX(0); transition: transform 1s linear; }
+.mini-music.paused .mini-bar i { background: var(--muted); }
+
+.mini-timer-list { display: grid; gap: 6px; }
+.mini-timer { display: grid; grid-template-columns: 18px auto minmax(0, 1fr); gap: 10px; align-items: center; font: 300 22px/1.1 var(--display); }
+.mini-timer-lbl { font: 400 12px/1.3 var(--font); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-ring { width: 18px; height: 18px; border-radius: 50%; background: conic-gradient(var(--ember) var(--p, 0deg), var(--grid) 0);
+  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px); mask: radial-gradient(circle, transparent 5px, #000 5.5px); }
+.mini-timer.done { color: var(--phosphor); }
+.mini-timer.done .mini-ring { background: var(--phosphor); }
+
+/* live: private lines blur until hovered (the stream may catch this corner of the screen) */
+.mini-name .badge-live { margin-left: 0; font-size: 9px; padding: 1px 6px; letter-spacing: .14em; vertical-align: 1px; }
+.mini-name .badge-live[hidden] { display: none; }
+body.live-private .mini-private { filter: blur(6px); transition: filter var(--dur-fast); }
+body.live-private .mini-private:hover { filter: none; }

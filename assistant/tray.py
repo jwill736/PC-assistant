@@ -135,7 +135,7 @@ class Tray:
     # ---- menu -----------------------------------------------------------
     def menu_items(self) -> list[MenuItem]:
         rt = self.rt
-        items = [MenuItem("Open HUD", self.open_hud, default=True)]
+        items = [MenuItem("Open HUD", self.open_hud, default=True), MenuItem("Open mini HUD", self.open_mini)]
         if rt.listener:
             items += [
                 MenuItem("Push to talk", rt.listener.arm),
@@ -173,6 +173,12 @@ class Tray:
         url = self.url + fragment
         if not Browser().app_window(url):
             webbrowser.open(url)
+
+    def open_mini(self) -> None:
+        """The small corner window (assistant/surfaces.py): its own Chrome window, top right."""
+        from .surfaces import open_mini
+
+        open_mini(self.url.rstrip("/") + "/mini", self.rt.cfg.data_dir)
 
     def open_logs(self) -> None:
         path = self.rt.cfg.data_dir / "logs"

@@ -323,6 +323,7 @@ def test_memorys_own_learning_leaves_kept_conversations_to_their_thread(svc):
     a = chat(svc, answers("Okay.", "Sure."))
     svc.think = Think(NOTES)
     talk(a, "I'm finally building a new PC this month", "the 9800X3D looks like the one")
+    time.sleep(0.05)  # Windows' clock ticks every ~15 ms: a line in the same tick as "that's it" reads as part of the talk
     a.handle("what's the weather like in my head", source="text")  # not part of the conversation
     prompts = []
     svc.think = lambda prompt, schema=None, **kw: prompts.append(prompt) or {"facts": []}

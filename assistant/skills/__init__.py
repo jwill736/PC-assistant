@@ -31,8 +31,8 @@ log = logging.getLogger(__name__)
 # Load order is the order on the HUD and in the briefing.
 MODULES = ["conversation", "nudges", "ambient", "memory", "weather", "automations", "inbox_zero", "drafts",
            "meetings", "debrief", "people", "planner", "focusblocks", "focus", "habits", "journal", "bills",
-           "travel", "pulse", "screen", "selection", "dictation", "clipboard", "rewind", "janitor", "mcp", "phone",
-           "spotify", "home", "youtube", "discord", "stream_copilot", "gtasks", "diagnostics"]
+           "travel", "review", "pulse", "screen", "selection", "dictation", "clipboard", "rewind", "janitor", "mcp",
+           "phone", "spotify", "home", "youtube", "discord", "stream_copilot", "gtasks", "diagnostics"]
 
 CRASH_LIMIT = 5  # this many failures in a row (of one kind: tick, route, say…) switches a skill off for the run
 ON, OFF, CRASHED, FAILED = "on", "off", "crashed", "failed"

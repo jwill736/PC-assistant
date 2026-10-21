@@ -52,6 +52,36 @@
       showAll ? 'Show fewer' : `Show all ${list.length}`) : null];
   }
 
+  /* The audit: subscriptions crossed with what the activity tracker saw you open. */
+  const usedWord = i => !i.tracked ? 'can’t track' : i.last_used == null ? 'not seen' : i.days_since === 0 ? 'used today' : `used ${i.days_since}d ago`;
+  function audit(a) {
+    if (!a || !a.ok || !(a.items || []).length) return null;
+    const flagged = a.flagged || [];
+    const act = async (action, i, done) => {
+      const r = await Vesper.act('bills', action, { merchant: i.merchant });
+      toast(r.ok ? done : r.error, { level: r.ok ? 'good' : 'error', source: 'bills' });
+    };
+    const rows = flagged.map((i, n) => h('div', { class: 'item mn-row mn-flag', style: `--i:${n}` },
+      h('div', { class: 'main' }, h('div', { class: 't1' }, i.merchant),
+        h('div', { class: 't2' }, i.last_used == null ? `Not opened since tracking began, ${i.idle_days} days ago` : `Not opened in ${i.idle_days} days`)),
+      h('div', { class: 'mn-price' }, amt(i.amount, i.currency), h('span', { class: 'mn-cad' }, CAD[i.cadence] || '')),
+      h('div', { class: 'mn-audit-btns' },
+        i.reminder_at ? h('span', { class: 'pill mn-set' }, 'Reminder set') :
+          h('button', { class: 'btn small primary', onclick: () => act('remind_cancel', i, `I'll remind you to cancel ${i.merchant} before it renews.`) }, 'Remind me to cancel'),
+        h('button', { class: 'btn small ghost', title: 'Keep it: no flag for 90 days', onclick: () => act('keep', i, `${i.merchant} kept. I won't flag it for 90 days.`) }, 'Keep'))));
+    const others = (a.items || []).filter(i => !i.flag);
+    return h('section', { class: 'mn-audit' },
+      h('div', { class: 'mn-audit-head' }, h('div', { class: 'sub-h' }, `Audit · not opened in ${a.days} days`),
+        flagged.length ? h('div', { class: 'mn-savings' }, 'Potential savings ', amt(a.savings, a.currency, 'inline'), '/mo · ',
+          amt(a.savings_year, a.currency, 'inline'), '/yr') : null),
+      flagged.length ? h('div', { class: 'list mn-list' }, rows) :
+        empty(a.ready ? `You've used everything you pay for in the last ${a.days} days.` :
+          a.history_days ? `App use tracked for ${a.history_days} of ${a.days} days so far: the audit fills in as it learns.` :
+            'Turn on activity tracking so I can see which subscriptions you use.'),
+      others.length ? h('div', { class: 'mn-usage t3' }, others.map(i => h('span', { class: `pill ${i.kept ? 'mn-kept' : ''}` },
+        `${i.merchant} · ${i.kept ? 'kept' : usedWord(i)}`))) : null);
+  }
+
   function paint(d) {
     for (const p of panels('bills')) {
       const b = body(p);
@@ -71,7 +101,8 @@
           trials(d.trials)),
         h('div', { class: 'mn-cols' },
           h('section', {}, h('div', { class: 'sub-h' }, `Next ${d.days || 14} days`), upcoming(d.upcoming || [])),
-          h('section', {}, h('div', { class: 'sub-h' }, 'Subscriptions'), subs(d.subscriptions || []))));
+          h('section', {}, h('div', { class: 'sub-h' }, 'Subscriptions'), subs(d.subscriptions || []))),
+        audit(d.audit));
     }
   }
 

@@ -430,7 +430,7 @@ BOOK = [
     ("how cold is it", "get_weather", {"day": "today"}),
     ("what's the temperature outside", "get_weather", {"day": "today"}),
     ("what's the forecast for the weekend", "get_weather", {"day": "weekend"}),
-    ("what's the weather in london", MODEL),
+    ("what's the weather in london", "weather_in", {"place": "london"}),  # travel.py: any town's forecast
     ("what's the temperature in my room", MODEL),  # a room sensor, not the forecast
     ("set my location to atlanta", "set_location", {"name": "atlanta"}),
     ("i live in atlanta", "set_location", {"name": "atlanta"}),

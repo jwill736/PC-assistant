@@ -32,6 +32,24 @@ CODES = {0: ("clear", "sun"), 1: ("mostly clear", "sun"), 2: ("partly cloudy", "
          95: ("thunderstorms", "storm"), 96: ("thunderstorms with hail", "storm"), 99: ("severe thunderstorms", "storm")}
 
 
+NOT_PLACES = re.compile(r"(?:the |this |that |next |my )?(?:today|tonight|tomorrow|morning|afternoon|evening|night|weekend|week|"
+                        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|here|my area|my city|my town|now|"
+                        r"the next (?:few |\w+ )?(?:hours?|days?))(?: .*)?|(?:an? )?(?:hour|minute|day)s?(?: .*)?|\d.*")
+
+
+def asked_place(t: str) -> str | None:
+    """'Denver' from "what's the weather in denver" / "is it raining in new york"; None for "the weather tomorrow"."""
+    m = re.fullmatch(r"(?:what'?s|what is|how'?s|how is|tell me|give me|get|check)? ?(?:the |)?(?:weather|forecast|temperature)"
+                     r"(?: like| going to be(?: like)?| looking)? (?:in|for|at|over) (.+?)(?: (?:today|tomorrow|this week|right now|now))?|"
+                     r"(?:is it|will it be|will it) (?:raining|snowing|cold|hot|warm|sunny|rain|snow) in (.+?)"
+                     r"(?: (?:today|tomorrow|this week|right now|now))?", t)
+    place = (m.group(1) or m.group(2)).strip() if m else None
+    if place and re.search(r"\b(?:room|house|home|office|bedroom|garage|basement|gpu|cpu|graphics|card|pc|computer|rig|"
+                           r"case|drive|disk|ssd)\b", place):
+        return None  # a sensor or the PC, not a town
+    return None if not place or NOT_PLACES.fullmatch(place) else place
+
+
 def describe(code) -> tuple[str, str]:
     return CODES.get(int(code or 0), ("unknown", "cloud"))
 
@@ -182,7 +200,9 @@ class Weather(Skill):
         if re.match(r"(?:every|each|remind|after|when|search|google|youtube|play|journal|dear diary|remember|note|add)\b", t) \
                 or re.search(r"\b(?:gpu|cpu|graphics|card|pc|computer|rig|room|house|drive|disk|ssd)\b", t):
             return None
-        # get_weather only knows J's own town: "the weather in London" goes to the model (or a web search).
+        if asked_place(t):
+            return None  # "the weather in Denver": travel.py's weather_in answers
+        # get_weather only knows J's own town: any other "the weather in London" goes elsewhere too (model, web search).
         if re.search(r"\b(?:weather|forecast|temperature)\b(?: like)? (?:in|for|at) (?!(?:the |this |next )?(?:morning|"
                      r"afternoon|evening|night|weekend|week)\b|today|tomorrow|tonight|my |here|home|(?:mon|tues|wednes|"
                      r"thurs|fri|satur|sun)day)\w", t):

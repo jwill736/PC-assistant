@@ -442,6 +442,16 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
             await run_in_threadpool(skill.publish)
         return done_page(title, line, ok)
 
+    @app.get("/api/skill/{name}/{page}", response_class=HTMLResponse)
+    async def skill_page(name: str, page: str, request: Request):
+        """A page a skill renders (e.g. the life review card): its ``pages()[page](params) -> html``. Needs the token."""
+        skill = runtime.svc.skills.get(name) if runtime.svc.skills is not None else None
+        fn = (getattr(skill, "pages", dict)() or {}).get(page) if skill is not None else None
+        if fn is None:
+            raise HTTPException(404, f"no page {page} for {name}")
+        params = {**dict(request.query_params), "base": str(request.base_url)}
+        return HTMLResponse(await run_in_threadpool(fn, params))
+
     @app.post("/api/skill/{name}/{action}")
     async def skill_action(name: str, action: str, body: dict | None = None):
         if runtime.svc.skills is None:

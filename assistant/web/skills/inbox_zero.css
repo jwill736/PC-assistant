@@ -17,3 +17,11 @@
 .iz-due.late { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 45%, transparent); }
 @media (max-width: 600px) { .iz-btns { flex-direction: row; } .iz-item { flex-wrap: wrap; } .iz-item .main { flex-basis: 100%; } }
 @media (prefers-reduced-motion: reduce) { .iz-list { animation: none; } .iz-item { transition: none; } }
+/* a promise that looks kept: asks before ticking it off */
+.iz-kept { box-shadow: inset 2px 0 0 var(--amber); padding-left: 8px; }
+.iz-kept-tag { font: 500 9.5px/1.4 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--amber); }
+.iz-yes { border-color: oklch(from var(--phosphor) l c h / 0.55); }
+.iz-yes:hover { color: var(--phosphor); border-color: var(--phosphor); }
+.iz-closed { margin-top: 4px; }
+.iz-closed-row { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; color: var(--ink-2); min-width: 0; }
+.iz-tick { color: var(--phosphor); flex: none; }

@@ -147,7 +147,7 @@ function toast(text, opt) {
 }
 const SOURCE_LABEL_N = { inbox_zero: 'Email', automations: 'Automation', nudges: 'Updates', calendar: 'Calendar', weather: 'Weather',
   break: 'Break', tasks: 'Tasks', welcome: 'Welcome back', focus: 'Focus', people: 'People', meetings: 'Meetings', janitor: 'PC',
-  pulse: 'Pulse', vesper: 'Vesper', stream: 'Stream', obs: 'OBS', twitch: 'Twitch', highlight: 'Highlight', system: 'System' };
+  pulse: 'Pulse', ambient: 'Look-around', vesper: 'Vesper', stream: 'Stream', obs: 'OBS', twitch: 'Twitch', highlight: 'Highlight', system: 'System' };
 
 // Category -> colour: profiles take categorical slots in config order, then "other"; idle is neutral.
 function categories() { return [...Object.keys(S.data.profiles || { work: 1, stream: 1 }), 'other']; }
@@ -1398,7 +1398,7 @@ function notice(n) {
   if (NOTICES.some(x => x.key && x.key === n.key)) return;
   NOTICES.unshift(n); NOTICES.length = Math.min(NOTICES.length, 50);
   if (n.level !== 'quiet') toast(n.text, { source: n.source, level: n.level });
-  feed({ source: n.source, text: n.text, level: n.level, ts: n.ts, key: n.key });
+  feed({ source: n.source, text: n.text, level: n.level, ts: n.ts, key: n.key, why: n.why });
   for (const fn of Vesper._noticeListeners) fn(n, NOTICES);
 }
 /* The HUD side of a skill: Vesper.skill('weather', { panels: [...], render(data) {...} }) */
@@ -1795,8 +1795,16 @@ function feed(item) {
 /* After a reload: the updates the nudges skill already delivered, so the drawer isn't empty. */
 function hydrateFeed() {
   for (const n of (S.data.nudges?.feed || []).slice(0, 30)) {
-    feed({ source: n.source, text: n.text, level: n.priority, ts: n.delivered, key: n.key });
+    feed({ source: n.source, text: n.text, level: n.priority, ts: n.delivered, key: n.key, why: n.why });
   }
+}
+/* "Why did you say that?": the rule and the evidence behind an update (skills/nudges.py; styled in nudges.css). */
+function whyBox(w) {
+  if (!w || !w.rule) return null;
+  return h('details', { class: 'n-why' }, h('summary', {}, 'Why?'),
+    h('div', { class: 'why-rule' }, w.rule),
+    (w.evidence || []).length ? h('ul', { class: 'why-ev' }, w.evidence.map(e => h('li', {}, e))) : null,
+    w.note ? h('div', { class: 'why-note' }, w.note) : null);
 }
 function unread() { return FEED.filter(n => n.ts > feedSeen).length; }
 function paintBell(bump) {
@@ -1843,7 +1851,7 @@ function renderDrawer() {
       h('div', {}, h('div', { class: 'n-meta' }, h('span', {}, SOURCE_LABEL_N[n.source] || (n.source || 'Vesper').replace(/_/g, ' ')),
         ['urgent', 'error', 'critical', 'warning', 'warn'].includes(lv) ? h('span', { class: 'lv' }, lv === 'urgent' ? 'urgent' : lv) : null,
         h('span', { class: 'time', title: new Date(n.ts * 1000).toLocaleString() }, ago(n.ts))),
-      h('div', { class: 'n-txt' }, n.text))));
+      h('div', { class: 'n-txt' }, n.text), whyBox(n.why))));
   }
   fill(box, out);
 }

@@ -25,7 +25,7 @@ import httpx
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 
 IS_WINDOWS = sys.platform == "win32"
 DENY_APPS = {"1password", "keepass", "keepassxc", "bitwarden", "lastpass", "dashlane", "keeper", "keeperpasswordmanager",
@@ -159,7 +159,7 @@ class Screen(Skill):
             from ..integrations import desktop
 
             window = desktop.active_window
-        self.http = http or httpx.Client(timeout=120, trust_env=False)  # the model is on this PC or the home network
+        self.http = http or lazy_client(timeout=120, trust_env=False)  # the model is on this PC or the home network
         self.window, self.capture, self.ocr, self.clock = window, capture_fn, ocr, clock
         self.brain = None  # the runtime's LocalBrain (set at start)
         self.last: dict | None = None
@@ -264,6 +264,31 @@ class Screen(Skill):
             with self._lock:
                 self.last = {k: v for k, v in self.last.items() if k != "thumb"}
             self.publish()
+
+    def selftest(self) -> list[dict]:
+        brain = self.brain
+        if brain is None and ((self.svc.cfg.get("brain") or {}).get("local") or {}).get("enabled", True):
+            from ..brain.local_llm import LocalBrain
+
+            brain = LocalBrain.for_report((self.svc.cfg.get("brain") or {}).get("local") or {}, self.svc.cfg.data_dir)
+        llm = brain.refresh() if brain is not None else None
+        models = ((brain.found or {}).get("models") or []) if brain is not None else []
+        pinned = self.setting("model")
+        if pinned and any(m["name"] == pinned or m["name"].startswith(pinned) for m in models):
+            return [check("Vision", "pass", f"sees with {pinned}")]
+        seeing = [m["name"] for m in models if "vision" in (m.get("caps") or [])]
+        if llm is not None and llm.model in seeing:
+            return [check("Vision", "pass", f"sees with {llm.model}")]
+        if seeing:
+            return [check("Vision", "pass", f"sees with {seeing[0]}")]
+        import importlib.util
+
+        if IS_WINDOWS and any(importlib.util.find_spec(m) for m in ("winrt", "winsdk")):
+            return [check("Vision", "warn", "no vision model: reads the screen's text with Windows OCR instead",
+                          "For pictures too: ollama pull qwen3-vl:8b")]
+        return [check("Vision", "fail" if models else "warn",
+                      "no vision model and no Windows OCR: “look at this” can't see",
+                      "In a terminal: ollama pull qwen3-vl:8b")]
 
     def status(self) -> dict:
         last = dict(self.last) if self.last else None

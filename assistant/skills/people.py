@@ -19,7 +19,7 @@ from email.utils import getaddresses
 
 from ..brain.router import Intent
 from ..brain.tools import EMAIL_NOTE, Tool, obj
-from . import Skill
+from . import Skill, gmail_checks
 
 ROBOT = re.compile(r"(?:no-?reply|do-?not-?reply|notifications?|mailer-daemon|newsletter|alerts?|updates?|billing|"
                    r"receipts?|support@|info@|news@|marketing|hello@|calendar-notification|@resource\.calendar)", re.I)
@@ -381,6 +381,9 @@ class People(Skill):
         return None
 
     # ---- HUD ------------------------------------------------------------------------------------------------
+    def selftest(self) -> list[dict]:
+        return gmail_checks(self.svc, per_account=False)
+
     def status(self) -> dict:
         n = self.svc.storage.query("SELECT COUNT(*) AS n FROM people_contacts")[0]["n"]
         built = float(self._meta("built", "0") or 0) or None

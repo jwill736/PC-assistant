@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta
 
 from ..brain.router import Intent
 from ..brain.tools import EMAIL_NOTE, Tool, obj
-from . import Skill
+from . import Skill, gmail_checks
 from .bills import date_after, day_word, find_dates, merchant_of, scan_mail, why_no_gmail
 
 QUERY = ('(shipped OR "out for delivery" OR delivered OR "tracking number" OR "your order" OR "order confirmation" OR '
@@ -285,6 +285,9 @@ class Travel(Skill):
         flights.sort(key=lambda f: f["depart"])
         return {"flights": flights, "hotels": sorted(hotels, key=lambda x: x["checkin"]),
                 "next_flight": flights[0] if flights else None}
+
+    def selftest(self) -> list[dict]:
+        return gmail_checks(self.svc, per_account=False)
 
     def status(self) -> dict:
         why = why_no_gmail(self.svc.gmail)

@@ -39,6 +39,11 @@ def svc(cfg):
     nud = s.skills.get("nudges") if s.skills is not None else None
     if nud is not None:  # never the test machine's own desktop (a CI runner reports "fullscreen")
         nud.fullscreen, nud.idle = (lambda: ""), (lambda: 0)
+    if s.skills is not None:  # self-tests (health check, diagnostics) never read the real clipboard or GPU
+        if s.skills.get("clipboard") is not None:
+            s.skills["clipboard"].board = None
+        if s.skills.get("janitor") is not None:
+            s.skills["janitor"].runner = lambda args: None
     return s
 
 

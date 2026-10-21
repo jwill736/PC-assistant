@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 
 from ..brain.router import Intent
 from ..brain.tools import EMAIL_NOTE, Tool, obj
-from . import Skill
+from . import Skill, gmail_checks
 
 QUERIES = ['(receipt OR invoice OR "your subscription" OR renews OR renewal OR "payment due" OR "trial ends" OR '
            '"free trial" OR billing OR membership OR "payment received") newer_than:120d',
@@ -380,6 +380,9 @@ class Bills(Skill):
                 soon.append({**u, "days": (d - today).days, "when": day_word(d, today)})
         return {"ok": True, "currency": cur, "monthly": totals, "monthly_total": totals.get(cur, 0.0),
                 "subscriptions": subs, "upcoming": soon, "trials": sorted(trials, key=lambda t: t["ends"]), "days": days}
+
+    def selftest(self) -> list[dict]:
+        return gmail_checks(self.svc, per_account=False)
 
     def status(self) -> dict:
         why = why_no_gmail(self.svc.gmail)

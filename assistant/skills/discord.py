@@ -20,7 +20,7 @@ import httpx
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 from ._kit import LiveEdge, save_secret, save_setting
 
 URL_ENV = "DISCORD_WEBHOOK_URL"
@@ -38,7 +38,7 @@ class Discord(Skill):
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=10)
+        self.http = http or lazy_client(timeout=10)
         self.clock = clock
         self._lock = threading.RLock()
         self._live = LiveEdge(svc)
@@ -203,6 +203,14 @@ class Discord(Skill):
             if not out.get("ok"):
                 self.error = out["error"]
         self.publish()
+
+    def selftest(self) -> list[dict]:
+        if not self.url:
+            return [check("Discord", "skip", "no webhook", "Optional: Stream → Discord")]
+        r = self._lookup()  # a GET: posts nothing
+        if r.get("ok") is False:
+            return [check("Discord", "fail", r["error"], "Stream → Discord: paste a new webhook link")]
+        return [check("Discord", "pass", f"webhook “{r.get('name')}” works")]
 
     def status(self) -> dict:
         step = None if self.url else "In Discord: Server Settings → Integrations → Webhooks → New Webhook → pick the " \

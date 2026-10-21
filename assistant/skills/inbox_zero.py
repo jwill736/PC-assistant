@@ -21,7 +21,7 @@ from email.utils import getaddresses
 
 from ..brain.router import Intent
 from ..brain.tools import EMAIL_NOTE, Tool, obj
-from . import Skill
+from . import Skill, gmail_checks
 from .people import ROBOT, account_kind, clean_subject, display_name, first_name, gmail_or_reason, on_air
 
 OWED_Q = "in:inbox -from:me newer_than:14d"
@@ -344,6 +344,9 @@ class InboxZero(Skill):
         w = result["waiting"]
         lines = [f"{first_name(x['name'])} hasn't replied to “{x['subject']}” in {x['days']} days" for x in w[:2]]
         return "; ".join(lines) + "." + (f" {n - 2} more on the HUD." if n > 2 else "")
+
+    def selftest(self) -> list[dict]:
+        return gmail_checks(self.svc)
 
     def status(self) -> dict:
         if self._data is None:

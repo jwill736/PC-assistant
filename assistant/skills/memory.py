@@ -17,7 +17,7 @@ from datetime import datetime
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
 from ..memory import BLOCKS, Embedder, Memory
-from . import Skill
+from . import Skill, check, lazy_client
 
 QUIET_S = 120
 
@@ -33,7 +33,8 @@ class MemorySkill(Skill):
         local = ((svc.cfg.get("brain") or {}).get("local") or {})
         model = self.setting("embed_model", "embeddinggemma")
         if embedder is None and model:
-            embedder = Embedder(local.get("url") or "http://127.0.0.1:11434", model, int(self.setting("embed_dims", 256)))
+            embedder = Embedder(local.get("url") or "http://127.0.0.1:11434", model, int(self.setting("embed_dims", 256)),
+                                http=lazy_client(timeout=30))
         a = svc.cfg["assistant"]
         self.memory = Memory(svc.storage, user=a.get("user_name") or "J", assistant=a.get("name") or "Vesper", tz=svc.tz,
                              think=lambda *x, **k: svc.think(*x, **k), embedder=embedder, clock=clock)
@@ -90,6 +91,22 @@ class MemorySkill(Skill):
         return len(learned)
 
     # ---- skill surface -----------------------------------------------------------------------------------
+    def selftest(self) -> list[dict]:
+        e = self.memory.embedder
+        if e is None:
+            return [check("Embeddings", "skip", "off (skills.memory.embed_model is empty): memory matches words only")]
+        try:
+            r = e.http.post(f"{e.url}/api/embed", json={"model": e.model, "input": ["ping"]}, timeout=8)
+            ok = r.status_code == 200 and bool(r.json().get("embeddings"))
+        except Exception as exc:
+            return [check("Embeddings", "warn", f"no answer from {e.url} ({type(exc).__name__}): memory matches words "
+                          "only", "Start Ollama (it runs in the tray)")]
+        if not ok:
+            return [check("Embeddings", "warn", f"{e.model} isn't in Ollama", f"In a terminal: ollama pull {e.model}")]
+        if e.available is False:  # Ollama came back: use it again without a restart
+            e.available, e.error = None, ""
+        return [check("Embeddings", "pass", f"{e.model} answers")]
+
     def status(self) -> dict:
         e = self.memory.embedder
         return {"facts": self.memory.count(), "core": self.memory.core(), "learned": self.memory.learned[:12],

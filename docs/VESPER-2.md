@@ -179,6 +179,17 @@ Each server adds abilities; every action they take asks you first unless you low
 65. **Setup** tab → **Display**: **Motion** Full / Reduced / Off, and the theme.
 66. Watch the orb while you talk: blue when it's listening to you, violet while it thinks, orange when it speaks.
 
+## Part L · When something isn't working: diagnostics (1 minute)
+
+67. **Setup** tab → **Diagnostics · report to send** → **Run diagnostics** (or say “Vesper, run diagnostics”). You
+    should see pass / warn / fail counts within about 15 seconds, and the full path of the report under them.
+68. Click **Open the file** to read it, or **Show in folder** to attach `diagnostics-<date>.md` to a message. Secrets
+    are taken out and email addresses are partly hidden, so it's safe to send as it is.
+69. **Setup** → **Skills** lists every ability with an on/off switch. A skill that keeps failing is switched off for
+    the session (a red card says why); flip its switch to turn it back on.
+70. Vesper closed? In a terminal in the Vesper folder: `.venv\Scripts\python -m assistant --diagnose` writes the
+    same report.
+
 ## Things you can say (cheat sheet)
 
 | Say | What happens |

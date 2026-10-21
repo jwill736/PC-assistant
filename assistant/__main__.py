@@ -189,6 +189,8 @@ def main() -> None:
     parser.add_argument("--no-tray", action="store_true", help="don't show the system tray icon")
     parser.add_argument("--scan", action="store_true", help="scan this PC for things to connect, then exit")
     parser.add_argument("--doctor", action="store_true", help="scan + live health check of every connection, then exit")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="write one diagnostic report to send (data/diagnostics-<date>.md), then exit")
     parser.add_argument("--calibrate", action="store_true", help="calibrate the mic and enroll your voice, then exit")
     parser.add_argument("--bench-voice", action="store_true",
                         help="record 10 commands and compare speech engines on your voice and PC, then exit")
@@ -213,7 +215,8 @@ def main() -> None:
         closed = quit_running(local_host, port, cfg.data_dir, cfg.root)
         print("Vesper is closed." if closed else "Vesper is still running: quit it from the tray icon.")
         sys.exit(0 if closed else 1)
-    log_path = setup_logging(cfg.data_dir, args.debug, console=not headless)
+    # --diagnose: the console shows its summary only (everything still goes to the log file)
+    log_path = setup_logging(cfg.data_dir, args.debug, console=not headless and not args.diagnose)
     log = logging.getLogger("assistant")
 
     if args.scan or args.doctor:
@@ -225,6 +228,11 @@ def main() -> None:
         print(format_report(result, report))
         print(f"\nWrote {discovery.DISCOVERED_FILE} (merged under config.yaml; your settings win).")
         sys.exit(1 if report and report["summary"].get("fail") else 0)
+
+    if args.diagnose:
+        from .diagnostics import cli
+
+        sys.exit(cli(cfg, local_host, port))
 
     if args.calibrate:
         sys.exit(run_cli_calibration(cfg))

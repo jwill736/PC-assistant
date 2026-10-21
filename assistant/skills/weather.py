@@ -14,7 +14,7 @@ import httpx
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 
 FORECAST = "https://api.open-meteo.com/v1/forecast"
 GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
@@ -42,7 +42,7 @@ class Weather(Skill):
 
     def __init__(self, svc, http: httpx.Client | None = None):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=15, headers={"User-Agent": "Vesper/1.0"})
+        self.http = http or lazy_client(timeout=15, headers={"User-Agent": "Vesper/1.0"})
         self._data: dict | None = None
         self._at = 0.0
         self.error: str | None = None
@@ -123,6 +123,19 @@ class Weather(Skill):
         self._data = shape(f, place, aqi, "°F" if self.fahrenheit else "°C")
         self._at, self.error = time.time(), None
         return self._data
+
+    def selftest(self) -> list[dict]:
+        p = self.setting("place")
+        if not (isinstance(p, dict) and "lat" in p):
+            return [check("Forecast", "warn", "no location yet", "Say “Vesper, set my location to <your city>”")]
+        try:
+            r = self.http.get(FORECAST, params={"latitude": p["lat"], "longitude": p["lon"], "current": "temperature_2m"},
+                              timeout=8)
+            ok = r.status_code == 200 and "current" in r.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            return [check("Forecast", "warn", f"the weather service didn't answer ({type(exc).__name__})")]
+        return [check("Forecast", "pass" if ok else "warn", f"works for {p.get('name') or 'your place'}" if ok else
+                      f"the weather service said {r.status_code}")]
 
     def status(self) -> dict:
         data = self.forecast()

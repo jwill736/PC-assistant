@@ -27,7 +27,7 @@ from datetime import datetime
 import httpx
 
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class Phone(Skill):
 
     def __init__(self, svc, http: httpx.Client | None = None, idle=None, clock=time.time):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=40, headers={"User-Agent": "Vesper/1.0"})
+        self.http = http or lazy_client(timeout=40, headers={"User-Agent": "Vesper/1.0"})
         self.clock = clock
         if idle is None:
             from ..integrations import desktop
@@ -395,6 +395,18 @@ class Phone(Skill):
             return {"ok": False, "error": "Pair your phone or set an ntfy topic first."}
         return self.push("Test from your PC. Replies work too: try /status.")
 
+    def selftest(self) -> list[dict]:
+        if not self.token():
+            return [check("Telegram", "skip", "not set up", "Optional: Setup → Phone")]
+        try:
+            me = self.api("getMe", timeout=8) or {}
+        except PhoneError as exc:
+            return [check("Telegram", "fail", f"the bot token doesn't work: {exc}", "Setup → Phone → Change token")]
+        paired = bool(self.chat_id)
+        return [check("Telegram", "pass" if paired else "warn",
+                      f"bot @{me.get('username')} answers" + ("; phone paired" if paired else "; no phone paired yet"),
+                      "" if paired else "Setup → Phone: send the bot /start with the code shown")]
+
     def status(self) -> dict:
         topic = self.svc.cfg.secret(NTFY_ENV)
         return {"token": bool(self.token()), "bot": self.bot, "paired": bool(self.chat_id),
@@ -430,6 +442,7 @@ class Phone(Skill):
 
     def start(self, runtime) -> None:
         self.run_command = lambda text: runtime.command(text, source="phone")
+        self._stop.clear()  # turned back on in Setup → Skills after a stop()
         self.pending = runtime.assistant.pending_view
         self._thread = threading.Thread(target=self._loop, name="phone", daemon=True)
         self._thread.start()

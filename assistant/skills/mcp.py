@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from ..brain.tools import Tool
-from . import Skill
+from . import Skill, check
 
 log = logging.getLogger(__name__)
 logging.getLogger("httpx2").setLevel(logging.WARNING)  # its INFO lines carry request URLs
@@ -481,6 +481,22 @@ class MCP(Skill):
                     confirm_text=lambda a: f"use {tool} on the {server} tool server"
                                            + (f" ({json.dumps(a, ensure_ascii=False)[:160]})" if a else ""),
                     untrusted=True, untrusted_label="an MCP server", untrusted_note=NOTE)
+
+    def selftest(self) -> list[dict]:
+        problem = sdk_problem() if self.servers else None
+        if problem:
+            return [check("MCP package", "fail", problem, "Run setup.bat again")]
+        out = []
+        for srv in list(self.servers.values()):
+            if not srv.conf["enabled"]:
+                out.append(check(srv.name, "skip", "turned off"))
+            elif srv.state == "connected":
+                out.append(check(srv.name, "pass", f"connected, {len(srv.offered())} tools offered"))
+            elif srv.state == "error":
+                out.append(check(srv.name, "fail", srv.error or "failed", "Setup → Tool servers: check it, then Connect"))
+            else:
+                out.append(check(srv.name, "warn", f"{srv.state} (not connected yet)", "Give it a minute, then check again"))
+        return out
 
     def status(self) -> dict:
         problem = sdk_problem()

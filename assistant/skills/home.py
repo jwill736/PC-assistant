@@ -20,7 +20,7 @@ import httpx
 
 from ..brain.router import NUMBER, Intent, number
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 from ._kit import LiveEdge, save_secret, save_setting
 
 PORT = 9123
@@ -52,7 +52,7 @@ class Home(Skill):
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=4, headers={"Connection": "close"})  # Key Light firmware is fragile
+        self.http = http or lazy_client(timeout=4, headers={"Connection": "close"})  # Key Light firmware is fragile
         self.clock = clock
         self._lock = threading.RLock()
         self._states: list[dict] = []  # Home Assistant, every entity
@@ -333,6 +333,21 @@ class Home(Skill):
             self.set_on_air(edge == "start")
         self.lights(fresh=True)
         self.publish()
+
+    def selftest(self) -> list[dict]:
+        out = []
+        if self.ha_url and self.ha_token:
+            try:
+                self._ha("GET", "/api/")
+                out.append(check("Home Assistant", "pass", f"answers at {self.ha_url}"))
+            except HomeError as exc:
+                out.append(check("Home Assistant", "fail", str(exc), "Setup → Lights & home: check the address and token"))
+        for light in self.key_lights():
+            st = self._elg_get(light["ip"])
+            out.append(check(f"Key Light · {light['name']}", "pass" if st else "fail",
+                             f"answers at {light['ip']}" if st else f"no answer at {light['ip']}",
+                             "" if st else "Is it on the same Wi-Fi? Its address may have changed: remove and add it"))
+        return out or [check("Lights", "skip", "no Home Assistant or Key Light set up", "Optional")]
 
     def status(self) -> dict:
         lights = self.lights()

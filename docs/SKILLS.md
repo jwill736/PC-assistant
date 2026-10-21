@@ -32,9 +32,16 @@ class Thing(Skill):
         return None
     def tick(self):                      # default: self.publish()
         ...
-    def start(self, runtime):            # once at startup; runtime.command(text) runs a command as if typed
+    def start(self, runtime):            # once at startup, in the background; runtime.command(text) runs a command
         ...
+    def selftest(self):                  # does the outside connection work now? (health check + diagnostics)
+        return [check("Service", "pass", "answers")]   # from . import check; status pass/warn/fail/skip
 ```
+
+A skill whose tick, route or `say` raises 5 times in a row is switched off for the session (a notice says why;
+Setup → Skills turns it back on). Make the http client with `lazy_client(timeout=10)` (from `.`), not
+`httpx.Client(...)`: building clients in `__init__` slowed startup. `selftest` must be quick, change nothing, and
+never put a secret or a message's text in `detail`.
 
 What a skill can use (`self.svc`): `cfg` (+ `self.setting(key, default)` for `skills.<name>.<key>`), `bus`, `storage`
 (SQLite: `storage.execute/query`; create your own tables with `CREATE TABLE IF NOT EXISTS <name>_...`), `tz`,

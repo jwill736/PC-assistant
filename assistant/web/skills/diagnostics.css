@@ -1,0 +1,42 @@
+/* Diagnostics (Setup): the report to send, and Setup → Skills */
+.dg-sum { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.dg-chip { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--inset); animation: dg-in var(--dur-base, .32s) var(--ease-out, ease-out) both; }
+.dg-chip:nth-child(2) { animation-delay: .04s; } .dg-chip:nth-child(3) { animation-delay: .08s; }
+.dg-n { font-family: var(--mono); font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.dg-l { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.dg-chip.pass .dg-n { color: var(--phosphor); } .dg-chip.warn .dg-n { color: var(--amber); } .dg-chip.fail .dg-n { color: var(--alert); }
+.dg-chip.fail:not(.zero) { border-color: oklch(from var(--alert) l c h / .5); }
+.dg-chip.warn:not(.zero) { border-color: oklch(from var(--amber) l c h / .45); }
+.dg-chip.zero .dg-n { color: var(--muted); }
+.dg-sum.busy .dg-chip { opacity: .55; }
+:root[data-motion="full"] .dg-sum.busy .dg-chip { animation: dg-pulse 1.4s var(--ease-in-out, ease-in-out) infinite; }
+.dg-when { margin: 6px 0 10px; }
+.dg-file { display: grid; gap: 4px; margin-bottom: 8px; }
+.dg-path { font-family: var(--mono); font-size: 11.5px; color: var(--ink); background: var(--inset); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 6px 8px; overflow-wrap: anywhere; user-select: all; }
+.dg-actions { flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.dg-list { max-height: 320px; overflow: auto; }
+.dg-ok { color: var(--phosphor); }
+.dg-intro { margin-bottom: 10px; }
+.dg-skills { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 14px; }
+.dg-skill { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 6px 0;
+  border-bottom: 1px solid var(--grid); animation: dg-in var(--dur-base, .32s) var(--ease-out, ease-out) both; }
+.dg-skill .t1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dg-skill.on .status { display: none; }
+.dg-skill.crashed, .dg-skill.failed { grid-column: 1 / -1; }
+.dg-main { min-width: 0; }
+.dg-err { color: var(--alert); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; }
+.dg-toggle { position: relative; display: inline-flex; cursor: pointer; }
+.dg-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.dg-switch { width: 30px; height: 16px; border-radius: 8px; background: var(--line-2); position: relative; }
+.dg-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ink);
+  transition: transform var(--dur-fast, .18s) ease; }
+.dg-toggle input:checked + .dg-switch { background: var(--phosphor); }
+.dg-toggle input:checked + .dg-switch::after { transform: translateX(14px); background: var(--on-accent); }
+.dg-toggle input:focus-visible + .dg-switch { outline: 2px solid var(--ember); outline-offset: 2px; }
+.dg-toggle input:disabled + .dg-switch { opacity: .45; }
+.dg-toggle:has(input:disabled) { cursor: default; }
+@keyframes dg-in { from { opacity: 0; transform: translateY(4px); } }
+@keyframes dg-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .dg-chip, .dg-skill { animation: none; } .dg-switch::after { transition: none; } }

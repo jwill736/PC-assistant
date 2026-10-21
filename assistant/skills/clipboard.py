@@ -20,7 +20,7 @@ import uuid
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check
 
 IS_WINDOWS = sys.platform == "win32"
 CF_UNICODETEXT, GMEM_MOVEABLE = 13, 0x0002
@@ -297,6 +297,16 @@ class Clipboard(Skill):
         return {"ok": True}
 
     # ---- skill surface ------------------------------------------------------------------------------------
+    def selftest(self) -> list[dict]:
+        if self.board is None:
+            return [check("Clipboard", "fail", "no way to read the clipboard on this PC", "Run setup.bat again")]
+        try:
+            self.board.read()  # read and dropped: never in the report
+        except Exception as exc:
+            return [check("Clipboard", "warn", f"couldn't read it just now ({type(exc).__name__}); another app may "
+                          "be holding it", "Try again in a moment")]
+        return [check("Clipboard", "pass", "readable")]
+
     def status(self) -> dict:
         with self._lock:
             return {"available": self.board is not None, "items": [dict(i, text=i["text"][:2000]) for i in self.items],

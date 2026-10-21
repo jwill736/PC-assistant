@@ -23,7 +23,7 @@ import httpx
 
 from ..brain.router import NUMBER, Intent, number
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 from ._kit import LiveEdge, callback_url, pkce, save_secret, save_setting
 
 AUTH_URL = "https://accounts.spotify.com/authorize"
@@ -48,7 +48,7 @@ class Spotify(Skill):
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time, opener=webbrowser.open):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=10)
+        self.http = http or lazy_client(timeout=10)
         self.clock, self.opener = clock, opener
         self.later = lambda fn: threading.Timer(0.8, fn).start()  # Spotify takes a moment to catch up after a change
         self._lock = threading.RLock()
@@ -307,6 +307,17 @@ class Spotify(Skill):
             if self._live.was and out.get("ok"):
                 self._dmca(out)
         self.publish()
+
+    def selftest(self) -> list[dict]:
+        if not self.connected:
+            return [check("Spotify", "skip", "not connected", "Optional: Setup → Spotify → Connect")]
+        try:
+            self._access(force=True)  # a fresh sign-in token: proves the saved sign-in still works
+        except SpotifyError as exc:
+            return [check("Spotify", "fail", str(exc), "Setup → Spotify → Connect")]
+        except httpx.HTTPError as exc:
+            return [check("Spotify", "warn", f"Spotify didn't answer ({type(exc).__name__})", "Check the internet")]
+        return [check("Spotify", "pass", "signed in (token refreshed)")]
 
     def status(self) -> dict:
         step = None if self.connected else (

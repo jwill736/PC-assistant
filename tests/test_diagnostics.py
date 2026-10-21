@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from assistant import diagnostics as diag
 from assistant import doctor
 from assistant.brain.router import Intent, RouterContext, route
+from assistant.skills import MODULES
 from assistant.brain.tools import Tool, obj
 from assistant.skills import CRASHED, LazyClient, Skill, Skills, check, gmail_checks
 
@@ -511,7 +512,7 @@ def test_report_has_every_section_and_no_secrets(live, cfg, svc):
         assert heading in md, heading
     assert "RTX 5090" in md and "32" in md and "hud_ready_s | 1.8" in md
     skills = {s["name"]: s for s in js["skills"]}
-    assert len(skills) == 26 and skills["phone"]["status"].startswith("Telegram: bot @VesperBot answers")
+    assert len(skills) == len(MODULES) and skills["phone"]["status"].startswith("Telegram: bot @VesperBot answers")
     assert skills["weather"]["state"] == "on" and skills["diagnostics"]["state"] == "on"
     conn = {c["name"]: c["status"] for c in js["connections"]}
     assert conn["Telegram"] == "warn" and conn["Spotify"] == "skip" and "Google" in conn
@@ -655,7 +656,7 @@ def test_no_skill_touches_the_network_while_it_is_made(svc, monkeypatch):
     monkeypatch.setattr(socket, "create_connection", refuse)
     s = Skills(svc)
     assert not s.errors, s.errors
-    assert len(list(s)) == 26
+    assert len(list(s)) == len(MODULES)
     weather = s["weather"]
     assert isinstance(weather.http, LazyClient) and weather.http._client is None  # not even a client made yet
 
@@ -682,7 +683,7 @@ def test_startup_budget_build_services_and_create_app(cfg):
     create_app(rt, start_background=False)
     took = time.perf_counter() - t0
     assert took < 5, f"startup took {took:.1f}s"
-    assert rt.timings["runtime_s"] >= 0 and len(svc.skills.timings) == 26
+    assert rt.timings["runtime_s"] >= 0 and len(svc.skills.timings) == len(MODULES)
 
 
 def test_skills_start_in_the_background(cfg, svc, monkeypatch):

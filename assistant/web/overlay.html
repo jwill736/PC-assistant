@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Vesper overlay</title>
+  <link rel="icon" href="data:,">
+  <link rel="preload" href="/static/fonts/jost.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/overlay.css">
+  <script>
+    /* Before first paint: theme, alignment, size and motion from the link (?theme=transparent&align=left&scale=1). */
+    (() => {
+      const q = new URLSearchParams(location.search), root = document.documentElement;
+      root.dataset.theme = ['transparent', 'bare', 'dark'].includes(q.get('theme')) ? q.get('theme') : 'transparent';
+      root.dataset.align = ['left', 'right', 'center'].includes(q.get('align')) ? q.get('align') : 'left';
+      const scale = Math.min(3, Math.max(0.5, Number(q.get('scale')) || 1));
+      root.style.setProperty('--scale', String(scale));
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      root.dataset.motion = q.get('motion') === 'off' || reduce ? 'off' : 'full';
+    })();
+  </script>
+</head>
+<body>
+  <main class="ov" id="ov" aria-live="polite"></main>
+  <script src="/static/overlay.js"></script>
+</body>
+</html>

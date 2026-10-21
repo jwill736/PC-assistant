@@ -1,0 +1,129 @@
+/* Layout editing, Setup → Mini HUD / Phone / OBS overlay, and the phone's PIN page. HUD 2.0 tokens from styles.css:
+   ember marks what J is moving and the primary action, ion the phone link, phosphor "on". */
+
+/* ============================================================== layout editing */
+.panel[data-lay-hidden] { display: none !important; }
+.layout-edit main { padding-bottom: 140px; }
+.layout-edit main .view > .panel { outline: 1px dashed oklch(from var(--ember) l c h / 0.42); outline-offset: 3px; }
+.layout-edit main .view > .panel > :not(.lay-ctl):not(.edge) { pointer-events: none; user-select: none; opacity: .42;
+  transition: opacity var(--dur-base) var(--ease-out); }
+.layout-edit main .view > .panel:hover > :not(.lay-ctl), .layout-edit main .view > .panel:focus-within > :not(.lay-ctl) { opacity: .6; }
+.layout-edit .panel::after { display: none; }
+
+.lay-ctl { position: absolute; z-index: 6; left: 8px; right: 8px; top: 8px; display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 5px 6px; border-radius: var(--radius); background: var(--panel-2); border: 1px solid var(--line-2);
+  box-shadow: 0 8px 24px -10px oklch(0 0 0 / 0.5); animation: fade-up var(--dur-fast) var(--ease-out); }
+.lay-grip, .lay-mv, .lay-hide { width: 26px; height: 26px; flex: none; display: grid; place-items: center; padding: 0; cursor: pointer;
+  border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--panel); color: var(--ink-2);
+  transition: border-color var(--dur-instant), color var(--dur-instant), background-color var(--dur-fast); }
+.lay-grip:hover, .lay-mv:hover, .lay-hide:hover { border-color: var(--ink-2); color: var(--ink); }
+.lay-ctl svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.lay-grip { cursor: grab; touch-action: none; color: var(--ember); border-color: oklch(from var(--ember) l c h / 0.5); }
+.lay-grip svg { stroke-width: 2.6; }
+.lay-hide:hover { color: var(--alert); border-color: var(--alert); }
+.lay-name { flex: 1; min-width: 0; font: 500 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lay-moves { display: inline-flex; gap: 2px; flex: none; }
+.lay-span { flex: none; }
+.lay-span button { padding: 3px 7px; letter-spacing: .02em; }
+.panel.lay-dragging { z-index: 20; cursor: grabbing; opacity: .97; outline-color: var(--ember) !important; outline-style: solid !important;
+  box-shadow: 0 30px 70px -18px oklch(0 0 0 / 0.6), 0 0 40px -16px var(--ember-glow); }
+.panel.lay-dragging .lay-grip { cursor: grabbing; background: var(--ember); color: var(--on-accent); }
+body.lay-drag-on { user-select: none; cursor: grabbing; }
+.lay-slot { position: fixed; left: 0; top: 0; z-index: 19; pointer-events: none; border: 1.5px dashed var(--ember); border-radius: var(--radius);
+  background: var(--ember-soft); opacity: 0; transition: opacity var(--dur-fast), transform var(--dur-base) var(--ease-out); }
+.lay-slot.on { opacity: 1; }
+
+#layout-btn[aria-pressed="true"] { background: var(--ember-soft); border-color: var(--ember); color: var(--ember); box-shadow: 0 0 18px -6px var(--ember-glow); }
+
+/* the floating editor dock */
+.lay-bar { position: fixed; z-index: 40; left: 50%; bottom: 20px; translate: -50% 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  width: max-content; max-width: calc(100vw - 32px); padding: 10px 12px 10px 14px; background: var(--panel-2); border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow), 0 0 60px -24px var(--ember-glow);
+  transition: opacity var(--dur-base) var(--ease-out), translate var(--dur-base) var(--ease-spring); }
+@starting-style { .lay-bar { opacity: 0; translate: -50% 14px; } }
+.lay-dot { width: 9px; height: 9px; background: var(--ember); transform: rotate(45deg); box-shadow: 0 0 12px var(--ember-glow); flex: none; }
+.lay-txt { min-width: 0; margin-right: 6px; }
+.lay-h { font: 500 11px/1.3 var(--display); letter-spacing: .18em; text-transform: uppercase; }
+.lay-h b { color: var(--ember); font-weight: 600; }
+.lay-sub { color: var(--muted); font-size: 11.5px; }
+.lay-add { position: relative; }
+.lay-add .count:not(:empty) { min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--ember); color: var(--on-accent); font: 600 10px/16px var(--mono); text-align: center; }
+.lay-menu { position: absolute; left: 0; bottom: calc(100% + 8px); min-width: 230px; max-height: 50vh; overflow: auto; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius-lg); box-shadow: var(--shadow); z-index: 2;
+  transition: opacity var(--dur-fast) var(--ease-out), translate var(--dur-fast) var(--ease-out), display var(--dur-fast) allow-discrete; }
+.lay-menu[hidden] { display: none; opacity: 0; translate: 0 6px; }
+@starting-style { .lay-menu:not([hidden]) { opacity: 0; translate: 0 6px; } }
+.lay-mi { display: flex; width: 100%; align-items: center; gap: 8px; padding: 8px 10px; border: 0; border-radius: var(--radius); background: none;
+  text-align: left; cursor: pointer; font-size: 13px; }
+.lay-mi svg { width: 13px; height: 13px; stroke: var(--ember); fill: none; stroke-width: 1.8; stroke-linecap: round; flex: none; }
+.lay-mi:hover, .lay-mi:focus-visible { background: var(--ember-soft); outline: none; }
+.lay-none { padding: 10px; font-size: 12.5px; }
+
+/* ============================================================== Setup: mini HUD, phone, overlay */
+.surf-lede { color: var(--ink-2); font-size: 13px; margin-bottom: 10px; }
+.surf-mini-art { position: relative; width: 116px; height: 150px; margin: 4px 0 12px; border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--inset); display: grid; align-content: start; gap: 6px; padding: 10px; }
+.surf-mini-art .sm-orb { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--ink-2); box-shadow: inset 0 0 0 6px var(--panel), inset 0 0 0 12px var(--ion); }
+.surf-mini-art .sm-l { height: 5px; width: 80%; background: var(--ion-soft); border-left: 2px solid var(--ion); }
+.surf-mini-art .sm-l.s { width: 60%; background: var(--ember-soft); border-left-color: var(--ember); }
+.surf-mini-art .sm-c { height: 22px; border: 1px solid var(--line); border-radius: 2px; background: var(--panel); }
+.surf-phone { display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: 16px; align-items: start; margin: 12px 0 6px; }
+.surf-qr { width: 148px; padding: 0; border-radius: var(--radius); overflow: hidden; box-shadow: 0 0 0 1px var(--line-2), 0 0 40px -18px var(--ion-glow);
+  animation: qr-in var(--dur-slow) var(--ease-out); }
+.surf-qr svg { display: block; width: 100%; height: auto; }
+.surf-qr .qr-bg { fill: #fff; }
+.surf-qr .qr-fg { fill: #0b0d10; }
+@keyframes qr-in { from { opacity: 0; transform: scale(.94); } }
+.surf-phone-txt { min-width: 0; }
+.surf-phone-txt .sub-h:first-child { margin-top: 0; }
+.surf-url { font-size: 13.5px; color: var(--ion); overflow-wrap: anywhere; user-select: all; }
+.surf-pin { display: inline-flex; align-items: center; gap: 4px; }
+.surf-pin i { font: 400 22px/1 var(--mono); font-style: normal; width: 28px; padding: 7px 0; text-align: center; border: 1px solid var(--line-2);
+  border-radius: var(--radius); background: var(--inset); }
+.surf-pin .gap { width: 6px; }
+.surf-phone .controls { margin: 12px 0 0; }
+.surf-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.surf-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; cursor: pointer; font-size: 12px;
+  border: 1px solid var(--line-2); background: transparent; color: var(--muted); transition: border-color var(--dur-instant), color var(--dur-instant), background-color var(--dur-fast); }
+.surf-chip::before { content: ""; width: 7px; height: 7px; border-radius: 1px; border: 1px solid currentColor; transform: rotate(45deg);
+  transition: background-color var(--dur-fast); }
+.surf-chip[aria-pressed="true"] { color: var(--ink); border-color: var(--ember); background: var(--ember-soft); }
+.surf-chip[aria-pressed="true"]::before { background: var(--ember); border-color: var(--ember); }
+.surf-chip:hover { color: var(--ink); }
+.surf-kv { grid-template-columns: 70px minmax(0, 1fr); align-items: center; margin-bottom: 8px; }
+.surf-link { font-size: 11.5px; color: var(--ink-2); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--inset);
+  overflow-wrap: anywhere; }
+.surf-goals { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.surf-goal { display: grid; gap: 4px; font-size: 11.5px; color: var(--muted); }
+.surf-goal input { width: 92px; background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius); padding: 5px 8px; font-variant-numeric: tabular-nums; }
+.surf-goal input:focus { border-color: var(--ember); outline: none; box-shadow: 0 0 0 3px var(--ember-soft); }
+@media (max-width: 1280px) { .surf-phone { grid-template-columns: 128px minmax(0, 1fr); } .surf-qr { width: 128px; } }
+@media (max-width: 600px) { .surf-phone { grid-template-columns: minmax(0, 1fr); } .surf-qr { width: 168px; } }
+
+/* ============================================================== phone PIN page */
+body.pin-page { min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; }
+.pin-card { width: min(360px, 100%); display: grid; justify-items: center; gap: 10px; text-align: center; padding: 28px 22px 22px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); animation: fade-up var(--dur-slow) var(--ease-out); }
+.pin-mark { width: 64px; height: 64px; fill: none; }
+.pin-mark circle { stroke: var(--line-2); stroke-width: 1.5; }
+.pin-mark .hx { stroke: var(--ion); stroke-width: 2; }
+.pin-mark .v { stroke: var(--ember); stroke-width: 5; stroke-linejoin: round; }
+.pin-card h1 { margin: 2px 0 0; font: 500 15px/1.2 var(--display); letter-spacing: .38em; text-transform: uppercase; margin-right: -.38em; }
+.pin-lede { margin: 0; color: var(--ink-2); font-size: 14px; }
+#pin-form { position: relative; display: grid; gap: 14px; width: 100%; margin-top: 8px; }
+#pin { position: absolute; inset: 0 0 auto; height: 56px; width: 100%; opacity: 0; font-size: 16px; caret-color: transparent; }
+.pin-cells { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; height: 56px; pointer-events: none; }
+.pin-cells i { border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--inset); position: relative;
+  transition: border-color var(--dur-fast), background-color var(--dur-fast); }
+.pin-cells i.on { border-color: var(--ember); background: var(--ember-soft); }
+.pin-cells i.on::after { content: ""; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+  background: var(--ink); animation: pop 220ms var(--ease-spring); }
+#pin:focus-visible + .pin-cells i { border-color: var(--line-2); }
+#pin:focus-visible + .pin-cells { outline: 2px solid var(--ember); outline-offset: 4px; border-radius: var(--radius); }
+#pin-form .btn.primary { justify-content: center; padding: 11px 14px; font-size: 14px; }
+.pin-msg { min-height: 1.4em; margin: 0; color: var(--amber); font-size: 13px; }
+.pin-foot { margin: 4px 0 0; color: var(--muted); font-size: 11.5px; }
+body.shake .pin-cells { animation: shake 360ms var(--ease-out); }
+@keyframes shake { 20% { transform: translateX(-8px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(3px); } }
+@media (prefers-reduced-motion: reduce) { body.shake .pin-cells, .pin-cells i.on::after, .pin-card { animation: none; } }

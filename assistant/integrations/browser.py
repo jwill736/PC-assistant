@@ -85,12 +85,16 @@ class Browser:
         template = SEARCH_ENGINES.get(engine.lower(), SEARCH_ENGINES["google"])
         return self.open(template.format(q=quote_plus(query)))
 
-    def app_window(self, url: str) -> bool:
-        """Open the dashboard as a chromeless app window (Chrome --app)."""
+    def app_window(self, url: str, size: tuple[int, int] = (1600, 960), position: tuple[int, int] | None = None,
+                   profile: str | Path | None = None) -> bool:
+        """Open the dashboard as a chromeless app window (Chrome --app). ``profile``: a Chrome profile folder of its
+        own, so the size and position apply even while Chrome is already open (the mini HUD uses one)."""
         if not self.chrome:
             return False
-        subprocess.Popen(
-            [self.chrome, f"--app={url}", "--window-size=1600,960"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        args = [self.chrome, f"--app={url}", f"--window-size={size[0]},{size[1]}"]
+        if position:
+            args.append(f"--window-position={position[0]},{position[1]}")
+        if profile:
+            args += [f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check"]
+        subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True

@@ -199,6 +199,8 @@ Discord and tool servers: [docs/VESPER-2.md](VESPER-2.md) walks through each one
     the new version, updates the packages and starts it again. `config.yaml`, `.env` and everything in `data`
     are kept. The old black log window closes by itself, and the HUD window you had open reloads onto the new
     version (no second window).
+36. **Your layout, the mini HUD, the HUD on your phone and the OBS overlay:**
+    [docs/HUD-SURFACES.md](HUD-SURFACES.md) walks through each, click by click.
 
 ## Where everything lives
 

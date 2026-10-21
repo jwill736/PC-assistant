@@ -205,6 +205,12 @@ jobs:
 tray:
   enabled: true                 # system tray icon (mute, push-to-talk, pause tracking, quit)
 
+# The HUD on your phone over home Wi-Fi (Setup → Phone turns it on; docs/HUD-SURFACES.md).
+# hud:
+#   remote:
+#     port: 8766                # the phone listener's port
+#     bind: 192.168.1.23        # only if the PC has several networks and picks the wrong one
+
 # Trigger phrases: say one phrase, run several actions in order.
 # Steps: any tool (same names Claude uses), say: text, wait: seconds (max 30),
 # command: "anything you'd say out loud". A macro with a risky step

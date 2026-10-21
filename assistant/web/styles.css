@@ -896,3 +896,29 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
 
 /* Life and PC tabs: panels keep their own height instead of stretching to the tallest in the row */
 .view[data-view="life"] > .panel, .view[data-view="pc"] > .panel { align-self: start; }
+
+/* ============================================================== phone: a bottom tab bar (thumb reach) */
+/* The top bar's blur would make it the box the fixed bar is placed in, so on a phone the bar is solid instead. */
+@media (max-width: 760px) {
+  .topbar { backdrop-filter: none; background: var(--bg); }
+  .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 35; order: 0; margin: 0; width: auto; gap: 0; justify-content: space-around;
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line);
+    background: var(--bg); box-shadow: 0 -10px 30px -16px oklch(0 0 0 / 0.5); }
+  .tabs button { flex: 1 1 0; min-width: 0; display: grid; justify-items: center; gap: 4px; padding: 8px 2px 6px;
+    font-size: 9.5px; letter-spacing: .08em; border-radius: var(--radius); }
+  .tabs button::before { content: ""; width: 20px; height: 20px; background: currentColor;
+    -webkit-mask: var(--tab-ic) center / contain no-repeat; mask: var(--tab-ic) center / contain no-repeat;
+    transition: transform var(--dur-base) var(--ease-spring); }
+  .tabs button[aria-selected="true"]::before { transform: translateY(-1px) scale(1.08); background: var(--ember); }
+  .tabs .tab-badge { position: absolute; top: 4px; left: calc(50% + 6px); margin: 0; }
+  .tab-ink { top: -1px; bottom: auto; }
+  .tabs button[data-view="command"] { --tab-ic: url("img/tab-command.svg"); }
+  .tabs button[data-view="work"] { --tab-ic: url("img/tab-work.svg"); }
+  .tabs button[data-view="life"] { --tab-ic: url("img/tab-life.svg"); }
+  .tabs button[data-view="stream"] { --tab-ic: url("img/tab-stream.svg"); }
+  .tabs button[data-view="pc"] { --tab-ic: url("img/tab-pc.svg"); }
+  .tabs button[data-view="setup"] { --tab-ic: url("img/tab-setup.svg"); }
+  main { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  .toasts { bottom: calc(80px + env(safe-area-inset-bottom)); }
+  .lay-bar { bottom: calc(76px + env(safe-area-inset-bottom)); }
+}

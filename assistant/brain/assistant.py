@@ -26,8 +26,8 @@ from ..integrations import desktop
 from ..privacy import redact
 from ..services import Services
 from ..voice import neural
-from . import briefing, local_llm, macros as macro_mod, model_bench
-from .router import Intent, RouterContext, route
+from . import briefing, conversation as convo_mod, local_llm, macros as macro_mod, model_bench
+from .router import Intent, RouterContext, clean, route
 from .speech import clock, summarize
 from .tools import ToolBox, compact
 
@@ -110,6 +110,9 @@ class Assistant:
         self.tools = toolbox or ToolBox(svc, context=lambda: self._ctx)
         svc.think = self.think  # skills ask the model through this
         svc.off_record = self.set_off_record
+        self.convo = convo_mod.Conversation(svc)  # conversation mode (brain/conversation.py)
+        self.convo.brain = self.brain
+        svc.conversation = self.convo
         self.on_kill = None  # the runtime adds what only it can stop: speech, background jobs
         self.on_pending = None  # e.g. a Windows toast with Yes/No buttons
         self.macros = macro_mod.load_macros(svc.cfg)
@@ -216,13 +219,59 @@ class Assistant:
         return {"active": b, "provider": (self.svc.cfg.get("brain") or {}).get("provider", "auto"),
                 "claude": {"ready": self.claude_ready, "model": self.cfg["model"]}, "local": self.local.status()}
 
-    def _ask(self, text: str) -> str:
+    def _ask(self, text: str, convo: bool = False) -> str:
+        """``convo``: a turn in conversation mode (persona, longer history, rolling summary)."""
         brain = self.brain()
         if brain == "claude":
-            return self._ask_claude(text)
+            return self._ask_claude(text, convo=convo)
         if brain == "local":
-            return self._ask_local(text)
+            return self._ask_local(text, convo=convo)
         return OFFLINE
+
+    # ---- conversation mode (brain/conversation.py) -----------------------------
+    def _history_limits(self, convo: bool) -> tuple[float, int]:
+        """(idle minutes, turns) before the history starts fresh: longer while talking."""
+        if convo:
+            return (float(self.convo.setting("history_idle_minutes", 30)), int(self.convo.setting("history_turns", 40)))
+        return float(self.cfg.get("history_idle_minutes", 10)), int(self.cfg.get("history_turns", 12))
+
+    def _conversation_prompt(self) -> str:
+        user = self.svc.cfg["assistant"]["user_name"]
+        out = convo_mod.PERSONA.format(user=user)
+        if self.convo.on_stream:
+            out += convo_mod.ON_STREAM.format(user=user)
+        if self.convo.summary:
+            out += f"\nEarlier in this conversation (summary): {self.convo.summary}"
+        return out
+
+    def _fold(self, msgs: list, is_turn) -> list:
+        """Drop all but the last few exchanges from ``msgs``; what's dropped goes into the rolling summary."""
+        keep = max(2, int(self.convo.setting("keep_turns", 8)))
+        starts = [i for i, m in enumerate(msgs) if is_turn(m)]
+        if len(starts) <= keep:
+            return msgs
+        self.convo.fold(self.think, keep)
+        return msgs[starts[-keep]:]
+
+    def start_conversation(self, on_stream: bool = False, topic: str = "", source: str = "voice") -> dict:
+        """"Let's talk" (or the HUD's Talk button): no wake word between turns until it ends."""
+        ok, why = self.convo.begin(on_stream=on_stream, source=source)
+        if not ok:
+            return {"reply": why, "kind": "conversation_off"}
+        if topic:
+            with self._lock:
+                return {"reply": self._ask(f"Let's talk about {topic}.", convo=True), "kind": self.brain() or "offline"}
+        if self.convo.on_stream:
+            greet = convo_mod.ON_STREAM_GREETING
+        elif why == "already":
+            greet = "We're already talking. Go on."
+        else:
+            greet = convo_mod.GREETINGS[int(time.time()) % len(convo_mod.GREETINGS)]
+        return {"reply": greet, "kind": "conversation"}
+
+    def end_conversation(self, reason: str = "said") -> dict:
+        ended = self.convo.end(reason)
+        return {"reply": convo_mod.GOODBYE if ended else "We weren't in a conversation.", "kind": "conversation_end"}
 
     def _track_profile(self, event: dict) -> None:
         if event["type"] == "profile":
@@ -251,19 +300,29 @@ class Assistant:
             self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner}
             self._tainted = False
             self.tools.guard.new_command()
+            convo = self.convo
+            in_convo = convo.is_active()
             try:
                 intent = route(text, self.router_context())
             except Exception:
                 log.exception("routing failed")
                 intent = None
+            if (in_convo and intent is not None and intent.kind in ("confirm", "cancel") and not self.pending_view()
+                    and clean(text) not in HARD_CANCEL):
+                intent = None  # "yeah" / "nope" answers what Vesper asked; there's nothing to confirm
             # private words (a journal entry) never go into the conversation log or its search
             private = intent is not None and intent.tool in PRIVATE_TOOLS
             if not self.off_record() and not private:
                 self.svc.storage.log("user", redact(text), source)  # a pasted key never lands in the log
-            self.svc.bus.publish("user_said", {"text": "(journal entry)" if private else text, "source": source})
+            self.svc.bus.publish("user_said", {"text": "(journal entry)" if private else text, "source": source,
+                                               **({"conversation": True} if in_convo else {})})
             self.svc.bus.publish("thinking", {"active": True})
             started = time.time()
-            speak = source == "voice" or self.svc.cfg["voice"].get("speak_typed")
+            # In a conversation J is talking by voice: a line typed in between is answered out loud too.
+            speak = (source == "voice" or self.svc.cfg["voice"].get("speak_typed")
+                     or (in_convo and convo.last_source == "voice" and source != "automation"))
+            if in_convo:
+                convo.turn_started("(journal entry)" if private else text, source)
             # Claude's reply is spoken sentence by sentence as it streams in, not after the last word.
             self._stream_on = bool(speak and self.svc.cfg["voice"]["tts"].get("stream", True))
             self._speak_turn, self._streamed = turn, False
@@ -272,7 +331,11 @@ class Assistant:
                     out = self._run_intent(intent)
                 else:
                     brain = self.brain()
-                    out = {"reply": self._ask(text), "kind": brain or "offline"}
+                    if in_convo and brain is None:  # the model went away mid-conversation: say so once
+                        convo.end("no model")
+                        out = {"reply": convo_mod.LOST_MODEL, "kind": "offline"}
+                    else:
+                        out = {"reply": self._ask(text, convo=in_convo), "kind": brain or "offline"}
             except Exception as exc:
                 log.exception("command failed")
                 out = {"reply": f"That failed: {type(exc).__name__}.", "kind": "error"}
@@ -283,6 +346,9 @@ class Assistant:
                 self.svc.bus.publish("thinking", {"active": False})
             out["ms"] = round((time.time() - started) * 1000)
             reply = out.get("reply") or ""
+            if in_convo or convo.active:  # the HUD's conversation panel
+                convo.turn_done(reply, source, said=None if in_convo else text, started=in_convo)
+                out["conversation"] = convo.active
             if reply:
                 if not self.off_record():
                     self.svc.storage.log("assistant", redact(reply), source)
@@ -326,7 +392,14 @@ class Assistant:
             return {"reply": "Back in control." if was else "PC control wasn't paused.", "kind": "resume"}
         if kind == "reset":
             self.reset()
+            self.convo.reset()
             return {"reply": "Fresh start.", "kind": "reset"}
+        if kind == "conversation":
+            return self.start_conversation(on_stream=bool(intent.args.get("on_stream")),
+                                           topic=str(intent.args.get("topic") or ""),
+                                           source=self._ctx.get("source") or "text")
+        if kind == "conversation_end":
+            return self.end_conversation("said")
         if kind == "time":
             now = datetime.now(self.svc.tz)
             return {"reply": f"It's {clock(now)}, {now.strftime('%A, %B')} {now.day}.", "kind": "time"}
@@ -480,6 +553,7 @@ class Assistant:
         """Hands off: no more actions (reads still work), nothing waiting on a yes, nothing still talking."""
         self.tools.guard.stop(source)
         self.cancel()
+        self.convo.end("stopped")
         self.tools.audit.write(tool="kill_switch", tier=0, source=source, outcome="stopped")
         if self.on_kill:
             try:
@@ -557,15 +631,23 @@ class Assistant:
                 return stream.get_final_message()
         return self.client.beta.messages.create(**kwargs)
 
-    def _ask_claude(self, text: str) -> str:
+    def _ask_claude(self, text: str, convo: bool = False) -> str:
         if not self.claude_ready:
             return ("I don't know that one offline. Add ANTHROPIC_API_KEY to the .env file and I can handle anything.")
-        idle = time.time() - self.last_turn > self.cfg.get("history_idle_minutes", 10) * 60
-        if idle or self.user_turns >= self.cfg.get("history_turns", 12):
+        idle_minutes, max_turns = self._history_limits(convo)
+        idle = time.time() - self.last_turn > idle_minutes * 60
+        if idle or self.user_turns >= max_turns:
             self.reset()  # start fresh rather than editing history, so the conversation stays append-only
+        elif convo and self.user_turns >= int(self.convo.setting("summarize_after", 20)):
+            # A long talk: the oldest turns become a summary in the system prompt, the last few stay word for word.
+            self.history = self._fold(self.history, lambda m: m.get("role") == "user" and isinstance(m.get("content"), str))
+            self.user_turns = sum(1 for m in self.history if m.get("role") == "user" and isinstance(m.get("content"), str))
         checkpoint = len(self.history)
-        mem = self._memory_context(text, include_private=False)  # private facts never go to the cloud
-        self.history.append({"role": "user", "content": f"{self._context_line()}\n{mem + chr(10) if mem else ''}{text}"})
+        # Private facts never go to the cloud; on stream, nothing remembered at all.
+        mem = "" if convo and self.convo.on_stream else self._memory_context(text, include_private=False)
+        cut_in = f"[{self.svc.cfg['assistant']['user_name']} talked over your last reply, so they didn't hear all of it]\n" \
+            if convo and self.convo.take_interrupted() else ""
+        self.history.append({"role": "user", "content": f"{self._context_line()}\n{mem + chr(10) if mem else ''}{cut_in}{text}"})
         self.user_turns += 1
         self.last_turn = time.time()
         definitions = self.tools.definitions()
@@ -573,10 +655,13 @@ class Assistant:
             definitions = definitions + [self.macro_definition()]
         streaming = self._stream_on and hasattr(self.client.beta.messages, "stream")
         sentences = neural.SentenceStream(self._speak_sentence) if streaming else None
+        system = f"{self.system_prompt}{self._conversation_prompt()}" if convo else None
+        effort = (self.cfg.get("conversation_effort") or self.cfg.get("command_effort", "low")) if convo else \
+            self.cfg.get("command_effort", "low")
         try:
             resp = None
             for _ in range(8):
-                resp = self._create(self.history, tools=definitions, effort=self.cfg.get("command_effort", "low"),
+                resp = self._create(self.history, tools=definitions, effort=effort, system=system,
                                     on_text=sentences.feed if sentences else None)
                 if resp.stop_reason == "refusal":
                     del self.history[checkpoint:]
@@ -656,21 +741,30 @@ class Assistant:
                                                              "parameters": d["input_schema"]}})
         return out
 
-    def _ask_local(self, text: str) -> str:
+    def _ask_local(self, text: str, convo: bool = False) -> str:
         llm = self.local.refresh()
         if llm is None:
             return OFFLINE
         lcfg = (self.svc.cfg.get("brain") or {}).get("local") or {}
-        idle = time.time() - self.last_turn > self.cfg.get("history_idle_minutes", 10) * 60
-        if idle or len(self.local_history) > 4 * self.cfg.get("history_turns", 12):
+        idle_minutes, max_turns = self._history_limits(convo)
+        idle = time.time() - self.last_turn > idle_minutes * 60
+        if idle or len(self.local_history) > 4 * max_turns:
             self.local_history = []
+        elif convo and sum(1 for m in self.local_history if m.get("role") == "user") >= \
+                int(self.convo.setting("summarize_after", 20)):
+            self.local_history = self._fold(self.local_history, lambda m: m.get("role") == "user")
         self.last_turn = time.time()
         # The context line goes in the system message, not the user turn: a 3B model put in the user turn
         # repeated it as the first line of its answer (found by the CI run against llama3.2:3b).
-        system = f"{self.system_prompt}{LOCAL_ADDENDUM if llm.can_act else NO_ACTIONS}\nRight now: {self._context_line().strip('[]')}"
-        mem = self._memory_context(text)
+        system = f"{self.system_prompt}{LOCAL_ADDENDUM if llm.can_act else NO_ACTIONS}"
+        if convo:
+            system += self._conversation_prompt()
+        system += f"\nRight now: {self._context_line().strip('[]')}"
+        mem = "" if convo and self.convo.on_stream else self._memory_context(text)
         if mem:
             system += f"\n\n{mem}"
+        if convo and self.convo.take_interrupted():
+            system += f"\n({self.svc.cfg['assistant']['user_name']} talked over your last reply, so they didn't hear all of it.)"
         messages = [{"role": "system", "content": system}, *self.local_history, {"role": "user", "content": text}]
         tools = self._local_tools() if llm.can_act else None
 
@@ -682,8 +776,9 @@ class Assistant:
         reply = ""
         try:
             for _ in range(6):
+                temp = self.convo.setting("temperature", 0.7) if convo else lcfg.get("temperature", 0.3)
                 out = llm.chat(messages, tools=tools, on_text=sentences.feed if sentences else None,
-                               temperature=float(lcfg.get("temperature", 0.3)),
+                               temperature=float(temp),
                                should_stop=lambda: self.tools.guard.hands_off)
                 if self.tools.guard.hands_off:
                     raise _Stopped
@@ -883,6 +978,8 @@ class Assistant:
 
 
 PRIVATE_TOOLS = {"journal_add"}  # what's said for these is kept only where the tool keeps it
+# In a conversation "yeah" / "no" answer a question; these still cancel.
+HARD_CANCEL = {"stop", "cancel", "abort", "never mind", "nevermind", "forget it", "cancel that", "cancel it"}
 
 
 def _failed(result) -> bool:

@@ -129,7 +129,7 @@ def test_a_failing_run_is_timed_and_still_backs_off():
 # ---- the skills' declarations ----------------------------------------------------------------------------------
 
 ESSENTIAL = {"nudges", "memory", "automations", "focus", "janitor", "screen", "spotify", "home", "discord",
-             "stream_copilot"}
+             "stream_copilot", "conversation"}
 
 
 def test_every_polling_skill_declares_its_low_power_pace(svc):

@@ -1,0 +1,52 @@
+/* Conversation mode: ion = J and listening, ember = Vesper, iris = thinking, alert = on air. */
+.panel[data-panel="conversation"] .body { display: grid; gap: 10px; }
+.convo-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.convo-lede { flex: 1 1 260px; min-width: 0; color: var(--ink-2); font-size: 13px; }
+.convo-actions { display: flex; gap: 8px; }
+.convo-chip { display: inline-flex; align-items: center; gap: 7px; font: 600 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase;
+  color: var(--muted); white-space: nowrap; }
+.convo-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px oklch(from currentColor l c h / 0.18); }
+.convo-chip.on { color: var(--ion); }
+.convo-chip.air { color: var(--alert); }
+.btn.convo-start { border-color: oklch(from var(--ion) l c h / 0.5); color: var(--ion); }
+.btn.convo-start:hover { background: var(--ion-soft); }
+.btn.convo-air-btn { border-color: oklch(from var(--alert) l c h / 0.5); color: var(--alert); }
+.btn.convo-air-btn:hover { background: var(--alert-soft); }
+.btn.convo-start:disabled, .btn.convo-air-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.panel.convo-on { border-color: oklch(from var(--ion) l c h / 0.45); box-shadow: inset 2px 0 0 var(--ion); }
+.panel.convo-air { border-color: oklch(from var(--alert) l c h / 0.45); box-shadow: inset 2px 0 0 var(--alert); }
+.convo-log { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto; padding-right: 4px; overscroll-behavior: contain; }
+.convo-past .convo-log { opacity: .6; max-height: 160px; }
+.convo-msg { max-width: min(82%, 720px); line-height: 1.45; }
+.convo-form { display: flex; gap: 8px; }
+.convo-form[hidden], .convo-log[hidden] { display: none; }
+.convo-input { flex: 1 1 auto; min-width: 0; background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px;
+  outline: none; transition: border-color var(--dur-base), box-shadow var(--dur-base); }
+.convo-input:focus { border-color: var(--ion); box-shadow: 0 0 0 3px var(--ion-soft); }
+
+/* Vesper thinking: three iris dots */
+.convo-typing { display: inline-flex; gap: 4px; align-items: center; border-left-color: var(--iris) !important; padding: 11px 13px; }
+.convo-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--iris); opacity: .7; }
+:root[data-motion="full"] .convo-typing i { animation: convo-dot 1s var(--ease-out) infinite; }
+:root[data-motion="full"] .convo-typing i:nth-child(2) { animation-delay: .15s; }
+:root[data-motion="full"] .convo-typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes convo-dot { 50% { opacity: .2; transform: scale(.6); } }
+
+/* New bubbles slide in (transform/opacity only, full motion only) */
+:root[data-motion="full"] .convo-on .convo-msg:last-of-type { animation: convo-in 280ms var(--ease-out) both; }
+@keyframes convo-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* The orb while talking: it stays in "listening" between turns; the label says why. */
+body[data-conversation="on"] #orb-wrap[data-state="listen"] .orb-state .lbl,
+body[data-conversation="air"] #orb-wrap[data-state="listen"] .orb-state .lbl { display: none; }
+body[data-conversation="on"] #orb-wrap[data-state="listen"] .orb-state::after { content: "In conversation"; }
+body[data-conversation="air"] #orb-wrap[data-state="listen"] .orb-state::after { content: "Talking · on air"; color: var(--alert); }
+
+@media (prefers-reduced-motion: reduce) {
+  .convo-typing i, .convo-on .convo-msg:last-of-type { animation: none !important; }
+}
+@media (max-width: 640px) {
+  .convo-msg { max-width: 92%; }
+  .convo-actions { width: 100%; }
+}

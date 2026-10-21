@@ -91,6 +91,7 @@ def find_promises(body: str, who: str, ts: float, tz) -> list[dict]:
 class InboxZero(Skill):
     name, title = "inbox_zero", "Replies"
     poll_s = 900
+    game_poll_s = 3600
     delay_s = 60
 
     def __init__(self, svc, clock=time.time):

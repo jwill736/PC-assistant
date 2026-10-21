@@ -197,6 +197,7 @@ def new_session(sid: int, start: float, tw: dict) -> dict:
 class StreamCopilot(Skill):
     name, title = "stream_copilot", "Stream co-pilot"
     poll_s = 10
+    game_essential = True  # live stats, chat and the recap: what a stream needs
     delay_s = 10
 
     def __init__(self, svc, clock=time.time, fullscreen=fullscreen_state):

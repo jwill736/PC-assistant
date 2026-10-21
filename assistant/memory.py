@@ -29,6 +29,8 @@ from typing import Callable
 
 import httpx
 
+from .privacy import mentions_secret
+
 log = logging.getLogger(__name__)
 
 SCHEMA = """
@@ -210,7 +212,7 @@ class Memory:
             context: str = "", importance: int = 3, source: str = "said", source_ref: str | None = None,
             contradicts: list[int] | None = None, pinned: bool = False, private: bool = False) -> dict | None:
         statement = re.sub(r"\s+", " ", (statement or "").strip())
-        if len(statement) < 6 or SECRET.search(statement):
+        if len(statement) < 6 or SECRET.search(statement) or mentions_secret(statement):  # never a password or a key
             return None
         with self._lock:
             dup = self.storage.query("SELECT id FROM facts WHERE lower(statement) = ? AND superseded_by IS NULL",

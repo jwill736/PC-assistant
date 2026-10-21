@@ -25,6 +25,7 @@ QUIET_S = 120
 class MemorySkill(Skill):
     name, title = "memory", "Memory"
     poll_s = 60
+    game_essential = True  # cheap when nothing's new, and it marks when you were live (never learned from)
     delay_s = 90
 
     def __init__(self, svc, embedder: Embedder | None = None, clock=time.time):
@@ -209,6 +210,11 @@ class MemorySkill(Skill):
         m = re.fullmatch(r"what do you know about (me|myself|.+)|what have you learned(?: about (me|.+?))?(?: lately| today)?", t)
         if m:
             who = m.group(1) or m.group(2) or ""
+            # Someone in J's contacts: People's card answers better (last contact, notes, "ask about"), so leave it
+            # to that skill, which comes later in MODULES. Anything else (a topic, an unknown name) is ours.
+            ppl = self.svc.skills.get("people") if who not in ("me", "myself") and self.svc.skills is not None else None
+            if ppl is not None and t.startswith("what do you know") and ppl.known(who):
+                return None
             return Intent("tool", "what_you_know", {"about": "" if who in ("me", "myself") else who})
         m = re.fullmatch(r"(?:search|look) (?:through )?everything (?:for|about) (.+)|find everything (?:about|on) (.+)"
                          r"|what do i have on (.+)|what do we have on (.+)", t)
@@ -224,7 +230,7 @@ class MemorySkill(Skill):
         if re.fullmatch(r"(?:back )?on the record|end off the record", t):
             return Intent("tool", "off_the_record", {"minutes": 0})
         m = re.fullmatch(r"forget (?:that |about )(.+)", t)
-        if m:
+        if m and m.group(1) not in ("it", "this", "that"):  # "forget about it" is "never mind" (the core's cancel)
             return Intent("tool", "forget", {"what": m.group(1)})
         return None
 

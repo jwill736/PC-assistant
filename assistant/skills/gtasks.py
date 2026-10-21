@@ -54,6 +54,7 @@ class GTasks(Skill):
     name, title = "gtasks", "Google Tasks"
     poll_s = 300
     delay_s = 40
+    game_poll_s = 1200
 
     def __init__(self, svc, clock=time.time):
         super().__init__(svc)

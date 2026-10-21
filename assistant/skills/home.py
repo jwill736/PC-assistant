@@ -21,7 +21,7 @@ import httpx
 from ..brain.router import NUMBER, Intent, number
 from ..brain.tools import Tool, obj
 from . import Skill, check, lazy_client
-from ._kit import LiveEdge, save_secret, save_setting
+from ._kit import LiveEdge, save_secrets, save_setting
 
 PORT = 9123
 DOMAINS = ("light", "switch", "input_boolean", "fan")
@@ -48,6 +48,7 @@ class HomeError(Exception):
 class Home(Skill):
     name, title = "home", "Lights & home"
     poll_s = 10
+    game_essential = True  # the ON AIR light follows going live (two LAN calls per tick)
     delay_s = 8
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time):
@@ -82,6 +83,9 @@ class Home(Skill):
 
     def set_ha(self, url: str, token: str) -> dict:
         url, token = (url or "").strip().rstrip("/"), (token or "").strip()
+        if re.search(r"\s", url + token):  # one line each: a line break would add a line to .env (and a header)
+            return {"ok": False, "error": "That has a line break or a space in it. Paste the address and the token "
+                                          "on their own, one line each."}
         if not re.match(r"^https?://[^\s/]+", url) or len(token) < 20:
             return {"ok": False, "error": "Paste Home Assistant's address (like http://homeassistant.local:8123) and a "
                                           "long-lived token (HA → your profile → Security → Create token)."}
@@ -92,8 +96,7 @@ class Home(Skill):
             reachable = r.status_code == 200
         except httpx.HTTPError:
             reachable = False
-        save_secret(self.svc, "HA_URL", url)
-        save_secret(self.svc, "HA_TOKEN", token)
+        save_secrets(self.svc, {"HA_URL": url, "HA_TOKEN": token})  # both or neither
         self._at = 0
         return {"ok": True, "reachable": reachable}
 
@@ -400,10 +403,25 @@ class Home(Skill):
         """A name Home Assistant or a Key Light already has (no network). ``exact`` for changes, so "turn off the pc"
         never hits a "Gaming PC plug"; ``scene`` / ``any`` match on some of the words."""
         w = _words(name)
-        pool = self.scenes() if kind == "scene" else [
-            {"name": (s.get("attributes") or {}).get("friendly_name") or s.get("entity_id", "")} for s in self._states
-        ] + [{"name": x["name"]} for x in self.key_lights()]
+        # the cached states only: self.scenes() would refresh them over the network, on the ~1 ms fast path
+        named = [{"name": (s.get("attributes") or {}).get("friendly_name") or s.get("entity_id", ""),
+                  "id": s.get("entity_id", "")} for s in self._states]
+        pool = [x for x in named if x["id"].startswith("scene.")] + [
+            {"name": k.title()} for k in (self.setting("presets", {}) or {})] if kind == "scene" else \
+            named + [{"name": x["name"]} for x in self.key_lights()]
         return bool(w) and any(w == _words(x["name"]) if kind == "exact" else w <= _words(x["name"]) for x in pool)
+
+    def _vesper_owns(self, name: str) -> bool:
+        """An OBS scene ("switch to the gaming scene") or a Vesper profile ("start work mode") with this name: those
+        phrases are the core router's, even when Home Assistant also has a scene called that (no network here)."""
+        n = name.lower().strip()
+        obs = getattr(self.svc, "obs", None)
+        scenes = {s.lower() for s in (getattr(obs, "scenes", None) or [])} | {
+            str(k).lower() for k in (getattr(obs, "scene_aliases", None) or {})}
+        profiles = self.svc.cfg.get("profiles") or {}
+        names = {str(k).lower() for k in profiles} | {str(v.get("label", "")).lower() for v in profiles.values()
+                                                      if isinstance(v, dict)}
+        return n in scenes or n in names or n in ("focus", "quiet", "stream", "streaming", "work")
 
     def route(self, t: str):
         m = re.fullmatch(rf"(?:turn|switch) (on|off) (?:the |my |all (?:the |my )?)?(.*{LIGHTISH})|(?:turn|switch) "
@@ -412,7 +430,8 @@ class Home(Skill):
             on, target = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3)) if m.group(4) else (m.group(6), m.group(5))
             return Intent("tool", "lights_on" if on == "on" else "lights_off", {"target": target})
         m = re.fullmatch(r"(?:turn|switch) (on|off) (?:the |my )?(.+)", t)
-        if m and self._known(m.group(2)):
+        # "turn off the pc" is the PC's own shutdown (asks for a yes), never a smart plug that happens to be called "PC"
+        if m and self._known(m.group(2)) and m.group(2) not in ("pc", "computer", "the pc", "the computer"):
             return Intent("tool", f"lights_{m.group(1)}", {"target": m.group(2)})
         m = re.fullmatch(rf"(?:set |turn |dim |put )?(?:the |my )?(.*{LIGHTISH})(?: brightness)? (?:to|at) {NUMBER}(?: percent| %|%)?", t)
         if m and number(m.group(2)) is not None:
@@ -432,7 +451,7 @@ class Home(Skill):
         if m:
             return Intent("tool", "lights_temperature", {"target": m.group(1), "kelvin": int(m.group(2))})
         m = re.fullmatch(r"(?:activate |start |set |turn on |switch to )?(?:the |my )?(.+?) (?:scene|mode)|scene (.+)", t)
-        if m and self._known(m.group(1) or m.group(2), "scene"):
+        if m and self._known(m.group(1) or m.group(2), "scene") and not self._vesper_owns(m.group(1) or m.group(2)):
             return Intent("tool", "home_scene", {"name": m.group(1) or m.group(2)})
         m = re.fullmatch(r"is (?:the |my )?(.+?) (?:on|off|open|closed|locked|unlocked|running)", t)
         if m and self._known(m.group(1), "any"):

@@ -35,6 +35,7 @@ MODULES = ["nudges", "memory", "weather", "automations", "inbox_zero", "drafts",
 
 CRASH_LIMIT = 5  # this many failures in a row (of one kind: tick, route, say…) switches a skill off for the run
 ON, OFF, CRASHED, FAILED = "on", "off", "crashed", "failed"
+GAME_FACTOR = 4  # how much slower a non-essential skill ticks in low-power mode, unless it sets game_poll_s
 
 
 class Skill:
@@ -43,6 +44,16 @@ class Skill:
     poll_s: float = 0  # call tick() this often (0: never)
     delay_s: float = 15  # wait this long after start before the first tick
     essential: bool = False  # never switched off (Setup → Skills itself)
+    # Low-power mode (a fullscreen game, or live on stream): a game-essential skill keeps poll_s; any other ticks every
+    # game_poll_s instead (0: not at all until the game ends; None: GAME_FACTOR × poll_s).
+    game_essential: bool = False
+    game_poll_s: float | None = None
+
+    def low_power_poll(self) -> float | None:
+        """The tick interval in low-power mode: None = unchanged (game-essential), 0 = paused."""
+        if self.game_essential or self.essential:
+            return None
+        return self.game_poll_s if self.game_poll_s is not None else self.poll_s * GAME_FACTOR
 
     def __init__(self, svc: "Services"):
         self.svc = svc
@@ -425,6 +436,10 @@ class Skills:
             return {"ok": False, "error": f"{skill.title or name} has no action {action}."}
         try:
             out = fn(body or {})
+        except ValueError as exc:  # e.g. a pasted key with a line break in it (firstrun.set_env_value refuses it)
+            return {"ok": False, "error": str(exc)}
+        except TypeError:  # a body missing what the button sends (no stack trace for a bad request)
+            return {"ok": False, "error": f"{skill.title or name}: {action} needs more than that."}
         except Exception as exc:
             log.exception("skill %s: action %s failed", name, action)
             self._failed(skill, "action", exc)

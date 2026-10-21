@@ -10,6 +10,11 @@ Two kinds of parts:
 * **Services** (voice listener, activity tracker, speech output): long-lived
   threads with their own loop. They call ``beat(name)`` while healthy; the
   watchdog restarts them if their thread dies or they stop beating.
+
+**Low-power mode.** While a fullscreen game runs or you're live (``low_power()`` names the reason), every poller
+registered with a ``game_interval`` backs off to it (0: paused until the game ends); the rest (``game_interval``
+None: the essential ones, like nudges, timers, OBS and the GPU watch) keep their pace. Each run's time is kept on
+its Part (``last_ms``, ``avg_ms``, ``max_ms``), so the HUD's Running parts table shows what every part costs.
 """
 
 from __future__ import annotations
@@ -52,6 +57,11 @@ class Part:
     # pollers
     fn: Callable[[], None] | None = None
     delay: float = 0.0
+    game_interval: float | None = None  # in low-power mode: wait this long instead (0: paused); None: essential
+    throttle: str = ""  # "" | "slowed" | "paused": what low-power mode is doing to it right now
+    last_ms: float = 0.0  # how long the last run took
+    avg_ms: float = 0.0  # moving average of a run
+    max_ms: float = 0.0
     # services
     start_fn: Callable[[], threading.Thread | None] | None = None
     is_disabled: Callable[[], bool] | None = None
@@ -61,11 +71,22 @@ class Part:
             "name": self.name, "kind": self.kind, "state": self.state, "interval": self.interval,
             "last_beat": self.last_beat or None, "last_ok": self.last_ok or None, "runs": self.runs,
             "errors": self.errors, "restarts": self.restarts, "last_error": self.last_error,
+            "essential": self.kind == "service" or self.game_interval is None, "game_interval": self.game_interval,
+            "throttle": self.throttle, "last_ms": round(self.last_ms, 1), "avg_ms": round(self.avg_ms, 1),
+            "max_ms": round(self.max_ms, 1),
         }
+
+    def timed(self, ms: float) -> None:
+        self.last_ms, self.max_ms = ms, max(self.max_ms, ms)
+        self.avg_ms = ms if self.runs == 0 else self.avg_ms * 0.8 + ms * 0.2
+
+
+LOW_POWER_REASONS = {"game": "in a game", "live": "live on stream"}
 
 
 class Supervisor:
-    def __init__(self, bus=None, check_every: float = 5.0, clock: Callable[[], float] = time.time):
+    def __init__(self, bus=None, check_every: float = 5.0, clock: Callable[[], float] = time.time,
+                 low_power: Callable[[], str] | None = None, power_check_s: float = 5.0, nap_s: float = 15.0):
         self.bus = bus
         self.check_every = check_every
         self.now = clock
@@ -74,11 +95,17 @@ class Supervisor:
         self._stop = threading.Event()
         self._watch_thread: threading.Thread | None = None
         self._last_published: list | None = None
+        # low-power mode: "" or why ("game", "live"); asked at most every power_check_s, slowed pollers wake every nap_s
+        self.low_power = low_power or (lambda: "")
+        self.power_check_s, self.nap_s = power_check_s, nap_s
+        self._power: tuple[float, str] | None = None
 
     # ---- registration ---------------------------------------------------
     def poller(self, name: str, interval: float, fn: Callable[[], None], *, delay: float = 0.0,
-               stall_after: float | None = None) -> Part:
-        part = Part(name, "poller", interval, stall_after or max(interval * 3, 60) + 60, fn=fn, delay=delay)
+               stall_after: float | None = None, game_interval: float | None = None) -> Part:
+        """``game_interval``: how often to run in low-power mode (0: not at all); None keeps ``interval`` (essential)."""
+        part = Part(name, "poller", interval, stall_after or max(interval * 3, 60) + 60, fn=fn, delay=delay,
+                    game_interval=game_interval)
         with self._lock:
             self.parts[name] = part
         self._start_poller(part)
@@ -122,25 +149,78 @@ class Supervisor:
         if part.delay and self._stop.wait(part.delay):
             return
         while not self._stop.is_set() and part.generation == gen:
+            if self.wait_for(part) is None:  # paused while you play: check again soon, run nothing
+                part.last_beat = self.now()
+                if self._stop.wait(min(self.power_check_s, self.nap_s)):
+                    return
+                continue
             part.last_beat = self.now()
+            t0 = time.perf_counter()
             try:
                 part.fn()
             except Exception as exc:
                 if part.generation != gen:
                     return  # a replacement took over while we were stuck
+                part.timed((time.perf_counter() - t0) * 1000)
                 self._record_error(part, exc)
                 wait = min(part.interval * 2 ** min(part.consecutive_errors, 8), max(part.interval, MAX_BACKOFF_S))
-            else:
-                if part.generation != gen:
+                if self._stop.wait(wait):
                     return
-                part.runs += 1
-                part.last_ok = part.last_beat = self.now()
-                part.consecutive_errors = 0
-                if part.state != OK:
-                    part.state = OK
-                wait = part.interval
-            if self._stop.wait(wait):
+                continue
+            if part.generation != gen:
                 return
+            part.timed((time.perf_counter() - t0) * 1000)
+            part.runs += 1
+            part.last_ok = part.last_beat = self.now()
+            part.consecutive_errors = 0
+            if part.state != OK:
+                part.state = OK
+            if self._nap(part, gen):
+                return
+
+    # ---- low-power mode ---------------------------------------------------
+    def power_reason(self) -> str:
+        """"" or why Vesper is holding back ("game", "live"); asked at most every ``power_check_s``."""
+        now = self.now()
+        if self._power is None or now - self._power[0] >= self.power_check_s or now < self._power[0]:
+            try:
+                reason = str(self.low_power() or "")
+            except Exception:
+                reason = ""
+            self._power = (now, reason)
+        return self._power[1]
+
+    def wait_for(self, part: Part) -> float | None:
+        """How long this poller waits between runs right now; None while it's paused."""
+        if part.game_interval is None or not self.power_reason():
+            part.throttle = ""
+            return part.interval
+        part.throttle = "paused" if not part.game_interval else "slowed" if part.game_interval > part.interval else ""
+        return part.game_interval or None
+
+    def _nap(self, part: Part, gen: int) -> bool:
+        """Wait out the interval (True: stopping). A part low-power mode can slow wakes every ``nap_s`` to see
+        whether the game started or ended, so it settles into the new pace without waiting out the old one."""
+        if part.game_interval is None:
+            return self._stop.wait(part.interval)
+        began = time.monotonic()
+        while part.generation == gen:
+            target = self.wait_for(part)
+            left = (target or 0) - (time.monotonic() - began)
+            if target is None or left <= 0:
+                return False
+            if self._stop.wait(min(left, self.nap_s)):
+                return True
+            part.last_beat = self.now()  # asleep on purpose, not stuck
+        return False
+
+    def power(self) -> dict:
+        reason = self.power_reason()
+        with self._lock:
+            parts = [p for p in self.parts.values() if p.kind == "poller"]
+        return {"low_power": bool(reason), "reason": LOW_POWER_REASONS.get(reason, reason),
+                "paused": sorted(p.name for p in parts if reason and p.game_interval == 0),
+                "slowed": sorted(p.name for p in parts if reason and p.game_interval and p.game_interval > p.interval)}
 
     # ---- services -------------------------------------------------------
     def _start_service(self, part: Part) -> None:
@@ -213,14 +293,21 @@ class Supervisor:
         if self.bus is None:
             return
         snap = self.snapshot()
-        compact = [(p["name"], p["state"], p["restarts"], p["errors"]) for p in snap]
+        compact = [(p["name"], p["state"], p["restarts"], p["errors"], p["throttle"], p["low_power"]) for p in snap]
         if force or compact != self._last_published or int(self.now()) % 30 < self.check_every:
             self._last_published = compact
             self.bus.publish("health", snap, sticky=True)
 
     def snapshot(self) -> list[dict]:
+        """Every part's row; each also carries why low-power mode is on ("" when it isn't), for the HUD's header."""
+        reason = self.power_reason()
+        reason = LOW_POWER_REASONS.get(reason, reason)
         with self._lock:
-            return [p.view() for p in self.parts.values()]
+            parts = list(self.parts.values())
+        for p in parts:
+            if p.kind == "poller":
+                self.wait_for(p)  # throttle as of now, even for a part that's asleep
+        return [{**p.view(), "low_power": reason} for p in parts]
 
     def healthy(self) -> bool:
         return all(p["state"] in (OK, STARTING, DISABLED) for p in self.snapshot())

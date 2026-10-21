@@ -15,14 +15,20 @@ from typing import Any
 
 def save_secret(svc: Any, name: str, value: str) -> None:
     """KEY=value in the .env next to config.yaml, and in this process at once. Never in config.yaml or a log."""
+    save_secrets(svc, {name: value})
+
+
+def save_secrets(svc: Any, values: dict[str, str]) -> None:
+    """Several at once, all or none: a value with a line break in it (ValueError) leaves .env as it was."""
     from ..firstrun import set_env_value
 
-    value = (value or "").strip()
+    values = {k: (v or "").strip() for k, v in values.items()}
     env = svc.cfg.root / ".env"
     text = env.read_text(encoding="utf-8") if env.exists() else ""
-    text = set_env_value(text, name, value)
+    for name, value in values.items():
+        text = set_env_value(text, name, value)
     env.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
-    os.environ[name] = value
+    os.environ.update(values)
 
 
 def save_setting(skill: Any, key: str, value: Any) -> None:

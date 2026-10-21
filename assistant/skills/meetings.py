@@ -46,6 +46,7 @@ def names(people: list[dict], n: int = 3) -> str:
 class Meetings(Skill):
     name, title = "meetings", "Meetings"
     poll_s = 60
+    game_poll_s = 120  # still in time for the 10-minute heads-up
     delay_s = 45
 
     def __init__(self, svc, clock=time.time):

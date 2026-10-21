@@ -100,7 +100,7 @@ class Runtime:
                 cfg=cfg["voice"], hint_words=self._hint_words, verifier=self.verifier,
                 models_dir=cfg.data_dir / "models",
             )
-        self.supervisor = Supervisor(self.bus)
+        self.supervisor = Supervisor(self.bus, low_power=self._low_power)
         self.started = time.time()
         self.timings["runtime_s"] = round(time.perf_counter() - t0, 2)
         if self.svc.skills is not None:  # Setup → Skills: the brain's tools follow; a skill turned on gets started
@@ -187,32 +187,54 @@ class Runtime:
                         is_disabled=lambda: listener.state == "unavailable")
             register_hotkey(self.cfg["voice"].get("push_to_talk_hotkey"), listener.arm)
         register_hotkey((self.cfg.get("pc_control") or {}).get("kill_hotkey"), self.kill_switch)
-        # Pollers: the supervisor owns their loops.
-        sup.poller("system stats", 2, self._poll_system, stall_after=60)
+        # Pollers: the supervisor owns their loops. The last number is the pace in low-power mode (a fullscreen game
+        # or live: see _low_power): 0 pauses, none keeps the normal pace (the essential ones: OBS, Twitch, pre-stream).
+        sup.poller("system stats", 2, self._poll_system, stall_after=60, game_interval=6)
         sup.poller("obs", 3, self._poll_obs, stall_after=60)
-        sup.poller("activity summary", 60, self._poll_activity)
+        sup.poller("activity summary", 60, self._poll_activity, game_interval=300)
         sup.poller("twitch", 90, self._poll_twitch)
         if self.eventsub:
             events = self.eventsub
             events.heartbeat = lambda: sup.beat("twitch events")
             sup.service("twitch events", events.restart, heartbeat_s=60,
                         is_disabled=lambda: not self.svc.twitch.auth.connected)
-        sup.poller("projects", 120, self._poll_projects)
-        sup.poller("calendars", 300, self._poll_calendar)
-        sup.poller("gmail", 180, self._poll_gmail, delay=20)
+        sup.poller("projects", 120, self._poll_projects, game_interval=900)  # git status in every repo
+        sup.poller("calendars", 300, self._poll_calendar, game_interval=900)
+        sup.poller("gmail", 180, self._poll_gmail, delay=20, game_interval=900)
         # Skills start in the background, so the HUD answers at once (one skill's start used to import a big package)
         threading.Thread(target=self._start_skills, name="skills-start", daemon=True).start()
         sup.poller("pre-stream check", 60, self._prestream_tick, delay=30)
-        sup.poller("news", 900, self._poll_news)
+        sup.poller("news", 900, self._poll_news, game_interval=3600)
         sup.poller("morning briefing", 60, self._morning_check)
-        sup.poller("pc scan", 6 * 3600, self._rescan_if_stale, delay=6 * 3600)  # startup already scanned
-        sup.poller("model test", 3600, self._auto_bench, delay=45)
+        sup.poller("pc scan", 6 * 3600, self._rescan_if_stale, delay=6 * 3600, game_interval=0)  # startup already scanned
+        sup.poller("model test", 3600, self._auto_bench, delay=45, game_interval=0)  # never load models mid-game
         if self.svc.library is not None:
             minutes = max(5.0, float((self.cfg.get("library") or {}).get("refresh_minutes", 30)))
-            sup.poller("library", minutes * 60, self._index_library, delay=60)
+            sup.poller("library", minutes * 60, self._index_library, delay=60, game_interval=0)  # reading files: later
         sup.start()
         self.timings["start_s"] = round(time.perf_counter() - t0, 2)
         self.timings["hud_ready_s"] = round(time.time() - _process_start(), 2)  # the server answers right after this
+
+    def _low_power(self) -> str:
+        """Why Vesper should hold back now: "game" (a fullscreen game, Windows' own signal), "live", or ""."""
+        if (self.cfg.get("low_power") or {}).get("enabled", True) is False:
+            return ""
+        try:
+            if self.svc.live and self.svc.live():
+                return "live"
+        except Exception:
+            pass
+        nud = self.svc.skills.get("nudges") if self.svc.skills is not None else None
+        try:
+            if nud is not None:
+                state = nud.fullscreen()
+            else:
+                from .skills.nudges import fullscreen_state
+
+                state = fullscreen_state()
+        except Exception:
+            state = ""
+        return "game" if state == "game" else ""
 
     def stop(self) -> None:
         self.supervisor.stop()
@@ -468,7 +490,8 @@ class Runtime:
         sk.started[skill.name] = round((time.perf_counter() - t0) * 1000, 1)
         name = f"skill · {skill.title or skill.name}"
         if skill.poll_s and name not in self.supervisor.parts:
-            self.supervisor.poller(name, skill.poll_s, lambda s=skill: sk.tick(s), delay=skill.delay_s)
+            self.supervisor.poller(name, skill.poll_s, lambda s=skill: sk.tick(s), delay=skill.delay_s,
+                                   game_interval=skill.low_power_poll())
 
     def _start_skills(self) -> None:
         t0 = time.perf_counter()
@@ -1005,9 +1028,12 @@ class Runtime:
         names = (g.get("client_id_env", "GOOGLE_CLIENT_ID"), g.get("client_secret_env", "GOOGLE_CLIENT_SECRET"))
         env = self.cfg.root / ".env"
         text = env.read_text(encoding="utf-8") if env.exists() else ""
-        for name, value in zip(names, (client_id, client_secret)):
-            text = set_env_value(text, name, value)
-            os.environ[name] = value
+        try:  # both checked before either is kept: a line break inside one never adds a line to .env
+            for name, value in zip(names, (client_id, client_secret)):
+                text = set_env_value(text, name, value)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        os.environ.update(zip(names, (client_id, client_secret)))
         env.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
         self.svc.google.set_client(client_id, client_secret)
         return {"ok": True, **self.google_status()}

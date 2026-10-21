@@ -23,6 +23,7 @@ import httpx
 
 from ..config import goal_lines
 from ..integrations import desktop
+from ..privacy import redact
 from ..services import Services
 from ..voice import neural
 from . import briefing, local_llm, macros as macro_mod, model_bench
@@ -258,7 +259,7 @@ class Assistant:
             # private words (a journal entry) never go into the conversation log or its search
             private = intent is not None and intent.tool in PRIVATE_TOOLS
             if not self.off_record() and not private:
-                self.svc.storage.log("user", text, source)
+                self.svc.storage.log("user", redact(text), source)  # a pasted key never lands in the log
             self.svc.bus.publish("user_said", {"text": "(journal entry)" if private else text, "source": source})
             self.svc.bus.publish("thinking", {"active": True})
             started = time.time()
@@ -284,7 +285,7 @@ class Assistant:
             reply = out.get("reply") or ""
             if reply:
                 if not self.off_record():
-                    self.svc.storage.log("assistant", reply, source)
+                    self.svc.storage.log("assistant", redact(reply), source)
             self.svc.bus.publish("assistant_said", {
                 "text": reply, "kind": out.get("kind"), "source": source, "ms": out["ms"],
                 "pending": self.pending_view(),

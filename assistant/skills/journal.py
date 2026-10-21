@@ -88,6 +88,7 @@ def window(when: str, today: date) -> tuple[date, date, str]:
 class Journal(Skill):
     name, title = "journal", "Journal"
     poll_s = 60
+    game_poll_s = 600
     delay_s = 50
 
     def __init__(self, svc, clock=time.time):

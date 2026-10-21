@@ -54,6 +54,7 @@ def keywords(*texts: str) -> set[str]:
 class Pulse(Skill):
     name, title = "pulse", "Pulse"
     poll_s = 300
+    game_poll_s = 1800
     delay_s = 45
 
     def __init__(self, svc, clock=time.time):

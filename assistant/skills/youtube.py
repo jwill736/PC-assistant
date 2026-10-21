@@ -61,6 +61,7 @@ def _check(r: httpx.Response) -> dict:
 class YouTube(Skill):
     name, title = "youtube", "YouTube"
     poll_s = CACHE_S
+    game_poll_s = 4 * 3600
     delay_s = 40
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time):

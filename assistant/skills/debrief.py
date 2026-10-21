@@ -110,6 +110,7 @@ class Debrief(Skill):
     name, title = "debrief", "Meeting debrief"
     poll_s = 60
     delay_s = 50
+    game_poll_s = 300  # a debrief can wait until the game ends
 
     def __init__(self, svc, clock=time.time):
         super().__init__(svc)

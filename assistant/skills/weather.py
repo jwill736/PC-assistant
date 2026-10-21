@@ -39,6 +39,7 @@ def describe(code) -> tuple[str, str]:
 class Weather(Skill):
     name, title = "weather", "Weather"
     poll_s = 900
+    game_poll_s = 3600
 
     def __init__(self, svc, http: httpx.Client | None = None):
         super().__init__(svc)
@@ -171,9 +172,21 @@ class Weather(Skill):
         return {**d, "asked": day or "today", "pick": pick_day(d, day)}
 
     def route(self, t: str):
-        m = re.search(r"^(?:set|change|update) my (?:location|city|town) to (.+)$|^i (?:live|am|'m) (?:in|at) (.+)$", t)
+        # "i am in a meeting" / "i'm at the gym" are not a new home town: only "i live in …" and "based in …" are.
+        m = re.search(r"^(?:set|change|update) my (?:location|city|town) to (.+)$|^i live in (.+)$"
+                      r"|^i(?:'m| am) (?:based|located|living) in (.+)$", t)
         if m:
-            return Intent("tool", "set_location", {"name": m.group(1) or m.group(2)})
+            return Intent("tool", "set_location", {"name": next(g for g in m.groups() if g)})
+        # The weather words appear inside other skills' commands ("every day at 8 give me the weather" is a routine,
+        # "remind me to check the weather" a reminder, "what's my gpu temperature" the PC): those aren't ours.
+        if re.match(r"(?:every|each|remind|after|when|search|google|youtube|play|journal|dear diary|remember|note|add)\b", t) \
+                or re.search(r"\b(?:gpu|cpu|graphics|card|pc|computer|rig|room|house|drive|disk|ssd)\b", t):
+            return None
+        # get_weather only knows J's own town: "the weather in London" goes to the model (or a web search).
+        if re.search(r"\b(?:weather|forecast|temperature)\b(?: like)? (?:in|for|at) (?!(?:the |this |next )?(?:morning|"
+                     r"afternoon|evening|night|weekend|week)\b|today|tomorrow|tonight|my |here|home|(?:mon|tues|wednes|"
+                     r"thurs|fri|satur|sun)day)\w", t):
+            return None
         if re.search(r"\b(?:weather|forecast|temperature)\b|\bwill it (?:rain|snow|storm)\b|\bis it (?:going to )?(?:rain|snow)"
                      r"|\bdo i need (?:an? )?(?:umbrella|jacket|coat|sunscreen)\b|^how (?:hot|cold|warm) is it", t) \
                 and not re.search(r"\b(?:stream|twitch|obs|document|email)\b", t):

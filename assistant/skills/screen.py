@@ -150,6 +150,7 @@ def denied(app: str, title: str, apps: set[str], words: list[str]) -> bool:
 class Screen(Skill):
     name, title = "screen", "Screen"
     poll_s = 30
+    game_essential = True  # drops the HUD thumbnail after 2 minutes (privacy), no work otherwise
     delay_s = 30
 
     def __init__(self, svc, http: httpx.Client | None = None, window=None, capture_fn=capture, ocr=windows_ocr,

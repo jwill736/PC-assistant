@@ -65,6 +65,7 @@ def fullscreen_state() -> str:
 class Nudges(Skill):
     name, title = "nudges", "Nudges"
     poll_s = 15
+    game_essential = True  # speaks up at the right moment: it's what decides a game is no moment
     delay_s = 30
 
     def __init__(self, svc, clock=time.time, idle=None, fullscreen=fullscreen_state):
@@ -317,15 +318,18 @@ class Nudges(Skill):
     def route(self, t: str):
         if re.search(r"^what did i miss$|^(?:any )?(?:updates|notifications)$|^catch me up$", t):
             return Intent("tool", "what_did_i_miss")
-        m = re.search(r"^(?:quiet mode|do not disturb|don't disturb me|stop (?:interrupting|nudging) me|hold (?:my )?"
-                      r"(?:notifications|updates))(?: for (\w+(?: \w+)?) (minutes?|hours?))?$", t)
+        # "turn on quiet mode" must land here: the generic "turn on <thing>" would otherwise go to the model
+        m = re.search(r"^(?:(?:turn on|switch on|enable|start|go into) )?(?:quiet mode|do not disturb|don't disturb me|"
+                      r"stop (?:interrupting|nudging) me|hold (?:my )?(?:notifications|updates))"
+                      r"(?: for (\w+(?: \w+)?) (minutes?|hours?))?$", t)
         if m:
             from ..brain.router import number
 
             n = number(m.group(1)) if m.group(1) else None
             mins = (n or 1) * (60 if (m.group(2) or "hour").startswith("hour") else 1) if m.group(1) else 60
             return Intent("tool", "quiet_mode", {"minutes": mins})
-        if re.search(r"^(?:you can )?(?:talk|interrupt) (?:to me )?again$|^(?:end|stop|turn off) quiet mode$", t):
+        if re.search(r"^(?:you can )?(?:talk|interrupt) (?:to me )?again$|^(?:end|stop|turn off|switch off|disable|exit) "
+                     r"(?:quiet mode|do not disturb)$", t):
             return Intent("tool", "quiet_mode", {"minutes": 0})
         return None
 

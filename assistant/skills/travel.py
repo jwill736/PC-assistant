@@ -205,6 +205,7 @@ def merge(old: dict | None, new: dict) -> dict:
 class Travel(Skill):
     name, title = "travel", "On the way"
     poll_s = 1800
+    game_poll_s = 7200
     delay_s = 120
 
     def __init__(self, svc, clock=time.time):

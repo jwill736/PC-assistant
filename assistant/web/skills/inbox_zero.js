@@ -16,12 +16,15 @@
   };
 
   function owedItem(x) {
-    return h('a', { class: 'item mail iz-item', href: x.link, target: '_blank', rel: 'noopener' },
+    // Other skills add buttons to an owed reply (skills/drafts.js: "Draft reply") through Vesper.hooks.owedItem.
+    const extra = (Vesper.hooks?.owedItem || []).map(fn => fn(x)).filter(Boolean);
+    const item = h('a', { class: 'item mail iz-item', href: x.link, target: '_blank', rel: 'noopener' },
       h('div', { class: 'main' },
         h('div', { class: 't1' }, x.important ? h('span', { class: 'mail-flag', title: 'Gmail marked it important' }, '◆ ') : null, x.name, ' ', acct(x.account)),
         h('div', { class: 't2' }, x.subject),
         x.snippet ? h('div', { class: 't3 muted' }, x.snippet) : null),
       h('span', { class: 'muted mail-age', title: 'waiting on you' }, age(x.ts)));
+    return extra.length ? h('div', { class: 'iz-row' }, item, h('div', { class: 'iz-btns' }, extra)) : item;
   }
   function waitingItem(x) {
     return h('a', { class: 'item mail iz-item', href: x.link, target: '_blank', rel: 'noopener' },

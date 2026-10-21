@@ -188,7 +188,7 @@ def test_says_when_a_box_was_left_unticked(accounts, fake, cfg):
         return resp
     accounts.http = httpx.Client(transport=httpx.MockTransport(drive_only))
     connect(accounts, fake, "code-work")
-    assert accounts.accounts()[0]["missing"] == ["Google Calendar", "Gmail"]
+    assert accounts.accounts()[0]["missing"] == ["Google Calendar", "Gmail", "Gmail drafts", "Google Tasks", "Calendar events"]
     check = doctor.check_google(cfg, accounts)
     assert check.status == "warn" and "didn't allow Google Calendar" in check.detail and "tick every box" in check.fix
     accounts.http = httpx.Client(transport=httpx.MockTransport(fake))

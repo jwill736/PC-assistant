@@ -1,0 +1,27 @@
+/* Reply drafts */
+.iz-row { display: flex; align-items: center; gap: 8px; }
+.iz-row > .item { flex: 1; min-width: 0; }
+.iz-row > .iz-btns { align-self: center; }
+.dr-btn { white-space: nowrap; border-color: color-mix(in srgb, var(--iris) 45%, var(--line)); color: var(--iris); }
+.dr-btn:hover { background: var(--iris-soft); }
+.dr-btn.dr-busy { opacity: .7; }
+.dr-list { display: flex; flex-direction: column; gap: 10px; }
+.dr-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--inset); padding: 10px 12px;
+  animation: dr-in .28s cubic-bezier(.23, 1, .32, 1) both; }
+.dr-head { display: flex; gap: 8px; align-items: flex-start; }
+.dr-head .main { flex: 1; min-width: 0; }
+.dr-acct, .dr-by { font-size: 10px; margin-left: 4px; vertical-align: 1px; }
+.dr-by { color: var(--iris); border-color: color-mix(in srgb, var(--iris) 45%, transparent); }
+.dr-body { margin: 8px 0 6px; padding: 8px 10px; border-left: 2px solid var(--iris); background: var(--panel); color: var(--ink);
+  font: inherit; font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7.5em; overflow: hidden; }
+.dr-body:not(.open) { -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.dr-body.open { max-height: none; }
+.dr-flag, .dr-need { font-size: 12px; padding: 6px 10px; border-radius: var(--radius); margin: 6px 0;
+  background: var(--amber-soft); color: var(--ink); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); }
+.dr-actions { margin-top: 4px; gap: 6px; flex-wrap: wrap; }
+.dr-style { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+.dr-style .btn { align-self: flex-start; margin-top: 4px; }
+@keyframes dr-in { from { opacity: 0; transform: translateY(4px); } }
+@media (max-width: 600px) { .iz-row { flex-wrap: wrap; } .iz-row > .iz-btns { flex-basis: 100%; } }
+@media (prefers-reduced-motion: reduce) { .dr-card { animation: none; } }
+:root[data-motion="off"] .dr-card { animation: none; }

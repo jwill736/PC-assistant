@@ -1,9 +1,11 @@
-"""Gmail for every connected Google account (work and personal), read-only.
+"""Gmail for every connected Google account (work and personal): reading, plus reply drafts. Nothing is ever sent.
 
 - ``needs_you()``: unread mail in each inbox from a person (newsletters, receipts and notifications left out), newest
   first: what the HUD's Inbox panel and the morning briefing show.
 - ``search()``: Gmail's own search syntax ("from:dana invoice", "newer_than:7d has:attachment") across the accounts.
 - ``read()``: one message's text.
+- ``create_draft()``: a reply saved in the conversation's Drafts (the "Gmail drafts" box on Google's page). There is
+  no send here, and GoogleAccounts.request refuses any ``/send`` call.
 
 Email is written by other people, so the brain treats it like a downloaded document: information, never orders.
 """
@@ -17,9 +19,10 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from email.message import EmailMessage
 from email.utils import parseaddr, parsedate_to_datetime
 
-from .google import GMAIL_SCOPE, GoogleAccounts, GoogleError, _reason
+from .google import COMPOSE_SCOPE, GMAIL_SCOPE, GoogleAccounts, GoogleError, _reason
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +128,10 @@ class Gmail:
                 for m in resp.json().get("messages", []):
                     meta = summarize(email, m)
                     meta["to"] = _header(m, "to")
+                    meta["cc"] = _header(m, "cc")
+                    meta["reply_to"] = _header(m, "reply-to")
+                    meta["message_id"] = _header(m, "message-id")
+                    meta["references"] = _header(m, "references")
                     meta["from_me"] = "SENT" in (m.get("labelIds") or [])
                     meta["body"] = body_text(m.get("payload") or {})[:4000]
                     msgs.append(meta)
@@ -147,6 +154,59 @@ class Gmail:
                     m["to"] = _header(resp.json(), "to")
                     out.append(m)
         return sorted(out, key=lambda m: m["ts"], reverse=True)
+
+    def sent_bodies(self, account: str, limit: int = 30, days: int = 180) -> list[dict]:
+        """The user's own recent emails from one account, newest first, each with ``body`` (only what he wrote:
+        the quoted message below "On … wrote:" is cut off). For learning how he writes."""
+        if account not in self.accounts():
+            return []
+        try:
+            ids = self._ids(account, f"in:sent newer_than:{int(days)}d", limit)
+        except GoogleError:
+            return []
+        out = []
+        for i in ids:
+            resp = self.google.get(account, f"{GMAIL}/messages/{i}", {"format": "full"})
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            m = summarize(account, data)
+            m["to"] = _header(data, "to")
+            m["body"] = own_words(body_text(data.get("payload") or {}))[:4000]
+            out.append(m)
+        return sorted(out, key=lambda m: m["ts"], reverse=True)
+
+    # ---- drafts (never sent) -------------------------------------------------------------------------
+    def draft_accounts(self) -> list[str]:
+        """Accounts where Vesper may save drafts: Gmail and Gmail drafts both allowed."""
+        return [e for e in self.accounts() if self.google.can(e, COMPOSE_SCOPE)]
+
+    def create_draft(self, account: str, *, to: list[str], subject: str, body: str, cc: list[str] | None = None,
+                     thread_id: str = "", in_reply_to: str = "", references: str = "") -> dict:
+        """Save a reply in the conversation's Drafts. It is not sent: the user opens it in Gmail and sends it."""
+        if account not in self.accounts() or not self.google.can(account, COMPOSE_SCOPE):
+            raise GoogleError(self.google.need(COMPOSE_SCOPE, "Saving reply drafts", [account]))
+        if not to:
+            raise GoogleError("A draft needs someone to reply to.")
+        msg = EmailMessage()
+        msg["To"] = ", ".join(to)
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+        msg["Subject"] = subject
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+            msg["References"] = " ".join(x for x in (references, in_reply_to) if x).strip()
+        msg.set_content(body)
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode().rstrip("=")
+        payload = {"message": {"raw": raw, **({"threadId": thread_id} if thread_id else {})}}
+        resp = self.google.request("POST", account, f"{GMAIL}/drafts", json=payload)
+        if resp.status_code not in (200, 201):
+            raise GoogleError(_reason(resp))
+        d = resp.json()
+        message = d.get("message") or {}
+        tid = message.get("threadId") or thread_id
+        return {"ok": True, "account": account, "draft_id": d.get("id"), "message_id": message.get("id"),
+                "thread_id": tid, "link": draft_link(account, tid, message.get("id"))}
 
     def _pick(self, account: str) -> list[str]:
         accounts = self.accounts()
@@ -201,6 +261,19 @@ def body_text(payload: dict) -> str:
     text = "\n".join(plain) if plain else "\n".join(rich)
     text = re.sub(r"\n>.*", "", text)  # quoted replies below
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def own_words(text: str) -> str:
+    """What the writer typed in a reply: everything above "On Mon, Dana wrote:" / "-----Original Message-----"."""
+    return re.split(r"\n[^\n]*\bOn\b[^\n]{4,200}\bwrote:[ \t]*(?:\n|$)|\n-{2,}\s*Original Message|\n_{5,}\s*\n|\nFrom: ",
+                    "\n" + (text or ""))[0].strip()
+
+
+def draft_link(account: str, thread_id: str | None, message_id: str | None) -> str:
+    """Opens the draft in Gmail (in its conversation when it has one)."""
+    if thread_id:
+        return f"https://mail.google.com/mail/u/{account}/#all/{thread_id}"
+    return f"https://mail.google.com/mail/u/{account}/#drafts?compose={message_id or ''}"
 
 
 def _b64(data: str) -> str:

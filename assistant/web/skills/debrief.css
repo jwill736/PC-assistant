@@ -1,0 +1,22 @@
+/* Meeting debrief */
+.db-ask { border: 1px solid color-mix(in srgb, var(--ion) 40%, var(--line)); border-radius: var(--radius); padding: 10px 12px;
+  background: var(--ion-soft); margin-bottom: 10px; animation: db-in .3s cubic-bezier(.23, 1, .32, 1) both; }
+.db-q { font-size: 14px; color: var(--ink); margin-bottom: 2px; }
+.db-form { display: flex; gap: 6px; align-items: flex-end; margin-top: 8px; }
+.db-form textarea { flex: 1; min-width: 0; resize: vertical; background: var(--inset); border: 1px solid var(--line); color: var(--ink);
+  border-radius: var(--radius); padding: 6px 10px; font: inherit; font-size: 13px; outline: none; }
+.db-form textarea:focus { border-color: var(--ion); }
+.db-btns { display: flex; flex-direction: column; gap: 4px; }
+.db-listen { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ion); margin-top: 6px; }
+.db-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--ion); }
+:root[data-motion="full"] .db-pulse { animation: db-pulse 1.6s ease-in-out infinite; }
+.db-offer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.db-item { align-items: flex-start; }
+.db-text { margin-top: 2px; }
+.db-tasks { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+.db-task { font-size: 11px; }
+.db-due { color: var(--ember); font-variant-numeric: tabular-nums; }
+@keyframes db-in { from { opacity: 0; transform: translateY(4px); } }
+@keyframes db-pulse { 50% { opacity: .3; transform: scale(.7); } }
+@media (max-width: 600px) { .db-form { flex-direction: column; align-items: stretch; } .db-btns { flex-direction: row; } }
+@media (prefers-reduced-motion: reduce) { .db-ask, .db-pulse { animation: none; } }

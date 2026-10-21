@@ -147,17 +147,19 @@ that will run the model: this one, or your main PC.
 
 Do this once for each Google account (work and personal). Vesper then reads your Gmail (who's waiting on a reply),
 the words in your Google Docs, Sheets and Slides (until then they're found by name only) and shows your Google calendars without iCal links, which a
-Workspace admin can switch off. It can only read, never change anything. Google gives every app its own sign-in
+Workspace admin can switch off. The only things it writes are what you ask for: reply drafts (never sent), its own
+“Vesper · …” lists in Google Tasks, and focus blocks you said yes to. Google gives every app its own sign-in
 key, so steps 25–29 make yours in Google Cloud (free); do them signed in as your **personal** Gmail.
 
 25. **Make a project.** Open [console.cloud.google.com/projectcreate](https://console.cloud.google.com/projectcreate).
     First time? Pick your country, tick the terms → **Agree and continue**. **Project name** `Vesper` →
     **Create**. Wait for the bell to say it's made, then click **Select project** in that message.
-26. **Turn on Drive, Calendar and Gmail.** Open
+26. **Turn on Drive, Calendar, Gmail and Tasks.** Open
     [the Google Drive API page](https://console.cloud.google.com/apis/library/drive.googleapis.com) → check the top
     bar says **Vesper** → **Enable**. Then
     [the Google Calendar API page](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com) →
-    **Enable**, and [the Gmail API page](https://console.cloud.google.com/apis/library/gmail.googleapis.com) →
+    **Enable**, [the Gmail API page](https://console.cloud.google.com/apis/library/gmail.googleapis.com) →
+    **Enable**, and [the Google Tasks API page](https://console.cloud.google.com/apis/library/tasks.googleapis.com) →
     **Enable**.
 27. **Name the sign-in.** Open [Google Auth Platform](https://console.cloud.google.com/auth/overview) →
     **Get started**. **App name** `Vesper`, **User support email** your Gmail → **Next** → **External** →
@@ -171,7 +173,8 @@ key, so steps 25–29 make yours in Google Cloud (free); do them signed in as yo
     Client secret into the second → **Save**. It's kept in `.env`.
 31. **Connect your work account.** Click **Connect a Google account**. Your browser opens Google: pick
     **jon@talent-sdk.com**. “Google hasn't verified this app” is expected (it's your own app): **Advanced** →
-    **Go to Vesper (unsafe)**. Tick **every box** (Drive, Calendar and Gmail) → **Continue**. The tab says
+    **Go to Vesper (unsafe)**. Tick **every box** (Drive, Calendar, Gmail, Gmail drafts, Tasks and calendar events)
+    → **Continue**. The tab says
     “Connected …”; close it. A box left unticked shows **Partly** in the HUD: **Reconnect** and tick it.
     “Access blocked” or “admin_policy_enforced” instead means the company's Google admin blocks apps it hasn't
     approved: the admin adds the Client ID in **admin.google.com → Security → Access and data control → API

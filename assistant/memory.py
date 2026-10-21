@@ -334,6 +334,15 @@ class Memory:
             self.forget(h["id"])
         return strong[:1]
 
+    def forget_ref(self, source_ref: str) -> list[dict]:
+        """Everything learned from one source (``thread:12``, a forgotten conversation): gone for real, and what those
+        facts had replaced counts again."""
+        rows = self.storage.query("SELECT id, statement FROM facts WHERE source_ref = ?", (source_ref,))
+        for r in rows:
+            self.storage.execute("UPDATE facts SET superseded_by = NULL, valid_to = NULL WHERE superseded_by = ?", (r["id"],))
+            self.forget(r["id"])
+        return [dict(r) for r in rows]
+
     def pin(self, fact_id: int, pinned: bool = True) -> bool:
         return self.storage.execute("UPDATE facts SET pinned = ?, importance = MAX(importance, ?) WHERE id = ?",
                                     (int(pinned), 5 if pinned else 1, int(fact_id))).rowcount > 0

@@ -498,6 +498,32 @@ BOOK = [
     ("post on discord stream starts at 8", "discord_announce", {"text": "Stream starts at 8"}),
     ("post my latest clip", "discord_post_clip", {}),
     ("share the clip to discord", "discord_post_clip", {}),
+    # ---- conversations that evolve (2.2): threads, modes, style (in-conversation phrases: test_conversation_threads)
+    ("let's talk", "conversation", {"on_stream": False}),
+    ("let's talk about the new pc", "conversation", {"on_stream": False, "topic": "the new pc"}),
+    ("let's talk off the record", "conversation", {"on_stream": False, "off_record": True}),
+    ("let's continue our talk about the move", "conversation", {"on_stream": False, "resume": "the move"}),
+    ("what were we saying about the new pc", "conversation", {"on_stream": False, "resume": "the new pc"}),
+    ("pick up where we left off", "conversation", {"on_stream": False, "resume": ""}),
+    ("let's brainstorm names for my channel", "conversation",
+     {"on_stream": False, "mode": "brainstorm", "topic": "names for my channel"}),
+    ("play devil's advocate", "conversation", {"on_stream": False, "mode": "devil"}),
+    # a conversation mode, not a window called "devil's advocate"
+    ("switch to devil's advocate", "conversation", {"on_stream": False, "mode": "devil"}),
+    ("coach me on public speaking", "conversation", {"on_stream": False, "mode": "coach", "topic": "public speaking"}),
+    ("interview me", "conversation", {"on_stream": False, "mode": "interview"}),
+    ("teach me chess", "conversation", {"on_stream": False, "mode": "teach", "topic": "chess"}),
+    ("let's rubber duck this", "conversation", {"on_stream": False, "mode": "duck"}),
+    ("plan the move with me", "conversation", {"on_stream": False, "mode": "plan", "topic": "the move"}),
+    ("tell me a story", "conversation", {"on_stream": False, "mode": "story"}),
+    ("forget our conversation about the move", "conversation_forget", {"topic": "the move"}),
+    ("don't follow up on that", "conversation_followups", {"on": False}),
+    ("what have we talked about lately", "conversation_threads", {}),
+    ("reset my conversation style", "conversation_style", {"action": "reset"}),
+    ("shorter", MODEL),  # style feedback only in a conversation
+    ("let me think", MODEL),
+    ("tell me more", MODEL),
+    ("let's plan my day", MODEL),  # the planner's "plan my day" needs no "let's"; never plan-with-me mode
     # ---- conversation control: always the core's, before any skill
     ("stop", "cancel", {}),  # the barge-in word: never "stop the music"
     ("cancel", "cancel", {}),
@@ -585,6 +611,8 @@ INTENDED_OVERRIDES = {
     "who's in my next meeting": "meetings",
     "youtube stats": "youtube",
     "what am i looking at": "screen",
+    # a conversation mode, not a window to focus
+    "switch to devil's advocate": "conversation",
 }
 
 

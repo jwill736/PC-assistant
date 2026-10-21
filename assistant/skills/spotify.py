@@ -395,8 +395,9 @@ class Spotify(Skill):
             return Intent("tool", "spotify_play", {"query": m.group(1), "kind": "artist"})
         m = re.fullmatch(r"(?:play|put on) (?:some )?(.+?)(?: on spotify)?", t)
         apps = {str(a).lower() for a in (self.svc.cfg.get("apps") or {})}  # "play valorant": the game, not a song
-        if m and not re.fullmatch(r"(?:the |some )?(?:music|song|spotify|video|media|it|that|something)", m.group(1)) \
-                and m.group(1) not in apps:
+        if m and not re.fullmatch(r"(?:the |some )?(?:music|song|spotify|video|media|it|that|something)"
+                                  r"|(?:the |my )?devil'?s advocate(?: .+)?", m.group(1)) \
+                and m.group(1) not in apps:  # "play devil's advocate" is a conversation mode (skills/conversation.py)
             return Intent("tool", "spotify_play", {"query": m.group(1), "kind": "auto"})
         return None
 

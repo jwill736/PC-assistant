@@ -203,8 +203,10 @@ class MemorySkill(Skill):
         rows = self.svc.storage.query("SELECT id, ts, role, source, text FROM log WHERE id > ? ORDER BY id LIMIT 200", (last,))
         if not rows or now - rows[-1]["ts"] < QUIET_S:
             return 0  # still talking (or nothing new)
+        owns = getattr(getattr(getattr(self.svc, "conversation", None), "threads", None), "owns", None)
         turns = [{"role": r["role"], "text": r["text"]} for r in rows
                  if r["source"] not in ("automation",) and not self._while_live(r["ts"])
+                 and not (owns and owns(r["ts"]))  # a kept conversation learns through its thread (brain/threads.py)
                  and not re.match(r"^(?:remember|note|make a note)\b", r["text"].lower())]  # notes are learned above
         learned = self.memory.extract(turns, source_ref=f"log:{rows[0]['id']}-{rows[-1]['id']}") if turns else []
         self.memory.meta("log_id", str(rows[-1]["id"]))
@@ -369,7 +371,9 @@ class MemorySkill(Skill):
         if re.fullmatch(r"(?:back )?on the record|end off the record", t):
             return Intent("tool", "off_the_record", {"minutes": 0})
         m = re.fullmatch(r"forget (?:that |about )(.+)", t)
-        if m and m.group(1) not in ("it", "this", "that"):  # "forget about it" is "never mind" (the core's cancel)
+        # "forget about it" is "never mind" (the core's cancel); "forget that conversation" is the conversation skill's
+        if m and m.group(1) not in ("it", "this", "that") and not re.match(
+                r"(?:(?:this|our|the|that)(?: whole)? )?(?:conversation|chat|talk|thread)\b", m.group(1)):
             return Intent("tool", "forget", {"what": m.group(1)})
         if re.fullmatch(r"what(?:'s| is| does) my (?:daily |usual |normal )?(?:routine|rhythm)(?: look like)?|"
                         r"what(?:'s| is) my usual day(?: like)?|when do i usually (?:work|stream|go to bed)", t):

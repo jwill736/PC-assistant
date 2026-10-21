@@ -954,7 +954,8 @@ render.speech = function speech() {
         voices ? h('span', { class: 'k' }, 'Voice') : null, picker,
         voices ? h('span', { class: 'k' }, 'Speed') : null, voices ? h('span', { class: 'range-row' }, speed, speedOut) : null,
         h('span', { class: 'k' }, 'First words after'),
-        h('span', {}, t.first_audio_ms != null ? `${t.first_audio_ms} ms` : '—', h('span', { class: 'muted' }, t.first_audio_ms != null ? ' · median of recent replies' : ' · measured on the next reply'))),
+        h('span', {}, t.first_audio_ms != null ? `${t.first_audio_ms} ms` : '—', h('span', { class: 'muted' }, t.first_audio_ms != null ? ' · median of recent replies' : ' · measured on the next reply')),
+        h('span', { class: 'k' }, 'You stop → it speaks'), turnLatency(t.turns)),
       t.error ? h('div', { class: 'empty' }, status('warning', t.error)) : null,
       !t.neural_available ? h('div', { class: 'empty' }, status('warning', 'Natural voices need the voice packages: run setup.bat again.')) : null,
       h('div', { class: 'controls' },
@@ -963,6 +964,18 @@ render.speech = function speech() {
       h('div', { class: 't2' }, 'Long replies start speaking after the first sentence. Say “stop” or press the talk hotkey to cut it off.'));
   }
 };
+
+/* Wake to first words over the last 20 spoken turns: the median, split by what answered, and a tiny strip of each turn. */
+function turnLatency(r) {
+  if (!r || !r.n) return h('span', { class: 'muted' }, '— · measured from your next spoken command');
+  const split = [r.fast_p50_ms != null ? `built-in ${r.fast_p50_ms} ms` : null, r.model_p50_ms != null ? `model ${r.model_p50_ms} ms` : null].filter(Boolean).join(' · ');
+  const top = Math.max(...r.recent.map(x => x.ms), 1);
+  return h('span', { class: 'lat' },
+    h('span', {}, h('b', { class: 'lat-p50' }, `${r.p50_ms} ms`), h('span', { class: 'muted' }, ` · median of last ${r.n}${split ? ` · ${split}` : ''}`)),
+    h('span', { class: 'lat-strip', role: 'img', 'aria-label': `Last ${r.recent.length} turns, ${r.recent.map(x => x.ms).join(', ')} ms` },
+      r.recent.map(x => h('i', { class: x.kind === 'model' ? 'm' : '', title: `${x.ms} ms${x.kind ? ` · ${x.kind === 'model' ? 'model' : 'built-in'}` : ''}`,
+        style: { transform: `scaleY(${Math.max(0.08, x.ms / top).toFixed(3)})` } }))));
+}
 
 render.brain = function brain() {
   const br = S.data.brain || (S.data.assistant || {}).brain;
@@ -1591,6 +1604,17 @@ function paintPending(p) {
   $('#pending').classList.toggle('hidden', !p);
   $('#pending-text').textContent = p ? `${p.text[0].toUpperCase()}${p.text.slice(1)}?` : '';
   $('#pending-tier').textContent = p && p.tier >= 3 ? "Confirm · can't be undone" : 'Confirm';
+  paintConfirmWindow();
+}
+/* The spoken yes/no window (voice/confirm_window.py): listening for ten seconds, then waiting quietly until it expires. */
+function paintConfirmWindow() {
+  const el = $('#pending-window');
+  if (!el) return;
+  const w = S.confirmWindow, p = S.pending;
+  const on = !!(p && w && w.id === p.id);
+  el.classList.toggle('listening', on && w.state === 'listening');
+  el.textContent = !on ? '' : w.state === 'listening' ? 'Listening for yes or no'
+    : w.expires ? `Waiting until ${new Date(w.expires * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
 }
 function paintHalt() {
   $('#halt').classList.toggle('hidden', !S.data.pc_control?.hands_off);
@@ -2269,6 +2293,7 @@ function onEvent(ev) {
     case 'voice_state': orbState.voice = data.state; S.data.voice = data; paintOrb(); queueSystems(); break;
     case 'wake': orbState.voice = 'armed'; paintOrb(); wakeFlare(); break;
     case 'pending': paintPending(data); break;
+    case 'confirm_window': S.confirmWindow = data; paintConfirmWindow(); break;
     case 'pc_control': S.data.pc_control = data; paintHalt(); render.control(); break;
     case 'stream_alert': toast(data.text, { source: 'stream', level: data.level }); feed({ source: 'stream', text: data.text, level: data.level, ts: ev.ts }); break;
     case 'twitch_auth': twitchPatch(t => { t.auth = data; if (data.connected) t.needs_login = false; }); break;
@@ -2346,6 +2371,7 @@ async function load() {
     S.log = (st.log || []).map(l => ({ role: l.role, text: l.text, source: l.source, ts: l.ts }));
     orbState.voice = st.voice?.state || 'off';
     $('#mute-btn').setAttribute('aria-pressed', String(!!st.voice?.muted));
+    S.confirmWindow = st.confirm_window || null;
     paintOrb(); paintPending(st.pending); paintProfile(); paintHalt();
     renderAll();
     hydrateFeed();

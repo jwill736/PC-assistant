@@ -672,7 +672,7 @@ def test_shutting_the_pc_down_always_waits_for_a_yes(svc, monkeypatch):
     a = Assistant(svc)
     for said in ("turn off the pc", "restart my pc", "put the pc to sleep"):
         out = a.handle(said)
-        assert out["kind"] == "pending" and "Confirm" in out["reply"], (said, out)
+        assert out["kind"] == "pending" and "Say yes or no" in out["reply"], (said, out)
         a.handle("cancel")
     assert done == []  # and never a Home Assistant plug called "PC"
     a.handle("shut down the computer")

@@ -26,6 +26,7 @@ from ..integrations import desktop
 from ..privacy import redact
 from ..services import Services
 from ..voice import neural
+from ..voice.confirm_window import question
 from . import briefing, conversation as convo_mod, local_llm, macros as macro_mod, model_bench
 from .router import Intent, RouterContext, clean, route
 from .speech import clock, summarize
@@ -127,6 +128,7 @@ class Assistant:
         self.last_briefing: dict | None = None
         self._lock = threading.RLock()
         self._stream_on, self._speak_turn, self._streamed = False, None, False  # set per command in handle()
+        self._early = False  # a fast-path reply is spoken the moment it exists (not inside a macro's steps)
         self.system_prompt = self._build_system_prompt()
         svc.bus.on(self._track_profile)
 
@@ -325,7 +327,7 @@ class Assistant:
                 convo.turn_started("(journal entry)" if private else text, source)
             # Claude's reply is spoken sentence by sentence as it streams in, not after the last word.
             self._stream_on = bool(speak and self.svc.cfg["voice"]["tts"].get("stream", True))
-            self._speak_turn, self._streamed = turn, False
+            self._speak_turn, self._streamed, self._early = turn, False, self._stream_on
             try:
                 if intent is not None:
                     out = self._run_intent(intent)
@@ -340,12 +342,15 @@ class Assistant:
                 log.exception("command failed")
                 out = {"reply": f"That failed: {type(exc).__name__}.", "kind": "error"}
             finally:
-                self._stream_on = False
+                self._stream_on = self._early = False
                 self._scrub_untrusted()
                 self.tools.guard.end_command()
                 self.svc.bus.publish("thinking", {"active": False})
             out["ms"] = round((time.time() - started) * 1000)
             reply = out.get("reply") or ""
+            if reply and speak and not self._streamed:  # spoken first: the log and the HUD can wait a few ms
+                # A waiting confirmation keeps the mic open for the "yes"; otherwise only a question does.
+                self.svc.speak(reply, expects_reply=True if self.pending_view() else None, turn=turn)
             if in_convo or convo.active:  # the HUD's conversation panel
                 convo.turn_done(reply, source, said=None if in_convo else text, started=in_convo)
                 out["conversation"] = convo.active
@@ -356,9 +361,6 @@ class Assistant:
                 "text": reply, "kind": out.get("kind"), "source": source, "ms": out["ms"],
                 "pending": self.pending_view(),
             })
-            if reply and speak and not self._streamed:
-                # A waiting confirmation keeps the mic open for the "yes"; otherwise only a question does.
-                self.svc.speak(reply, expects_reply=True if self.pending_view() else None, turn=turn)
             self._ctx = {}
             return out
 
@@ -441,6 +443,13 @@ class Assistant:
 
     def run_macro(self, name: str, *, confirmed: bool | str = False) -> dict:
         """``confirmed``: False, or how the yes came in (voice / hud / toast); True means the HUD."""
+        early, self._early = self._early, False  # its steps' replies aren't spoken one by one
+        try:
+            return self._run_macro(name, confirmed=confirmed)
+        finally:
+            self._early = early
+
+    def _run_macro(self, name: str, *, confirmed: bool | str = False) -> dict:
         via = confirmed if isinstance(confirmed, str) else ("hud" if confirmed else None)
         macro = self.macros.get(name.lower())
         if macro is None:
@@ -495,15 +504,17 @@ class Assistant:
             return {"reply": f"I don't have a {name} tool.", "kind": "error"}
         if tool.needs_confirmation(args) and not via:
             self._set_pending([(name, args)], tool.describe(args))
-            return {"reply": f"Confirm: {tool.describe(args)}? Say yes or cancel.", "kind": "pending"}
+            return {"reply": question(tool.describe(args)), "kind": "pending"}  # asked once (voice/confirm_window.py)
         result = self.tools.run(name, args, confirmed_by=via)
-        self.svc.bus.publish("tool", {"name": name, "args": args, "result": result})
         said = self.svc.skills.say(name, args, result) if self.svc.skills is not None and not _failed(result) else None
         reply = said or summarize(name, args, result, self.svc.tz, hints)
         if name == "run_routine" and result.get("close_candidates"):
             names = result["close_candidates"]
             self._set_pending([("close_app", {"name": n}) for n in names], f"close {', '.join(names)}")
             reply += f" Want me to close {', '.join(names)}?"
+        if self._early and reply:  # say it now; the HUD's tool chip and panels follow
+            self._speak_sentence(reply, final=True)
+        self.svc.bus.publish("tool", {"name": name, "args": args, "result": result})
         return {"reply": reply, "kind": "tool", "tool": name, "data": result}
 
     def offer(self, calls: list[tuple[str, dict]], text: str) -> None:
@@ -512,8 +523,9 @@ class Assistant:
 
     def _set_pending(self, calls: list[tuple[str, dict]], text: str) -> None:
         tier = max([self._tier_of(n, a) for n, a in calls] or [0])
+        wait_s = 60 * float((self.svc.cfg.get("pc_control") or {}).get("confirm_minutes", 2))  # the HUD/toast card
         self.pending = {"id": uuid.uuid4().hex[:10], "calls": calls, "text": text, "tier": tier,
-                        "expires": time.time() + 90}
+                        "expires": time.time() + wait_s}
         self.svc.bus.publish("pending", self.pending_view())
         if self.on_pending:
             self.on_pending(self.pending_view())

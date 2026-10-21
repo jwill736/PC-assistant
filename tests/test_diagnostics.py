@@ -4,6 +4,7 @@ import json
 import re
 import socket
 import sys
+import threading
 import time
 import types
 from datetime import datetime, timezone
@@ -692,9 +693,12 @@ def test_skills_start_in_the_background(cfg, svc, monkeypatch):
     from assistant.server import create_app
 
     gate = {"started": False}
+    release = threading.Event()
 
-    def slow_start(runtime):
-        time.sleep(1.5)
+    def slow_start(runtime):  # held until the test has its answer: no stopwatch, so a slow runner can't fail it
+        began = time.perf_counter()
+        release.wait(20)
+        time.sleep(max(0.0, 0.3 - (time.perf_counter() - began)))  # at least 0.3 s, for the start-time check below
         gate["started"] = True
     svc.skills["weather"].start = slow_start
     svc.skills["weather"].status = lambda: {"ok": True}
@@ -704,14 +708,15 @@ def test_skills_start_in_the_background(cfg, svc, monkeypatch):
     with TestClient(app) as c:
         answered = time.perf_counter() - t0
         assert c.get("/").status_code == 200
-        assert answered < 1.45 and not gate["started"]  # the HUD answered before the slow start finished
+        assert not gate["started"] and answered < 15  # the HUD answered while the slow start was still held
+        release.set()
         deadline = time.time() + 10
         while "skill_panels_s" not in rt.timings and time.time() < deadline:
             time.sleep(0.05)
-        assert gate["started"] and rt.timings["skill_start_ms"]["weather"] >= 1400
+        assert gate["started"] and rt.timings["skill_start_ms"]["weather"] >= 290
         assert "hud_ready_s" in rt.timings and "start_s" in rt.timings
         assert "skill · Weather" in rt.supervisor.parts
-        assert json.loads((cfg.data_dir / diag.STARTUP_FILE).read_text())["skill_start_ms"]["weather"] >= 1400
+        assert json.loads((cfg.data_dir / diag.STARTUP_FILE).read_text())["skill_start_ms"]["weather"] >= 290
 
 
 def test_the_report_shows_what_the_mic_heard_and_why_it_was_ignored():

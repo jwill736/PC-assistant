@@ -544,3 +544,28 @@ def test_the_model_test_only_asks_for_jobs_its_tools_can_do(monkeypatch):
     assert [c["id"] for c in model_bench.job_probes([tool, add])] == ["tool-rent-friday"]
     monkeypatch.setattr(G, "bench_cases", lambda *a: 1 / 0)  # a broken golden.yaml never stops the test
     assert model_bench.job_probes([tool, add]) == []
+
+
+def test_one_lucky_job_answer_does_not_hand_the_brain_to_a_small_model():
+    from assistant.brain.model_bench import pick_best
+
+    big = {"name": "qwen3.6:35b-a3b", "strength": 9, "jobs_score": 0.75}  # 3 of 4
+    small = {"name": "gemma4:latest", "strength": 4, "jobs_score": 1.0}  # 4 of 4
+    assert pick_best([small, big])["name"] == "qwen3.6:35b-a3b"
+    assert pick_best([small, {**big, "jobs_score": 0.5}])["name"] == "gemma4:latest"  # clearly worse at the jobs
+    assert pick_best([{**small, "jobs_score": 0}, {**big, "jobs_score": 0}])["name"] == "qwen3.6:35b-a3b"
+    assert pick_best([]) is None
+
+
+def test_a_test_saved_under_the_old_rule_is_re_ranked(tmp_path):
+    from assistant.brain import local_llm
+
+    saved = {"best": "gemma4:latest", "light": "gemma4:latest", "results": [
+        {"name": "gemma4:latest", "result": "pass", "strength": 4, "jobs_score": 1.0},
+        {"name": "qwen3.6:35b-a3b", "result": "pass", "strength": 9, "jobs_score": 0.75},
+        {"name": "huge:405b", "result": "too_big", "strength": 20}]}
+    path = tmp_path / local_llm.BENCH_FILE
+    path.write_text(json.dumps(saved), encoding="utf-8")
+    brain = local_llm.LocalBrain.__new__(local_llm.LocalBrain)
+    brain.bench_path = path
+    assert brain.bench["best"] == "qwen3.6:35b-a3b" and brain.bench["light"] == "gemma4:latest"

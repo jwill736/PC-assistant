@@ -102,12 +102,26 @@ def run(found: dict, tools: list[dict], vram_mb: float | None = None, system: st
         note(_test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_ctx, jobs))
 
     passed = [r for r in results if r["result"] == "pass"]
-    # the one that does Vesper's everyday jobs best; of equals, the strongest
-    best = max(passed, key=lambda r: (r.get("jobs_score", 0), r["strength"]), default=None)
+    best = pick_best(passed)
     light = min((r for r in passed if r["strength"] >= 3), key=lambda r: (r.get("size_gb") or 0), default=None)
     return {"best": best["name"] if best else None, "light": (light or best or {}).get("name"),
             "results": results, "models": [m["name"] for m in found["models"]],
             "vram_gb": round(vram_mb / 1024, 1) if vram_mb else None, "at": datetime.now().isoformat(timespec="seconds")}
+
+
+JOB_SLACK = 0.25  # within this share of the best job score, the stronger model wins
+
+
+def pick_best(passed: list[dict]) -> dict | None:
+    """The strongest model that passed, unless a smaller one does Vesper's everyday jobs clearly better.
+
+    Only a handful of job probes fit a given tool list (four on J's PC), so one answer is 25 points: ranking by job
+    score first let a small model beat qwen3.6:35b on a single lucky answer, and Vesper got noticeably dumber."""
+    if not passed:
+        return None
+    top = max(r.get("jobs_score", 0) for r in passed)
+    near = [r for r in passed if r.get("jobs_score", 0) >= top - JOB_SLACK - 1e-9]
+    return max(near, key=lambda r: (r["strength"], r.get("jobs_score", 0)))
 
 
 def _test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_ctx, jobs=()) -> dict:

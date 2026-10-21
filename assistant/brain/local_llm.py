@@ -463,9 +463,16 @@ class LocalBrain:
         if not self.bench_path:
             return {}
         try:
-            return json.loads(Path(self.bench_path).read_text(encoding="utf-8"))
+            data = json.loads(Path(self.bench_path).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
+        passed = [r for r in data.get("results") or [] if isinstance(r, dict) and r.get("result") == "pass"
+                  and "strength" in r]
+        if passed:  # re-rank a test saved under an older rule (model_bench.pick_best)
+            from .model_bench import pick_best
+
+            data["best"] = pick_best(passed)["name"]
+        return data
 
     def _vram(self) -> float | None:
         try:

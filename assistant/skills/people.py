@@ -19,7 +19,7 @@ from email.utils import getaddresses
 
 from ..brain.router import Intent
 from ..brain.tools import EMAIL_NOTE, Tool, obj
-from . import Skill
+from . import Skill, gmail_checks
 
 ROBOT = re.compile(r"(?:no-?reply|do-?not-?reply|notifications?|mailer-daemon|newsletter|alerts?|updates?|billing|"
                    r"receipts?|support@|info@|news@|marketing|hello@|calendar-notification|@resource\.calendar)", re.I)
@@ -89,6 +89,7 @@ def on_air(svc) -> bool:
 class People(Skill):
     name, title = "people", "People"
     poll_s = 6 * 3600
+    game_poll_s = 24 * 3600  # the contact rebuild reads all your mail: once a day at most while gaming
     delay_s = 90
 
     def __init__(self, svc, clock=time.time):
@@ -264,6 +265,10 @@ class People(Skill):
         text = (text or "").strip().rstrip(".")
         if not text:
             return {"ok": False, "error": "What should I remember?"}
+        from ..privacy import has_secret_value
+
+        if has_secret_value(text):  # "Dana's door code is 4512": not in a plain-text card
+            return {"ok": False, "error": "That has a password or a code in it, and I don't keep those."}
         p = self.known(name)
         if p is None:
             note = self.svc.storage.add_note(f"{name}: {text}" if name.lower() not in text.lower() else text)
@@ -381,6 +386,9 @@ class People(Skill):
         return None
 
     # ---- HUD ------------------------------------------------------------------------------------------------
+    def selftest(self) -> list[dict]:
+        return gmail_checks(self.svc, per_account=False)
+
     def status(self) -> dict:
         n = self.svc.storage.query("SELECT COUNT(*) AS n FROM people_contacts")[0]["n"]
         built = float(self._meta("built", "0") or 0) or None

@@ -16,7 +16,7 @@ import httpx
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 from ._kit import save_secret, save_setting
 
 API = "https://www.googleapis.com/youtube/v3"
@@ -61,11 +61,12 @@ def _check(r: httpx.Response) -> dict:
 class YouTube(Skill):
     name, title = "youtube", "YouTube"
     poll_s = CACHE_S
+    game_poll_s = 4 * 3600
     delay_s = 40
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=15)
+        self.http = http or lazy_client(timeout=15)
         self.clock = clock
         self._data: dict | None = None
         self._at = 0.0
@@ -182,6 +183,21 @@ class YouTube(Skill):
     def tick(self) -> None:
         self.stats()
         self.publish()
+
+    def selftest(self) -> list[dict]:
+        if not self.key:
+            return [check("YouTube", "skip", "no API key", "Optional: Stream → YouTube")]
+        kind, value = parse_channel(str(self.setting("channel") or "")) or ("id", "UC_x5XG1OV2P6uZZ5FSM9Ttw")
+        try:
+            c = _check(self.http.get(f"{API}/channels", params={"part": "id", "key": self.key,
+                                                                "id" if kind == "id" else "forHandle": value}, timeout=8))
+        except YTError as exc:
+            return [check("YouTube", "fail", str(exc), "Stream → YouTube: paste a new key")]
+        except httpx.HTTPError as exc:
+            return [check("YouTube", "warn", f"YouTube didn't answer ({type(exc).__name__})", "Check the internet")]
+        if self.setting("channel") and not c.get("items"):
+            return [check("YouTube", "warn", "the key works, but the channel wasn't found", "Paste your @handle again")]
+        return [check("YouTube", "pass", "key works" + (" and the channel was found" if self.setting("channel") else ""))]
 
     def status(self) -> dict:
         base = {"next_step": self.next_step(), "channel_setting": self.setting("channel") or "", "has_key": bool(self.key)}

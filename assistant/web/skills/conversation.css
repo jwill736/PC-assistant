@@ -1,0 +1,171 @@
+/* Conversation mode: ion = J and listening, ember = Vesper, iris = thinking, alert = on air. */
+.panel[data-panel="conversation"] .body { display: grid; gap: 10px; }
+.convo-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.convo-lede { flex: 1 1 260px; min-width: 0; color: var(--ink-2); font-size: 13px; }
+.convo-actions { display: flex; gap: 8px; }
+.convo-chip { display: inline-flex; align-items: center; gap: 7px; font: 600 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase;
+  color: var(--muted); white-space: nowrap; }
+.convo-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px oklch(from currentColor l c h / 0.18); }
+.convo-chip.on { color: var(--ion); }
+.convo-chip.air { color: var(--alert); }
+.btn.convo-start { border-color: oklch(from var(--ion) l c h / 0.5); color: var(--ion); }
+.btn.convo-start:hover { background: var(--ion-soft); }
+.btn.convo-air-btn { border-color: oklch(from var(--alert) l c h / 0.5); color: var(--alert); }
+.btn.convo-air-btn:hover { background: var(--alert-soft); }
+.btn.convo-start:disabled, .btn.convo-air-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.panel.convo-on { border-color: oklch(from var(--ion) l c h / 0.45); box-shadow: inset 2px 0 0 var(--ion); }
+.panel.convo-air { border-color: oklch(from var(--alert) l c h / 0.45); box-shadow: inset 2px 0 0 var(--alert); }
+.convo-log { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto; padding-right: 4px; overscroll-behavior: contain; }
+.convo-past .convo-log { opacity: .6; max-height: 160px; }
+.convo-msg { max-width: min(82%, 720px); line-height: 1.45; }
+.convo-form { display: flex; gap: 8px; }
+.convo-form[hidden], .convo-log[hidden] { display: none; }
+.convo-input { flex: 1 1 auto; min-width: 0; background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px;
+  outline: none; transition: border-color var(--dur-base), box-shadow var(--dur-base); }
+.convo-input:focus { border-color: var(--ion); box-shadow: 0 0 0 3px var(--ion-soft); }
+
+/* Vesper thinking: three iris dots */
+.convo-typing { display: inline-flex; gap: 4px; align-items: center; border-left-color: var(--iris) !important; padding: 11px 13px; }
+.convo-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--iris); opacity: .7; }
+:root[data-motion="full"] .convo-typing i { animation: convo-dot 1s var(--ease-out) infinite; }
+:root[data-motion="full"] .convo-typing i:nth-child(2) { animation-delay: .15s; }
+:root[data-motion="full"] .convo-typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes convo-dot { 50% { opacity: .2; transform: scale(.6); } }
+
+/* New bubbles slide in (transform/opacity only, full motion only) */
+:root[data-motion="full"] .convo-on .convo-msg:last-of-type { animation: convo-in 280ms var(--ease-out) both; }
+@keyframes convo-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* The orb while talking: it stays in "listening" between turns; the label says why. */
+body[data-conversation="on"] #orb-wrap[data-state="listen"] .orb-state .lbl,
+body[data-conversation="air"] #orb-wrap[data-state="listen"] .orb-state .lbl { display: none; }
+body[data-conversation="on"] #orb-wrap[data-state="listen"] .orb-state::after { content: "In conversation"; }
+body[data-conversation="air"] #orb-wrap[data-state="listen"] .orb-state::after { content: "Talking · on air"; color: var(--alert); }
+
+@media (prefers-reduced-motion: reduce) {
+  .convo-typing i, .convo-on .convo-msg:last-of-type { animation: none !important; }
+}
+@media (max-width: 640px) {
+  .convo-msg { max-width: 92%; }
+  .convo-actions { width: 100%; }
+}
+
+/* ---- Vesper 2.2: modes (ember: Vesper's persona), threads (iris: what it remembers), the plan card (amber: needs
+   your yes), "what we covered", and the Threads / Style drawer. */
+.convo-head { row-gap: 8px; }
+.convo-tags { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.convo-tags:empty { display: none; }
+.convo-tag { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 11px; min-width: 0;
+  font: 500 10.5px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; max-width: 260px; border: 1px solid transparent; }
+.convo-tag i { width: 5px; height: 5px; flex: none; background: currentColor; transform: rotate(45deg); border-radius: 1px; }
+.convo-tag small { font: inherit; text-transform: none; letter-spacing: 0; color: var(--muted); }
+.convo-tag.mode { color: var(--ember); background: var(--ember-soft); border-color: oklch(from var(--ember) l c h / 0.35); }
+.convo-tag.thread { color: var(--iris); background: var(--iris-soft); border-color: oklch(from var(--iris) l c h / 0.3); text-transform: none;
+  letter-spacing: 0; font-size: 12px; font-weight: 500; font-family: inherit; }
+.convo-tag.thread i { border-radius: 50%; transform: none; }
+.convo-tag.off { color: var(--ink-2); border: 1px dashed var(--line-2); }
+.convo-tag.held { color: var(--ion); background: var(--ion-soft); }
+
+/* mode chips: start in one, or switch mid-talk */
+.convo-modes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.convo-modes[hidden] { display: none; }
+.convo-modes-k, .convo-card-k, .convo-cov-k { font: 500 10px/1.3 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.convo-modes-k { margin-right: 4px; }
+.convo-mode { height: 26px; padding: 0 11px; border-radius: 13px; border: 1px solid var(--line); background: transparent; color: var(--ink-2);
+  font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer; transition: border-color var(--dur-instant), color var(--dur-instant), background-color var(--dur-fast); }
+.convo-mode:hover:not(:disabled) { border-color: oklch(from var(--ember) l c h / 0.6); color: var(--ink); }
+.convo-mode.on { background: var(--ember-soft); border-color: var(--ember); color: var(--ember); }
+.convo-mode:disabled { opacity: .45; cursor: not-allowed; }
+.convo-mode:focus-visible, .convo-tab:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+
+/* "sounds like an earlier talk" */
+.convo-offer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border-radius: var(--radius);
+  background: var(--iris-soft); box-shadow: inset 2px 0 0 var(--iris); font-size: 13px; }
+.convo-offer[hidden], .convo-plan[hidden], .convo-covered[hidden], .convo-drawer[hidden], .convo-foot[hidden] { display: none; }
+.convo-offer-ic { color: var(--iris); font-size: 15px; }
+.convo-offer-t { flex: 1 1 220px; min-width: 0; }
+.btn.convo-offer-yes { border-color: oklch(from var(--iris) l c h / 0.6); color: var(--iris); }
+.btn.convo-offer-yes:hover { background: var(--iris-soft); border-color: var(--iris); }
+
+/* plan mode: tasks proposed, added only on a yes */
+.convo-plan { display: grid; gap: 8px; padding: 10px 12px; border-radius: var(--radius); background: var(--amber-soft);
+  box-shadow: inset 2px 0 0 var(--amber); }
+.convo-plan .convo-card-k { color: var(--amber); }
+.convo-tasks { display: grid; gap: 4px; }
+.convo-task { display: flex; align-items: center; gap: 8px; font-size: 13.5px; cursor: pointer; min-width: 0; overflow-wrap: anywhere; }
+.convo-task input { accent-color: var(--amber); width: 15px; height: 15px; flex: none; }
+.convo-card-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.convo-card-row .grow { flex: 1 1 auto; }
+.convo-hint { color: var(--muted); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+
+/* what we covered */
+.convo-covered { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--inset); }
+.convo-covered[data-state="saved"] { box-shadow: inset 2px 0 0 var(--phosphor); }
+.convo-covered[data-state="saving"] { box-shadow: inset 2px 0 0 var(--iris); }
+.convo-cov-title { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.convo-cov-state { font: 500 10.5px/1 var(--mono); padding: 4px 7px; border-radius: 2px; color: var(--muted); background: oklch(from var(--ink) l c h / 0.05); }
+.convo-cov-state.s-saved { color: var(--phosphor); background: var(--phosphor-soft); }
+.convo-cov-state.s-saving { color: var(--iris); background: var(--iris-soft); }
+.convo-cov-state.s-forgotten { color: var(--alert); background: var(--alert-soft); }
+:root[data-motion="full"] .convo-cov-state.s-saving { animation: convo-breathe 1.4s var(--ease-out) infinite; }
+@keyframes convo-breathe { 50% { opacity: .45; } }
+.convo-cov-sum { margin: 0; color: var(--ink); font-size: 13.5px; line-height: 1.5; }
+.convo-cov-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px 18px; }
+.convo-cov-col ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.convo-cov-col li { position: relative; padding-left: 12px; font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.convo-cov-col li::before { content: ""; position: absolute; left: 0; top: .6em; width: 5px; height: 1px; background: var(--line-2); }
+.convo-cov-col.open .convo-cov-k { color: var(--amber); }
+.convo-cov-col.open li::before { background: var(--amber); }
+.icon-btn.convo-x { width: 26px; height: 26px; font-size: 11px; }
+
+/* the drawer: threads and style */
+.convo-foot { display: flex; gap: 6px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--grid); }
+.convo-tab { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; max-width: 100%; padding: 6px 10px; border-radius: var(--radius);
+  border: 1px solid transparent; background: none; color: var(--ink-2); cursor: pointer; font: inherit;
+  transition: border-color var(--dur-instant), background-color var(--dur-fast); }
+.convo-tab b { font: 500 10px/1.3 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.convo-tab span { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.convo-tab::after { content: "▾"; font-size: 10px; color: var(--muted); transition: transform var(--dur-fast) var(--ease-out); }
+.convo-tab:hover { border-color: var(--line); }
+.convo-tab.on { border-color: var(--line-2); background: var(--inset); }
+.convo-tab.on b { color: var(--ink); }
+.convo-tab.on::after { transform: rotate(180deg); }
+:root[data-motion="full"] .convo-drawer:not([hidden]) { animation: convo-in 240ms var(--ease-out) both; }
+
+.convo-threads { list-style: none; margin: 0; padding: 0; }
+.convo-thread { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0 10px 10px; border-bottom: 1px solid var(--grid); min-width: 0; }
+.convo-thread:last-child { border-bottom: 0; }
+.convo-thread.current { box-shadow: inset 2px 0 0 var(--iris); }
+.convo-thread .main { flex: 1; min-width: 0; }
+.convo-thread .t1 { font-weight: 500; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.convo-thread .t2 { color: var(--muted); font: 11px/1.5 var(--mono); }
+.convo-thread .t3 { color: var(--ink-2); font-size: 12.5px; margin-top: 2px; overflow-wrap: anywhere; }
+.convo-open { font: 500 10px/1 var(--mono); padding: 3px 6px; border-radius: 2px; color: var(--amber); background: var(--amber-soft); }
+.convo-raw { font: 500 10px/1 var(--mono); padding: 3px 6px; border-radius: 2px; color: var(--muted); border: 1px solid var(--line); }
+.convo-thread-acts { display: flex; align-items: center; gap: 6px; flex: none; }
+.btn.convo-bell { display: inline-flex; align-items: center; gap: 6px; }
+.btn.convo-bell::before { content: ""; width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--line-2); }
+.btn.convo-bell.on { color: var(--iris); }
+.btn.convo-bell.on::before { background: var(--iris); border-color: var(--iris); }
+
+.convo-style .set-row { grid-template-columns: 92px minmax(0, 1fr); }
+.convo-seg button { font-size: 11px; padding: 4px 10px; }
+.convo-seg button.dflt:not([aria-pressed="true"]) { box-shadow: inset 0 -2px 0 var(--line-2); }
+.convo-seg button[aria-pressed="true"] { background: var(--ember); color: var(--on-accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .convo-drawer, .convo-cov-state.s-saving { animation: none !important; }
+}
+@media (max-width: 640px) {
+  .convo-thread { flex-wrap: wrap; padding-left: 8px; }
+  .convo-thread-acts { width: 100%; }
+  .convo-style .set-row { grid-template-columns: 1fr; gap: 6px; }
+  .convo-tag { max-width: 100%; }
+  .convo-modes { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; overscroll-behavior-x: contain; }
+  .convo-modes::-webkit-scrollbar { display: none; }
+  .convo-mode, .convo-modes-k { flex: none; }
+  .convo-seg { display: flex; width: 100%; flex-wrap: nowrap; }
+  .convo-seg button { flex: 1 1 0; min-width: 0; padding: 4px 2px; font-size: 9.5px; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; }
+}

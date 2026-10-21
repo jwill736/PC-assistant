@@ -172,6 +172,7 @@ def next_workday(d: date) -> date:
 class Planner(Skill):
     name, title = "planner", "Day plan"
     poll_s = 300
+    game_poll_s = 1200
     delay_s = 20
 
     def __init__(self, svc, clock=time.time):

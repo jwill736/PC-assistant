@@ -371,6 +371,17 @@ kbd { font: 500 10.5px/1 var(--mono); padding: 3px 5px; border: 1px solid var(--
   box-shadow: 0 0 30px -12px var(--amber); animation: fade-up var(--dur-base) var(--ease-out); }
 .pending .status { white-space: nowrap; }
 .pending .msg { flex: 1 1 240px; min-width: 0; }
+.pending-window { font: 450 11px/1.4 var(--mono); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.pending-window:empty { display: none; }
+.pending-window.listening { color: var(--ion); }
+.pending-window.listening::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ion); box-shadow: 0 0 8px var(--ion-glow); }
+:root[data-motion="full"] .pending-window.listening::before { animation: pw-pulse 1.1s var(--ease-in-out) infinite alternate; }
+@keyframes pw-pulse { from { opacity: .35; transform: scale(.8); } to { opacity: 1; transform: none; } }
+.lat { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.lat-p50 { font: 600 12px/1 var(--mono); color: var(--ink); }
+.lat-strip { display: inline-flex; align-items: flex-end; gap: 2px; height: 16px; }
+.lat-strip i { width: 3px; height: 16px; background: var(--series-1); border-radius: 1px; transform-origin: bottom; }
+.lat-strip i.m { background: var(--series-2); }
 .pending.halt { border-color: oklch(from var(--alert) l c h / 0.55); background: color-mix(in oklch, var(--alert) 8%, var(--panel)); box-shadow: 0 0 30px -12px var(--alert); }
 .tier { display: inline-block; min-width: 22px; padding: 0 5px; border: 1px solid var(--line-2); border-radius: 2px; font: 500 10.5px/1.6 var(--mono);
   letter-spacing: .04em; text-align: center; color: var(--muted); }
@@ -896,3 +907,45 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
 
 /* Life and PC tabs: panels keep their own height instead of stretching to the tallest in the row */
 .view[data-view="life"] > .panel, .view[data-view="pc"] > .panel { align-self: start; }
+
+/* ============================================================== on air: private panels (skills/stream_privacy) */
+/* <body class="live-private"> while live with the Stream tab's "Privacy while live" on (app.js). These panels and the
+   text of notifications blur; a click on the cover peeks at one panel for 10 s (.peek, set by stream_privacy.js). */
+body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body {
+  min-height: 96px; cursor: pointer; }
+body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body > * {
+  filter: blur(14px) saturate(.4); opacity: .55; pointer-events: none; user-select: none; }
+body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body::after {
+  content: "Hidden while live · click to peek"; position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
+  font: 500 10.5px/1.3 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--alert);
+  border: 1px dashed oklch(from var(--alert) l c h / .45); border-radius: var(--radius); background: oklch(from var(--panel) l c h / .35); }
+body.live-private :is(.toast .t-txt, .n-txt, .nudge-feed .t1):not(.peek) { filter: blur(6px); cursor: pointer; user-select: none; }
+
+/* ============================================================== phone: a bottom tab bar (thumb reach) */
+/* The top bar's blur would make it the box the fixed bar is placed in, so on a phone the bar is solid instead. */
+@media (max-width: 760px) {
+  .topbar { backdrop-filter: none; background: var(--bg); }
+  .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 35; order: 0; margin: 0; width: auto; gap: 0; justify-content: space-around;
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line);
+    background: var(--bg); box-shadow: 0 -10px 30px -16px oklch(0 0 0 / 0.5); }
+  .tabs button { flex: 1 1 0; min-width: 0; display: grid; justify-items: center; gap: 4px; padding: 8px 2px 6px;
+    font-size: 9.5px; letter-spacing: .08em; border-radius: var(--radius); }
+  .tabs button::before { content: ""; width: 20px; height: 20px; background: currentColor;
+    -webkit-mask: var(--tab-ic) center / contain no-repeat; mask: var(--tab-ic) center / contain no-repeat;
+    transition: transform var(--dur-base) var(--ease-spring); }
+  .tabs button[aria-selected="true"]::before { transform: translateY(-1px) scale(1.08); background: var(--ember); }
+  .tabs .tab-badge { position: absolute; top: 4px; left: calc(50% + 6px); margin: 0; }
+  .tab-ink { top: -1px; bottom: auto; }
+  .tabs button[data-view="command"] { --tab-ic: url("img/tab-command.svg"); }
+  .tabs button[data-view="work"] { --tab-ic: url("img/tab-work.svg"); }
+  .tabs button[data-view="life"] { --tab-ic: url("img/tab-life.svg"); }
+  .tabs button[data-view="stream"] { --tab-ic: url("img/tab-stream.svg"); }
+  .tabs button[data-view="pc"] { --tab-ic: url("img/tab-pc.svg"); }
+  .tabs button[data-view="setup"] { --tab-ic: url("img/tab-setup.svg"); }
+  main { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  .toasts { bottom: calc(80px + env(safe-area-inset-bottom)); }
+  .lay-bar { bottom: calc(76px + env(safe-area-inset-bottom)); }
+}

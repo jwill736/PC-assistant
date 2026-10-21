@@ -315,23 +315,109 @@ def check_port(cfg) -> Check:
     return Check("HUD port", PASS, f"{host}:{port} free")
 
 
+# Where each skill's setup is explained (docs/VESPER-2.md), for the fix line of a failing self-test.
+SKILL_DOCS = {"memory": "C", "screen": "C", "inbox_zero": "D", "meetings": "D", "people": "D", "bills": "D",
+              "travel": "D", "phone": "E", "spotify": "F", "home": "G", "youtube": "H", "discord": "I", "mcp": "J"}
+
+
+def skill_fix(name: str, fix: str) -> str:
+    part = SKILL_DOCS.get(name, "B")
+    where = f"docs/VESPER-2.md Part {part}"
+    return f"{fix.rstrip('.')}. See {where}." if fix else f"See {where}."
+
+
+def check_skills(skills, timeout: float = 8.0, tests: dict | None = None) -> list[Check]:
+    """Each skill's own self-test (its outside connections), as "Skills · <title> · <what>" rows, plus a row for any
+    skill that didn't load or was switched off after errors. ``tests``: self-tests that already ran."""
+    out: list[Check] = []
+    if skills is None:
+        return out
+    tests = tests if tests is not None else skills.selftests(timeout)
+    for row in skills.overview():
+        name, title = row["name"], row["title"]
+        if row["state"] == "failed":
+            out.append(Check(f"Skills · {title}", FAIL, f"didn't load: {row['last_error']}",
+                             skill_fix(name, "Send this report to get it fixed; Vesper works without it")))
+        elif row["state"] == "crashed":
+            out.append(Check(f"Skills · {title}", FAIL, f"switched off after errors: {row['last_error']}",
+                             skill_fix(name, "Setup → Skills → Turn on, or restart Vesper")))
+        for c in tests.get(name, []):
+            label = f"Skills · {title}" + (f" · {c['name']}" if c.get("name") and c["name"] != title else "")
+            status = c.get("status") if c.get("status") in (PASS, WARN, FAIL, SKIP) else WARN
+            fix = c.get("fix") or ""
+            out.append(Check(label, status, c.get("detail") or "", skill_fix(name, fix) if status != PASS else fix))
+    return out
+
+
+TIMEOUT = "timeout"
+
+
+def run_parallel(jobs: list[tuple[str, Callable[[], object]]], timeout: float) -> dict[str, tuple[str, object]]:
+    """Run every job at once, each on its own daemon thread, and wait at most ``timeout`` seconds in all.
+    {key: ("ok", value) | ("error", exception) | (TIMEOUT, None)}. A stuck job is left behind, never waited for (a
+    daemon thread can't hold Vesper or ``--diagnose`` open)."""
+    import threading
+
+    results: dict[str, tuple[str, object]] = {}
+    done = threading.Event()
+    lock = threading.Lock()
+
+    def run(key: str, fn) -> None:
+        try:
+            value = ("ok", fn())
+        except Exception as exc:
+            value = ("error", exc)
+        with lock:
+            results[key] = value
+            if len(results) == len(jobs):
+                done.set()
+
+    if not jobs:
+        return {}
+    for key, fn in jobs:
+        threading.Thread(target=run, args=(key, fn), name=f"check-{key}"[:40], daemon=True).start()
+    done.wait(timeout)
+    with lock:
+        return {key: results.get(key, (TIMEOUT, None)) for key, _ in jobs}
+
+
 def run_doctor(cfg, svc=None, *, test_mic: bool = True, load_model: bool = True, check_ports: bool = True,
-               network: bool = True) -> dict:
-    checks: list[Check] = [check_python(), *check_files(cfg)]
+               network: bool = True, skills: bool | None = None, timeout: float | None = None) -> dict:
+    """Every check side by side, each with a time limit (a stuck one says so instead of holding the rest up).
+    ``skills``: add each skill's self-test (default: with ``svc`` and the network)."""
+    jobs: list[tuple[str, Callable[[], object]]] = [("Python", check_python), ("config.yaml", lambda: check_files(cfg))]
     if network:
-        checks.append(_guard("Claude API", lambda: check_claude(cfg)))
-    checks.append(_guard("Brain", lambda: check_brain(cfg)))
-    checks.append(_guard("OBS", lambda: check_obs(cfg, svc.obs if svc else None)))
+        jobs.append(("Claude API", lambda: check_claude(cfg)))
+    jobs.append(("Brain", lambda: check_brain(cfg)))
+    jobs.append(("OBS", lambda: check_obs(cfg, svc.obs if svc else None)))
     if network:
-        checks.append(_guard("Google accounts", lambda: check_google(cfg, svc.google if svc else None)))
-        checks += _guard_list("Calendars", lambda: check_calendars(cfg, svc.calendars if svc else None))
-        checks.append(_guard("News feeds", lambda: check_news(cfg, svc.news if svc else None)))
-    checks.append(_guard("Chrome", check_browser))
-    checks.append(_guard("Claude Code CLI", lambda: check_claude_cli(cfg)))
-    checks += _guard_list("Voice", lambda: check_voice(cfg, test_mic, load_model))
-    checks.append(_guard("PC control", lambda: check_pc_control(cfg)))
+        jobs.append(("Google accounts", lambda: check_google(cfg, svc.google if svc else None)))
+        jobs.append(("Calendars", lambda: check_calendars(cfg, svc.calendars if svc else None)))
+        jobs.append(("News feeds", lambda: check_news(cfg, svc.news if svc else None)))
+    jobs.append(("Chrome", check_browser))
+    jobs.append(("Claude Code CLI", lambda: check_claude_cli(cfg)))
+    jobs.append(("Voice", lambda: check_voice(cfg, test_mic, load_model)))
+    jobs.append(("PC control", lambda: check_pc_control(cfg)))
     if check_ports:
-        checks.append(_guard("HUD port", lambda: check_port(cfg)))
+        jobs.append(("HUD port", lambda: check_port(cfg)))
+    sk = getattr(svc, "skills", None) if svc is not None else None
+    if (skills if skills is not None else network) and sk is not None:
+        jobs.append(("Skills", lambda: check_skills(sk)))
+    # loading the speech model and the voices can take a minute on a slow PC; everything else is quick or broken
+    limit = timeout or (240.0 if load_model else 20.0)
+    results = run_parallel(jobs, limit)
+    checks: list[Check] = []
+    for name, _fn in jobs:
+        kind, value = results[name]
+        if kind == TIMEOUT:
+            checks.append(Check(name, WARN, f"no answer within {limit:.0f}s", "Something it talks to is slow or stuck; "
+                                                                             "run the check again in a minute."))
+        elif kind == "error":
+            checks.append(Check(name, FAIL, f"{type(value).__name__}: {value}"))
+        elif isinstance(value, list):
+            checks += value
+        else:
+            checks.append(value)
     return {"ran_at": time.time(), "checks": [asdict(c) for c in checks],
             "summary": dict(Counter(c.status for c in checks))}
 

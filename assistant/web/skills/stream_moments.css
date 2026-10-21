@@ -1,0 +1,20 @@
+/* Clip-worthy moments */
+.sm-meter { display: grid; gap: 6px; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--grid); }
+.sm-score { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 10px; }
+.sm-big { font-family: var(--display); font-size: 28px; font-weight: 300; line-height: 1; }
+.sm-sig { display: grid; grid-template-columns: 76px minmax(0, 1fr) 40px; align-items: center; gap: 8px; }
+.sm-sig .num { text-align: right; color: var(--ink-2); }
+.sm-track { position: relative; display: block; height: 6px; background: var(--inset); border: 1px solid var(--line); border-radius: 2px; overflow: hidden; }
+.sm-track.wide { height: 8px; }
+.sm-track i { position: absolute; inset: 0; transform-origin: left; background: var(--muted); transition: transform var(--dur-base) var(--ease-out); }
+.sm-sig.s1 .sm-track i { background: var(--series-1); }
+.sm-sig.s2 .sm-track i { background: var(--series-2); }
+.sm-sig.s3 .sm-track i { background: var(--series-3); }
+.sm-track i.hot { background: var(--alert); }
+.sm-thr { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--ink); opacity: .7; }
+.sm-at { font-size: 12px; color: var(--muted); min-width: 64px; }
+.sm-item { align-items: center; }
+.sm-last { display: grid; gap: 8px; }
+.sm-path { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-hl { margin: 0; padding: 0; list-style: none; }
+@media (prefers-reduced-motion: reduce) { .sm-track i { transition: none; } }

@@ -7,19 +7,31 @@ the trips: flight number, date and time, from/to, confirmation code; hotel check
 
 Nudges: a package out for delivery (low: the HUD feed), a flight within 24 hours, when check-in opens (normal).
 On air nothing about trips or deliveries is said out loud beyond "it's on the HUD".
+
+Travel day: from the day before a flight, the Life tab shows a Travel Day card: a countdown, when to leave (departure
+− the airport buffer, 2 h domestic / 3 h international − the drive), the airline's check-in page, the weather where
+you're going, and a packing list made from the trip's length and that weather (tick, add, remove; kept). The drive is
+skills.travel.drive_min if set, else the free OSRM router from home (skills.travel.home, or the weather's place) to the
+airport, else a 45-minute guess. "Leave by 5:40 AM for DL 1234" comes 30 minutes before (urgent).
+"When do I need to leave for my flight", "what's the weather in Denver".
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from datetime import date, datetime, timedelta
 
+import httpx
+
 from ..brain.router import Intent
+from ..brain.speech import clock as say_clock, duration
 from ..brain.tools import EMAIL_NOTE, Tool, obj
-from . import Skill
+from . import Skill, gmail_checks
 from .bills import date_after, day_word, find_dates, merchant_of, scan_mail, why_no_gmail
+from .weather import FORECAST, GEOCODE, advice, asked_place, shape, spoken
 
 QUERY = ('(shipped OR "out for delivery" OR delivered OR "tracking number" OR "your order" OR "order confirmation" OR '
          'flight OR itinerary OR "boarding pass" OR "check-in" OR reservation OR "booking confirmation") newer_than:45d')
@@ -51,6 +63,47 @@ HOTELS = re.compile(r"marriott|courtyard|westin|sheraton|hilton|hampton|hyatt|ih
 ETA = re.compile(r"\b(?:arriving|arrives|estimated delivery|expected delivery|delivery date|scheduled delivery|"
                  r"scheduled for delivery|deliver(?:y|ed)? by|delivery:)", re.I)
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+OSRM = "https://router.project-osrm.org/route/v1/driving/{},{};{},{}"
+CHECKIN = {"DL": "https://www.delta.com/mytrips/", "UA": "https://www.united.com/en/us/checkin",
+           "AA": "https://www.aa.com/reservation/view/find-your-trip", "WN": "https://www.southwest.com/air/check-in/",
+           "B6": "https://www.jetblue.com/check-in", "AS": "https://www.alaskaair.com/checkin",
+           "NK": "https://www.spirit.com/check-in", "F9": "https://www.flyfrontier.com/travel/my-trips/check-in/",
+           "HA": "https://www.hawaiianairlines.com/check-in", "G4": "https://www.allegiantair.com/check-in",
+           "AC": "https://www.aircanada.com/check-in", "BA": "https://www.britishairways.com/travel/olcilandingpageauthreq/public/en_us",
+           "LH": "https://www.lufthansa.com/us/en/online-check-in", "AF": "https://wwws.airfrance.us/check-in",
+           "KL": "https://www.klm.us/check-in", "VS": "https://www.virginatlantic.com/check-in",
+           "EK": "https://www.emirates.com/us/english/manage-booking/online-check-in/",
+           "QR": "https://www.qatarairways.com/en-us/manage-booking/check-in.html"}
+# The airports booking mail names most: code -> (city, lat, lon, country). Others are found by name (Open-Meteo).
+AIRPORTS = {
+    "ATL": ("Atlanta", 33.6407, -84.4277, "US"), "AUS": ("Austin", 30.1975, -97.6664, "US"),
+    "DEN": ("Denver", 39.8561, -104.6737, "US"), "DFW": ("Dallas", 32.8998, -97.0403, "US"),
+    "DAL": ("Dallas", 32.8471, -96.8518, "US"), "IAH": ("Houston", 29.9902, -95.3368, "US"),
+    "HOU": ("Houston", 29.6454, -95.2789, "US"), "ORD": ("Chicago", 41.9742, -87.9073, "US"),
+    "MDW": ("Chicago", 41.7868, -87.7522, "US"), "LAX": ("Los Angeles", 33.9416, -118.4085, "US"),
+    "SFO": ("San Francisco", 37.6213, -122.3790, "US"), "SEA": ("Seattle", 47.4502, -122.3088, "US"),
+    "JFK": ("New York", 40.6413, -73.7781, "US"), "LGA": ("New York", 40.7769, -73.8740, "US"),
+    "EWR": ("Newark", 40.6895, -74.1745, "US"), "BOS": ("Boston", 42.3656, -71.0096, "US"),
+    "MIA": ("Miami", 25.7959, -80.2870, "US"), "FLL": ("Fort Lauderdale", 26.0742, -80.1506, "US"),
+    "MCO": ("Orlando", 28.4312, -81.3081, "US"), "TPA": ("Tampa", 27.9755, -82.5332, "US"),
+    "CLT": ("Charlotte", 35.2144, -80.9473, "US"), "PHX": ("Phoenix", 33.4342, -112.0116, "US"),
+    "LAS": ("Las Vegas", 36.0840, -115.1537, "US"), "SAN": ("San Diego", 32.7338, -117.1933, "US"),
+    "MSP": ("Minneapolis", 44.8848, -93.2223, "US"), "DTW": ("Detroit", 42.2162, -83.3554, "US"),
+    "PHL": ("Philadelphia", 39.8744, -75.2424, "US"), "DCA": ("Washington", 38.8512, -77.0402, "US"),
+    "IAD": ("Washington", 38.9531, -77.4565, "US"), "BWI": ("Baltimore", 39.1774, -76.6684, "US"),
+    "BNA": ("Nashville", 36.1263, -86.6774, "US"), "MSY": ("New Orleans", 29.9934, -90.2580, "US"),
+    "SLC": ("Salt Lake City", 40.7899, -111.9791, "US"), "PDX": ("Portland", 45.5898, -122.5951, "US"),
+    "RDU": ("Raleigh", 35.8801, -78.7880, "US"), "SAV": ("Savannah", 32.1276, -81.2021, "US"),
+    "HNL": ("Honolulu", 21.3187, -157.9225, "US"), "YYZ": ("Toronto", 43.6777, -79.6248, "CA"),
+    "YVR": ("Vancouver", 49.1967, -123.1815, "CA"), "LHR": ("London", 51.4700, -0.4543, "GB"),
+    "CDG": ("Paris", 49.0097, 2.5479, "FR"), "AMS": ("Amsterdam", 52.3105, 4.7683, "NL"),
+    "FRA": ("Frankfurt", 50.0379, 8.5622, "DE"), "DXB": ("Dubai", 25.2532, 55.3657, "AE"),
+    "DOH": ("Doha", 25.2731, 51.6081, "QA"), "CUN": ("Cancun", 21.0365, -86.8771, "MX"),
+    "MEX": ("Mexico City", 19.4361, -99.0719, "MX"), "NRT": ("Tokyo", 35.7720, 140.3929, "JP"),
+    "HND": ("Tokyo", 35.5494, 139.7798, "JP")}
+BY_CITY = {}
+for _code, _a in AIRPORTS.items():
+    BY_CITY.setdefault(_a[0].lower(), _code)
 
 
 # ---- reading one email ----------------------------------------------------------------------------------------
@@ -202,18 +255,82 @@ def merge(old: dict | None, new: dict) -> dict:
     return out
 
 
+# ---- travel day helpers ----------------------------------------------------------------------------------------
+
+def km_between(a: dict, b: dict) -> float:
+    """Great-circle distance between two {lat, lon} places."""
+    la1, lo1, la2, lo2 = map(math.radians, (a["lat"], a["lon"], b["lat"], b["lon"]))
+    h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
+    return 6371 * 2 * math.asin(math.sqrt(h))
+
+
+def packing_template(nights: int | None, international: bool = False, weather: dict | None = None,
+                     extra: list | None = None, laptop: bool = True) -> list[str]:
+    """A packing list from the trip's length and the weather there (``weather``: {"unit", "days": [{high, low, rain,
+    icon}]}). Umbrella when rain is likely, a jacket when it's cold, sunscreen when it's hot."""
+    n = max(1, nights if nights is not None else 2)
+    out = ["Passport" if international else "ID & wallet", "Phone charger", "Headphones", "Toiletries", "Medications",
+           f"Clothes for {n + 1} days" if n < 7 else "Clothes for a week", f"Underwear & socks × {min(n + 1, 8)}",
+           "Sleepwear"]
+    if laptop:
+        out.append("Laptop + charger")
+    if international:
+        out.append("Power adapter")
+    if n >= 4:
+        out.append("Laundry bag")
+    days = (weather or {}).get("days") or []
+    if days:
+        f = (weather or {}).get("unit", "°F") == "°F"
+        cold, freezing, hot = (50, 32, 85) if f else (10, 0, 29)
+        icons = {d.get("icon") for d in days}
+        if any((d.get("rain") or 0) >= 50 for d in days) or icons & {"rain", "drizzle", "storm"}:
+            out.append("Umbrella")
+        if min(d.get("low", 99) for d in days) <= cold:
+            out.append("Jacket")
+        if min(d.get("low", 99) for d in days) <= freezing or "snow" in icons:
+            out += ["Gloves & hat", "Warm boots"] if "snow" in icons else ["Gloves & hat"]
+        if max(d.get("high", -99) for d in days) >= hot:
+            out += ["Sunscreen", "Sunglasses"]
+    out += [str(x)[:60] for x in extra or [] if str(x).strip()]
+    return list(dict.fromkeys(out))
+
+
+def countdown_words(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 3600:
+        return f"{seconds // 60} minutes"
+    return duration(seconds - seconds % 300)
+
+
 class Travel(Skill):
     name, title = "travel", "On the way"
-    poll_s = 1800
+    poll_s = 300  # the "leave by" nudge needs a fine tick; the Gmail scan itself runs once an hour
+    game_poll_s = 1200  # the "leave by" nudge is urgent: it gets through a game within 20 minutes
     delay_s = 120
 
-    def __init__(self, svc, clock=time.time):
+    def __init__(self, svc, clock=time.time, http: httpx.Client | None = None):
         super().__init__(svc)
         self.clock = clock
+        self._http = http
         self._scanned = 0.0
         self.error: str | None = None
+        self._geo: dict[str, dict | None] = {}
+        self._wx: dict[str, tuple[float, dict]] = {}
+        self._route_down_until = 0.0
+        self._day: dict | None = None
         svc.storage.execute("CREATE TABLE IF NOT EXISTS travel_items (key TEXT PRIMARY KEY, kind TEXT, ts REAL, data TEXT)")
         svc.storage.execute("CREATE TABLE IF NOT EXISTS travel_seen (id TEXT PRIMARY KEY, ts REAL)")
+        svc.storage.execute("CREATE TABLE IF NOT EXISTS travel_packing (trip TEXT NOT NULL, item TEXT NOT NULL, done INTEGER "
+                            "NOT NULL DEFAULT 0, auto INTEGER NOT NULL DEFAULT 1, removed INTEGER NOT NULL DEFAULT 0, "
+                            "ord REAL NOT NULL, PRIMARY KEY (trip, item))")
+        svc.storage.execute("CREATE TABLE IF NOT EXISTS travel_drive (route TEXT PRIMARY KEY, minutes REAL, ts REAL)")
+
+    @property
+    def http(self) -> httpx.Client:
+        """Made on first use: only travel days and "weather in <city>" go online."""
+        if self._http is None:
+            self._http = httpx.Client(timeout=8, headers={"User-Agent": "Vesper/2.1 (personal assistant)"})
+        return self._http
 
     def now(self) -> datetime:
         return datetime.fromtimestamp(self.clock(), self.svc.tz)
@@ -286,17 +403,211 @@ class Travel(Skill):
         return {"flights": flights, "hotels": sorted(hotels, key=lambda x: x["checkin"]),
                 "next_flight": flights[0] if flights else None}
 
+    def selftest(self) -> list[dict]:
+        return gmail_checks(self.svc, per_account=False)
+
+    # ---- travel day: places, the drive, the weather there, packing -------------------------------------------
+    def resolve(self, name: str, fetch: bool = True) -> dict | None:
+        """An airport code, a city or a place name -> {name, city, code, lat, lon, country} (None: unknown)."""
+        raw = (name or "").strip()
+        if not raw:
+            return None
+        code = raw.upper() if re.fullmatch(r"[A-Za-z]{3}", raw) and raw.upper() in AIRPORTS else BY_CITY.get(raw.lower())
+        if code:
+            city, lat, lon, country = AIRPORTS[code]
+            return {"name": city, "city": city, "code": code, "lat": lat, "lon": lon, "country": country}
+        key = raw.lower()
+        if key in self._geo or not fetch:
+            return self._geo.get(key)
+        try:
+            res = self.http.get(GEOCODE, params={"name": raw, "count": 1, "language": "en"}).json().get("results") or []
+        except (httpx.HTTPError, ValueError):
+            return None  # not cached: try again next time
+        r = res[0] if res else None
+        self._geo[key] = {"name": ", ".join(x for x in (r.get("name"), r.get("admin1")) if x), "city": r.get("name") or raw,
+                          "code": "", "lat": r["latitude"], "lon": r["longitude"],
+                          "country": (r.get("country_code") or "").upper()} if r else None
+        return self._geo[key]
+
+    def home(self, fetch: bool = True) -> dict | None:
+        h = self.setting("home")
+        if isinstance(h, dict) and "lat" in h and "lon" in h:
+            return h
+        if isinstance(h, str) and h.strip():
+            return self.resolve(h, fetch)
+        w = ((self.svc.cfg.get("skills") or {}).get("weather") or {}).get("place")
+        return w if isinstance(w, dict) and "lat" in w else None
+
+    def drive(self, airport: dict | None, fetch: bool = True) -> tuple[int, str]:
+        """(minutes from home to ``airport``, where that number came from)."""
+        home = self.home(fetch)
+        if home and airport and km_between(home, airport) > float(self.setting("away_km", 150)):
+            return int(self.setting("away_drive_min", 30)), "away"  # flying home: from wherever you're staying
+        if self.setting("drive_min"):
+            return int(self.setting("drive_min")), "setting"
+        if home and airport:
+            route = f"{home['lat']:.3f},{home['lon']:.3f}>{airport['lat']:.3f},{airport['lon']:.3f}"
+            row = self.svc.storage.query("SELECT minutes, ts FROM travel_drive WHERE route=?", (route,))
+            if row and self.clock() - row[0]["ts"] < 30 * 86400:
+                return int(row[0]["minutes"]), "route"
+            if fetch and self.clock() >= self._route_down_until:
+                try:
+                    r = self.http.get(OSRM.format(home["lon"], home["lat"], airport["lon"], airport["lat"]),
+                                      params={"overview": "false"}).json()
+                    secs = float(r["routes"][0]["duration"]) if r.get("code") == "Ok" and r.get("routes") else None
+                except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+                    secs = None
+                if secs is not None:
+                    mins = math.ceil(secs / 60 * float(self.setting("traffic_factor", 1.2)) / 5) * 5
+                    self.svc.storage.execute("INSERT OR REPLACE INTO travel_drive VALUES (?,?,?)", (route, mins, self.clock()))
+                    return int(mins), "route"
+                self._route_down_until = self.clock() + 3600  # blocked or down: guess for an hour, then try again
+        return int(self.setting("drive_default_min", 45)), "guess"
+
+    def forecast_at(self, place: dict | None, fetch: bool = True) -> dict:
+        """The weather skill's forecast shape (now, hours, days, advice) for any place."""
+        if not place:
+            return {"ok": False, "error": "I don't know where that is."}
+        key = f"{place['lat']:.2f},{place['lon']:.2f}"
+        hit = self._wx.get(key)
+        if hit and (self.clock() - hit[0] < 3600 or not fetch):
+            return hit[1]
+        if not fetch:
+            return {"ok": False, "error": "No forecast yet."}
+        units = str(((self.svc.cfg.get("skills") or {}).get("weather") or {}).get("units", "fahrenheit")).lower()
+        f = units.startswith("f")
+        try:
+            r = self.http.get(FORECAST, params={
+                "latitude": place["lat"], "longitude": place["lon"], "timezone": "auto", "forecast_days": 7,
+                "temperature_unit": "fahrenheit" if f else "celsius", "wind_speed_unit": "mph" if f else "kmh",
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day,precipitation",
+                "hourly": "temperature_2m,precipitation_probability,weather_code",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,uv_index_max",
+            }).json()
+            if "current" not in r:
+                return {"ok": False, "error": str(r.get("reason") or "No forecast came back.")}
+            data = shape(r, {"name": place.get("name") or place.get("city")}, None, "°F" if f else "°C")
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            return {"ok": False, "error": f"The weather service didn't answer ({type(exc).__name__})."}
+        data["advice"] = advice(data)
+        self._wx[key] = (self.clock(), data)
+        return data
+
+    def weather_in(self, place: str = "") -> dict:
+        where = self.resolve(place)
+        if where is None:
+            return {"ok": False, "error": f"I can't find a place called {place}." if place else "Where?"}
+        return self.forecast_at(where)
+
+    def _nights(self, f: dict, flights: list[dict]) -> int | None:
+        back = [x for x in flights if x["date"] > f["date"] and f.get("to") and x.get("from") and
+                (x["from"] == f["to"] or self._same(x["from"], f["to"]))]
+        if back:
+            return (date.fromisoformat(back[0]["date"]) - date.fromisoformat(f["date"])).days
+        for h in self._items("hotel"):
+            if h["checkin"] in (f["date"], (date.fromisoformat(f["date"]) + timedelta(days=1)).isoformat()) and h.get("checkout"):
+                return (date.fromisoformat(h["checkout"]) - date.fromisoformat(h["checkin"])).days
+        return None
+
+    def _same(self, a: str, b: str) -> bool:
+        x, y = self.resolve(a, fetch=False), self.resolve(b, fetch=False)
+        return bool(x and y and x["city"] == y["city"])
+
+    def plan(self, f: dict, fetch: bool = True, flights: list[dict] | None = None) -> dict:
+        """Leave-by, check-in, the weather there and the packing list for one flight (``trips()`` shape)."""
+        dep = datetime.fromisoformat(f["depart"])
+        origin, dest = self.resolve(f.get("from") or "", fetch), self.resolve(f.get("to") or "", fetch)
+        home_c = str(self.setting("home_country", "US")).upper()
+        countries = {p["country"] for p in (origin, dest) if p and p.get("country")}
+        intl = len(countries) > 1 or bool(countries and countries != {home_c})
+        buffer_min = int(self.setting("buffer_international_min" if intl else "buffer_domestic_min", 180 if intl else 120))
+        drive_min, drive_from = self.drive(origin, fetch)
+        leave = None
+        if f.get("time"):
+            leave = dep - timedelta(minutes=buffer_min + drive_min)
+            leave -= timedelta(minutes=leave.minute % 5, seconds=leave.second)
+        wx = self.forecast_at(dest, fetch) if dest else {"ok": False}
+        nights = self._nights(f, flights if flights is not None else self.trips()["flights"])
+        weather = None
+        if wx.get("ok"):
+            last = date.fromisoformat(f["date"]) + timedelta(days=max(0, nights if nights is not None else 2))
+            days = [d for d in wx["days"] if f["date"] <= d["date"] <= last.isoformat()] or wx["days"][:3]
+            weather = {"place": (dest or {}).get("city") or wx["place"], "unit": wx["unit"], "now": wx["now"], "days": days,
+                       "advice": wx.get("advice")}
+        code = f["flight"].split()[0]
+        template = packing_template(nights, intl, weather, self.setting("packing_extra") or [],
+                                    bool(self.setting("pack_laptop", True)))
+        return {"key": f["key"], "flight": f["flight"], "airline": f["airline"], "from": f.get("from") or "",
+                "to": f.get("to") or "", "dest": (dest or {}).get("city") or f.get("to") or "", "date": f["date"],
+                "depart": f["depart"], "clock": f.get("clock") or "", "confirmation": f.get("confirmation") or "",
+                "link": f.get("link") or "", "international": intl, "buffer_min": buffer_min, "drive_min": drive_min,
+                "drive_from": drive_from, "leave_by": leave.isoformat() if leave else None,
+                "leave_clock": say_clock(leave) if leave else "",
+                "checkin_url": (self.setting("checkin_urls") or {}).get(code) or CHECKIN.get(code, ""),
+                "checkin_opens": (dep - timedelta(hours=24)).isoformat(), "nights": nights, "weather": weather,
+                "template": template}
+
+    def _timed(self, p: dict) -> dict:
+        now = self.now()
+        dep = datetime.fromisoformat(p["depart"])
+        leave = datetime.fromisoformat(p["leave_by"]) if p.get("leave_by") else None
+        return {**{k: v for k, v in p.items() if k != "template"}, "in_s": int((dep - now).total_seconds()),
+                "leave_in_s": int((leave - now).total_seconds()) if leave else None,
+                "today": dep.date() == now.date(), "when": day_word(dep.date(), now.date()),
+                "checkin_open": now >= datetime.fromisoformat(p["checkin_opens"]), "packing": self.packing(p["key"], p["template"])}
+
+    def travel_day(self, fetch: bool = True) -> dict | None:
+        """The next flight's plan, from the day before it until it leaves (None: no flight that soon)."""
+        tr = self.trips()
+        f = next((x for x in tr["flights"] if -1800 < x["in_s"] <= float(self.setting("day_hours", 36)) * 3600), None)
+        if f is None:
+            return None
+        if fetch or self._day is None or self._day.get("key") != f["key"]:
+            self._day = self.plan(f, fetch, tr["flights"])
+        return self._timed(self._day)
+
+    # ---- the packing list (kept per trip: tick, add, remove) --------------------------------------------------
+    def packing(self, trip: str, template: list[str] | None = None) -> list[dict]:
+        db = self.svc.storage
+        if template:
+            n = len(db.query("SELECT item FROM travel_packing WHERE trip=?", (trip,)))
+            for i, item in enumerate(template):  # new auto items only; ones J removed stay removed
+                db.execute("INSERT OR IGNORE INTO travel_packing (trip, item, done, auto, removed, ord) VALUES (?,?,0,1,0,?)",
+                           (trip, item, n + i))
+        rows = db.query("SELECT item, done, auto FROM travel_packing WHERE trip=? AND removed=0 ORDER BY ord", (trip,))
+        return [{"item": r["item"], "done": bool(r["done"]), "auto": bool(r["auto"])} for r in rows]
+
+    def _pack(self, b: dict, what: str) -> dict:
+        trip, item = str(b.get("trip") or ""), re.sub(r"\s+", " ", str(b.get("item") or b.get("text") or "")).strip()[:60]
+        if not trip or not item:
+            return {"ok": False, "error": "Which item?"}
+        db = self.svc.storage
+        if what == "add":
+            top = db.query("SELECT MAX(ord) AS m FROM travel_packing WHERE trip=?", (trip,))
+            db.execute("INSERT INTO travel_packing (trip, item, done, auto, removed, ord) VALUES (?,?,0,0,0,?) "
+                       "ON CONFLICT(trip, item) DO UPDATE SET removed=0", (trip, item, (top[0]["m"] or 0) + 1))
+        elif what == "toggle":
+            db.execute("UPDATE travel_packing SET done = 1 - done WHERE trip=? AND item=?", (trip, item))
+        else:
+            db.execute("UPDATE travel_packing SET removed=1, done=0 WHERE trip=? AND item=?", (trip, item))
+        return {"ok": True, "packing": self.packing(trip)}
+
     def status(self) -> dict:
         why = why_no_gmail(self.svc.gmail)
         pk, tr = self.packages(), self.trips()
         if why and not pk and not tr["flights"] and not tr["hotels"]:
             return {"ok": False, "error": why}
+        try:
+            day = self.travel_day(fetch=False)
+        except Exception:  # the card is extra: never lose the panel over it
+            day = None
         return {"ok": True, "packages": pk, **tr, "warning": why or self.error, "scanned_at": self._scanned or None,
-                "stages": STAGES, "live": bool(self.svc.live and self.svc.live())}
+                "stages": STAGES, "live": bool(self.svc.live and self.svc.live()), "travel_day": day}
 
     def tick(self) -> None:
         try:
             self.scan()
+            self.travel_day(fetch=True)
             self._nudges()
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
@@ -312,6 +623,11 @@ class Travel(Skill):
                 opens = "check in opens" if f["in_s"] > 20 * 3600 else "check in is open"
                 self.nudge(f"Flight {f['flight']} {f['when']}{' ' + f['clock'] if f['clock'] else ''} — {opens}.",
                            priority="normal", key=f"travel:checkin:{f['key']}", expires_in=f["in_s"])
+        day = self.travel_day(fetch=False)
+        left = (day or {}).get("leave_in_s")
+        if left is not None and 0 < left <= int(self.setting("leave_warn_min", 30)) * 60:
+            self.nudge(f"Leave by {day['leave_clock']} for {day['flight']}.", priority="urgent",
+                       key=f"travel:leave:{day['key']}", expires_in=left + 1800)
 
     def briefing(self):
         pk = [p for p in self.packages() if p["today"] and p["stage"] < 3]
@@ -324,7 +640,9 @@ class Travel(Skill):
         return out or None
 
     def actions(self):
-        return {"scan": lambda b: self.scan(force=True), "forget": self._forget}
+        return {"scan": lambda b: self.scan(force=True), "forget": self._forget,
+                "pack_toggle": lambda b: self._pack(b, "toggle"), "pack_add": lambda b: self._pack(b, "add"),
+                "pack_remove": lambda b: self._pack(b, "remove")}
 
     def _forget(self, b: dict) -> dict:
         self.svc.storage.execute("DELETE FROM travel_items WHERE key=?", (str(b.get("key") or ""),))
@@ -340,7 +658,23 @@ class Travel(Skill):
                  self._packages, **kw),
             Tool("trips", "Upcoming flights (airline, flight number, date, time, from/to, confirmation code) and hotel "
                           "stays, from booking emails in Gmail.", obj(), self._trips, **kw),
+            Tool("leave_for_flight", "When the user needs to leave for their next flight: departure minus the airport "
+                                     "buffer and the drive, plus check-in, the weather where they're going and the "
+                                     "packing list.", obj(), self._leave, **kw),
+            Tool("weather_in", "The weather in another city (now and the week): 'what's the weather in Denver'.",
+                 obj({"place": {"type": "string"}}, ["place"]), self.weather_in),
         ]
+
+    def _leave(self) -> dict:
+        r = self.scan()
+        tr = self.trips()
+        f = tr["next_flight"]
+        if f is None:
+            return {"ok": r.get("ok", True), "plan": None, **({"error": r["error"]} if not r.get("ok") else {})}
+        p = self.plan(f, True, tr["flights"])
+        if self._day is None or self._day.get("key") == p["key"]:
+            self._day = p
+        return {"ok": True, "plan": self._timed(p)}
 
     def _packages(self, when: str = "all") -> dict:
         r = self.scan()
@@ -365,6 +699,13 @@ class Travel(Skill):
         if re.fullmatch(r"when'?s my (?:next )?flight|when do i (?:fly|leave)(?: next)?|what'?s my (?:flight|trip)(?: info| details)?|"
                         r"(?:any|my) (?:upcoming )?(?:trips|flights)|what time is my flight", t):
             return Intent("tool", "trips", {})
+        if re.fullmatch(r"(?:when|what time) (?:do|should|must) i (?:need to |have to )?(?:leave|head out|go|get going) "
+                        r"(?:for|to) (?:my|the) (?:flight|airport|plane)|when (?:do|should) i (?:head|go) to the airport|"
+                        r"what time should i leave(?: for the airport)?|when'?s my leave(?:-| )by(?: time)?", t):
+            return Intent("tool", "leave_for_flight", {})
+        place = asked_place(t)
+        if place:
+            return Intent("tool", "weather_in", {"place": place})
         return None
 
     def say(self, tool, args, result):
@@ -393,4 +734,22 @@ class Travel(Skill):
             route = f", {f['from']} to {f['to']}" if f.get("from") and f.get("to") else ""
             conf = f" Confirmation {' '.join(f['confirmation'])}." if f.get("confirmation") else ""
             return f"{f['airline']} {f['flight'].split()[1]}, {f['when']}{' at ' + f['clock'] if f['clock'] else ''}{route}.{conf}"
+        if tool == "leave_for_flight":
+            p = result.get("plan")
+            if not p:
+                return result.get("error") or "I don't see a flight coming up in your email."
+            if live:
+                return "Your travel times are on the HUD."
+            if not p.get("leave_by"):
+                return f"{p['flight']} is {p['when']}, but I couldn't read its departure time. Check the email."
+            how = (f"{p['buffer_min'] // 60} hours at the airport" + (f" and about {p['drive_min']} minutes' drive"
+                                                                        if p["drive_from"] != "guess" else
+                                                                        f" and a {p['drive_min']}-minute drive I guessed"))
+            if p["leave_in_s"] is not None and p["leave_in_s"] < 0:
+                return f"You should have left at {p['leave_clock']}: {p['flight']} leaves at {p['clock']}. Go now."
+            day = "" if p["today"] else f"{p['when'][0].upper()}{p['when'][1:]}, l"
+            soon = f" That's in {countdown_words(p['leave_in_s'])}." if p["today"] else ""
+            return f"{day or 'L'}eave by {p['leave_clock']} for {p['flight']} at {p['clock']}: {how}.{soon}"
+        if tool == "weather_in":
+            return spoken(result, "today")
         return None

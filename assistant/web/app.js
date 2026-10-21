@@ -147,7 +147,7 @@ function toast(text, opt) {
 }
 const SOURCE_LABEL_N = { inbox_zero: 'Email', automations: 'Automation', nudges: 'Updates', calendar: 'Calendar', weather: 'Weather',
   break: 'Break', tasks: 'Tasks', welcome: 'Welcome back', focus: 'Focus', people: 'People', meetings: 'Meetings', janitor: 'PC',
-  pulse: 'Pulse', vesper: 'Vesper', stream: 'Stream', obs: 'OBS', twitch: 'Twitch', highlight: 'Highlight', system: 'System' };
+  pulse: 'Pulse', ambient: 'Look-around', vesper: 'Vesper', stream: 'Stream', obs: 'OBS', twitch: 'Twitch', highlight: 'Highlight', system: 'System' };
 
 // Category -> colour: profiles take categorical slots in config order, then "other"; idle is neutral.
 function categories() { return [...Object.keys(S.data.profiles || { work: 1, stream: 1 }), 'other']; }
@@ -791,6 +791,10 @@ render.connections = function connections() {
 const PART_STATUS = { ok: ['good', 'OK'], error: ['critical', 'Error'], stalled: ['warning', 'Stalled'], restarting: ['warning', 'Restarting'],
   starting: ['idle', 'Starting'], disabled: ['idle', 'Off'], stopped: ['idle', 'Stopped'] };
 
+// Low-power mode (a fullscreen game or live): what the watchdog is doing to a healthy part right now
+const PART_THROTTLE = { paused: ['idle', 'Paused'], slowed: ['good', 'Slower'] };
+const partMs = ms => ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : String(ms < 10 ? ms : Math.round(ms));
+
 function unhealthyParts() { return (S.data.health || []).filter(p => ['error', 'stalled', 'restarting'].includes(p.state)); }
 
 render.health = function health() {
@@ -799,13 +803,18 @@ render.health = function health() {
     const b = body(p);
     if (!parts.length) { fill(b, empty('The watchdog starts with the app.')); continue; }
     const bad = unhealthyParts().length;
-    meta(p, bad ? `${bad} need attention` : 'all healthy');
+    const low = (parts.find(x => x.low_power) || {}).low_power;
+    meta(p, [low ? `low-power: ${low}` : '', bad ? `${bad} need attention` : 'all healthy'].filter(Boolean).join(' · '));
     fill(b, h('table', { class: 't' },
       h('thead', {}, h('tr', {}, h('th', {}, 'Part'), h('th', {}, 'State'), h('th', {}, 'Last OK'), h('th', { class: 'r wide-only' }, 'Runs'),
+        h('th', { class: 'r wide-only', title: 'Average time of a run (milliseconds)' }, 'ms'),
         h('th', { class: 'r wide-only' }, 'Restarts'), h('th', {}, 'Last problem'))),
       h('tbody', {}, parts.map(x => h('tr', {},
-        h('td', { class: 'fit' }, x.name), h('td', {}, status(...(PART_STATUS[x.state] || PART_STATUS.starting))),
+        h('td', { class: 'fit' }, x.name),
+        h('td', { class: 'fit' }, status(...((['ok', 'starting'].includes(x.state) && PART_THROTTLE[x.throttle]) || PART_STATUS[x.state] || PART_STATUS.starting))),
         h('td', {}, x.last_ok ? ago(x.last_ok) : '—'), h('td', { class: 'r wide-only' }, x.kind === 'poller' ? x.runs : '·'),
+        h('td', { class: 'r wide-only fit', title: x.runs ? `slowest ${x.max_ms} ms` : '' },
+          x.kind === 'poller' && x.runs ? partMs(x.avg_ms) : '·'),
         h('td', { class: 'r wide-only' }, x.restarts || '·'), h('td', { class: 'muted', title: x.last_error || '' }, x.last_error || '—'))))));
   }
   paintSetupBadge();
@@ -945,7 +954,8 @@ render.speech = function speech() {
         voices ? h('span', { class: 'k' }, 'Voice') : null, picker,
         voices ? h('span', { class: 'k' }, 'Speed') : null, voices ? h('span', { class: 'range-row' }, speed, speedOut) : null,
         h('span', { class: 'k' }, 'First words after'),
-        h('span', {}, t.first_audio_ms != null ? `${t.first_audio_ms} ms` : '—', h('span', { class: 'muted' }, t.first_audio_ms != null ? ' · median of recent replies' : ' · measured on the next reply'))),
+        h('span', {}, t.first_audio_ms != null ? `${t.first_audio_ms} ms` : '—', h('span', { class: 'muted' }, t.first_audio_ms != null ? ' · median of recent replies' : ' · measured on the next reply')),
+        h('span', { class: 'k' }, 'You stop → it speaks'), turnLatency(t.turns)),
       t.error ? h('div', { class: 'empty' }, status('warning', t.error)) : null,
       !t.neural_available ? h('div', { class: 'empty' }, status('warning', 'Natural voices need the voice packages: run setup.bat again.')) : null,
       h('div', { class: 'controls' },
@@ -954,6 +964,18 @@ render.speech = function speech() {
       h('div', { class: 't2' }, 'Long replies start speaking after the first sentence. Say “stop” or press the talk hotkey to cut it off.'));
   }
 };
+
+/* Wake to first words over the last 20 spoken turns: the median, split by what answered, and a tiny strip of each turn. */
+function turnLatency(r) {
+  if (!r || !r.n) return h('span', { class: 'muted' }, '— · measured from your next spoken command');
+  const split = [r.fast_p50_ms != null ? `built-in ${r.fast_p50_ms} ms` : null, r.model_p50_ms != null ? `model ${r.model_p50_ms} ms` : null].filter(Boolean).join(' · ');
+  const top = Math.max(...r.recent.map(x => x.ms), 1);
+  return h('span', { class: 'lat' },
+    h('span', {}, h('b', { class: 'lat-p50' }, `${r.p50_ms} ms`), h('span', { class: 'muted' }, ` · median of last ${r.n}${split ? ` · ${split}` : ''}`)),
+    h('span', { class: 'lat-strip', role: 'img', 'aria-label': `Last ${r.recent.length} turns, ${r.recent.map(x => x.ms).join(', ')} ms` },
+      r.recent.map(x => h('i', { class: x.kind === 'model' ? 'm' : '', title: `${x.ms} ms${x.kind ? ` · ${x.kind === 'model' ? 'model' : 'built-in'}` : ''}`,
+        style: { transform: `scaleY(${Math.max(0.08, x.ms / top).toFixed(3)})` } }))));
+}
 
 render.brain = function brain() {
   const br = S.data.brain || (S.data.assistant || {}).brain;
@@ -967,13 +989,13 @@ render.brain = function brain() {
       ['claude', 'Claude', 'Always Claude (needs ANTHROPIC_API_KEY)'], ['local', 'Local only', 'Never send anything to the cloud']]
       .map(([id, label, note]) => h('button', { 'aria-pressed': String(br.provider === id), title: note, onclick: () => set({ provider: id }) }, label)));
     const choices = local.choices || [];
-    const tag = c => c.result === 'pass' ? ` · passed, first word ${c.first_word_s} s`
+    const tag = c => c.result === 'pass' ? ` · passed${c.jobs ? `, ${c.jobs} jobs right` : ''}, first word ${c.first_word_s} s`
       : c.result === 'fail' ? ' · failed the test' : c.result === 'error' ? ' · error in the test'
       : c.result === 'no_actions' || c.tools === false ? " · can't take actions"
       : c.result === 'too_big' || c.fits === false ? ' · too big for your GPU' : '';
     const best = (local.bench || {}).best;
     const picker = choices.length ? h('select', { class: 'field', 'aria-label': 'Local model', onchange: e => set({ model: e.target.value }) },
-      [h('option', { value: '', selected: !local.pinned }, best ? `Auto: strongest that passed (${best})` : 'Auto: strongest that fits your GPU'),
+      [h('option', { value: '', selected: !local.pinned }, best ? `Auto: best in the test (${best})` : 'Auto: strongest that fits your GPU'),
         ...choices.map(c => h('option', { value: c.name, selected: local.pinned === c.name }, `${c.name}${c.size_gb ? ` (${c.size_gb} GB)` : ''}${tag(c)}`))]) : null;
     const answering = br.active === 'claude' ? status('good', `Claude ${claude.model}`)
       : br.active === 'local' ? (local.can_act === false ? status('warning', `${local.model} on ${local.server} · can't take actions`)
@@ -983,7 +1005,7 @@ render.brain = function brain() {
     const benchLine = bench && bench.running
       ? (bench.testing ? `Testing ${bench.testing} (${bench.done + 1} of ${bench.total})… each one loads, so this takes a minute or two.` : 'Testing your models…')
       : (bench && bench.summary) || ((local.bench || {}).at ? `Models last tested ${new Date(local.bench.at).toLocaleString()}.`
-        : 'Test my models loads each one and checks it takes the right actions and answers quickly; the strongest that passes is used.');
+        : 'Test my models loads each one and checks it takes the right actions and answers quickly; of those that pass, the one that gets the most everyday jobs right is used.');
     const light = (local.bench || {}).light;
     const onStream = local.streaming ? status('good', `Live: answering with ${local.model}`)
       : local.stream_model === 'same' ? h('span', { class: 'muted' }, 'Same model')
@@ -1289,8 +1311,10 @@ render.google = function google() {
       ].filter(Boolean).join(' · ')),
       (st.accounts || []).length ? h('div', { class: 'list' }, st.accounts.map(a => h('div', { class: 'item' },
         h('div', { class: 'main' }, h('div', { class: 't1' }, status(...(a.error ? ['critical', 'Signed out'] : a.missing?.length ? ['warning', 'Partly'] : ['good', 'Connected'])), ' ', a.email),
-          h('div', { class: 't2' }, a.error || (a.missing?.length ? `You didn't allow ${a.missing.join(' or ')}: click Reconnect and tick every box on Google's page.` :
-            `connected ${ago(a.connected_at)} · reads Docs, Sheets, Slides and calendars (never changes them)`))),
+          h('div', { class: 't2' }, a.error || (a.missing?.length ? `Partly: didn't allow ${a.missing.join(', ')}. Click Reconnect and tick every box on Google's page` +
+            (a.boxes?.length ? `, including ${a.boxes.map(x => `“${x}”`).join(', ')}.` : '.') :
+            `connected ${ago(a.connected_at)} · reads Docs, Sheets, Slides, calendars and Gmail · saves reply drafts (never sends) · keeps “Vesper · …” lists in Google Tasks · adds focus blocks you say yes to`)),
+          a.missing?.includes('Gmail drafts') ? h('div', { class: 't3 muted' }, 'Google words the drafts box “Manage drafts and send emails”; Vesper only ever saves drafts and never sends.') : null),
         h('button', { class: 'btn small', onclick: () => googleConnect(a.email) }, 'Reconnect'),
         h('button', { class: 'btn small', onclick: () => googleRemove(a.email) }, 'Disconnect')))) :
         empty('No account yet. Connect your work account, then your personal one.'),
@@ -1298,7 +1322,7 @@ render.google = function google() {
         h('button', { class: 'btn primary', onclick: () => googleConnect('') }, 'Connect a Google account'),
         (st.accounts || []).length ? h('button', { class: 'btn', onclick: () => googleCalendars(b._g.cals) }, 'Choose calendars') : null,
         h('button', { class: 'btn small', onclick: () => { b._g.editKey = true; render.google(); } }, 'Change sign-in key')),
-      h('div', { class: 't3 muted', style: { marginTop: '6px' } }, 'Each Connect opens Google in your browser: pick the account, allow, then close that tab.'));
+      h('div', { class: 't3 muted', style: { marginTop: '6px' } }, 'Each Connect opens Google in your browser: pick the account, tick every box, then close that tab.'));
   }
 };
 
@@ -1374,12 +1398,16 @@ function notice(n) {
   if (NOTICES.some(x => x.key && x.key === n.key)) return;
   NOTICES.unshift(n); NOTICES.length = Math.min(NOTICES.length, 50);
   if (n.level !== 'quiet') toast(n.text, { source: n.source, level: n.level });
-  feed({ source: n.source, text: n.text, level: n.level, ts: n.ts, key: n.key });
+  feed({ source: n.source, text: n.text, level: n.level, ts: n.ts, key: n.key, why: n.why });
   for (const fn of Vesper._noticeListeners) fn(n, NOTICES);
 }
 /* The HUD side of a skill: Vesper.skill('weather', { panels: [...], render(data) {...} }) */
 const Vesper = window.Vesper = {
   _noticeListeners: [],
+  _hooks: {},
+  /* Vesper.on('<bus event>', fn(data, ev)) for any live event; 'hud:view' fires on a tab change (view, previous). */
+  on(type, fn) { (this._hooks[type] = this._hooks[type] || []).push(fn); },
+  emit(type, ...args) { for (const fn of this._hooks[type] || []) { try { fn(...args); } catch (err) { console.error(type, err); } } },
   ui: { h, fill, empty, status, ago, toast, api, post, panels, body, meta, $, $$, meter },
   get data() { return S.data; },
   notices: NOTICES,
@@ -1531,6 +1559,7 @@ function setView(view) {
   }
   moveInk();
   renderAll();
+  Vesper.emit('hud:view', view, prev);
 }
 function moveInk(instant) {
   const ink = $('.tab-ink'), btn = $('.tabs button[aria-selected="true"]');
@@ -1580,6 +1609,17 @@ function paintPending(p) {
   $('#pending').classList.toggle('hidden', !p);
   $('#pending-text').textContent = p ? `${p.text[0].toUpperCase()}${p.text.slice(1)}?` : '';
   $('#pending-tier').textContent = p && p.tier >= 3 ? "Confirm · can't be undone" : 'Confirm';
+  paintConfirmWindow();
+}
+/* The spoken yes/no window (voice/confirm_window.py): listening for ten seconds, then waiting quietly until it expires. */
+function paintConfirmWindow() {
+  const el = $('#pending-window');
+  if (!el) return;
+  const w = S.confirmWindow, p = S.pending;
+  const on = !!(p && w && w.id === p.id);
+  el.classList.toggle('listening', on && w.state === 'listening');
+  el.textContent = !on ? '' : w.state === 'listening' ? 'Listening for yes or no'
+    : w.expires ? `Waiting until ${new Date(w.expires * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
 }
 function paintHalt() {
   $('#halt').classList.toggle('hidden', !S.data.pc_control?.hands_off);
@@ -1760,8 +1800,16 @@ function feed(item) {
 /* After a reload: the updates the nudges skill already delivered, so the drawer isn't empty. */
 function hydrateFeed() {
   for (const n of (S.data.nudges?.feed || []).slice(0, 30)) {
-    feed({ source: n.source, text: n.text, level: n.priority, ts: n.delivered, key: n.key });
+    feed({ source: n.source, text: n.text, level: n.priority, ts: n.delivered, key: n.key, why: n.why });
   }
+}
+/* "Why did you say that?": the rule and the evidence behind an update (skills/nudges.py; styled in nudges.css). */
+function whyBox(w) {
+  if (!w || !w.rule) return null;
+  return h('details', { class: 'n-why' }, h('summary', {}, 'Why?'),
+    h('div', { class: 'why-rule' }, w.rule),
+    (w.evidence || []).length ? h('ul', { class: 'why-ev' }, w.evidence.map(e => h('li', {}, e))) : null,
+    w.note ? h('div', { class: 'why-note' }, w.note) : null);
 }
 function unread() { return FEED.filter(n => n.ts > feedSeen).length; }
 function paintBell(bump) {
@@ -1808,7 +1856,7 @@ function renderDrawer() {
       h('div', {}, h('div', { class: 'n-meta' }, h('span', {}, SOURCE_LABEL_N[n.source] || (n.source || 'Vesper').replace(/_/g, ' ')),
         ['urgent', 'error', 'critical', 'warning', 'warn'].includes(lv) ? h('span', { class: 'lv' }, lv === 'urgent' ? 'urgent' : lv) : null,
         h('span', { class: 'time', title: new Date(n.ts * 1000).toLocaleString() }, ago(n.ts))),
-      h('div', { class: 'n-txt' }, n.text))));
+      h('div', { class: 'n-txt' }, n.text), whyBox(n.why))));
   }
   fill(box, out);
 }
@@ -2230,14 +2278,23 @@ function initChrome() {
   document.fonts?.ready.then(() => moveInk(true));
 }
 
+// ---------------------------------------------------------------- on air: private panels blur (styles.css lists them)
+function paintPrivacy() {  // skills/stream_privacy: the Stream tab's "Privacy while live" switch, and recording the screen
+  const p = S.data.stream_privacy, obs = S.data.obs || {};
+  const live = !!(obs.connected && obs.streaming?.active) || !!S.data.twitch?.live;
+  document.body.classList.toggle('live-private', !!p && p.on !== false && (live || !!p.private));
+}
+
 // ---------------------------------------------------------------- live updates
 const sticky = new Set(['system', 'obs', 'twitch', 'activity', 'projects', 'calendar', 'news', 'briefing', 'discovery', 'doctor', 'health', 'voice_profile']);
 function onEvent(ev) {
   const { type, data } = ev;
   if (type === 'level') { FX.orb.setLevel(data?.rms); return; }  // up to 20/s while listening or speaking: nothing else
   pulse(type, data);
+  if (Vesper._hooks[type]) Vesper.emit(type, data, ev);
   if (sticky.has(type)) {
     S.data[type] = data;
+    if (type === 'obs' || type === 'twitch') paintPrivacy();
     const fns = { system: ['vitals', 'stats'], obs: ['obs', 'stats'], twitch: ['twitch', 'stats'], activity: ['activity', 'stats'],
       projects: ['projects', 'stats'], calendar: ['agenda', 'stats'], news: ['news'], briefing: ['briefing'],
       discovery: ['connections'], doctor: ['doctor'], health: ['health'], voice_profile: ['voice', 'triggers'] }[type];
@@ -2258,6 +2315,7 @@ function onEvent(ev) {
     case 'voice_state': orbState.voice = data.state; S.data.voice = data; paintOrb(); queueSystems(); break;
     case 'wake': orbState.voice = 'armed'; paintOrb(); wakeFlare(); break;
     case 'pending': paintPending(data); break;
+    case 'confirm_window': S.confirmWindow = data; paintConfirmWindow(); break;
     case 'pc_control': S.data.pc_control = data; paintHalt(); render.control(); break;
     case 'stream_alert': toast(data.text, { source: 'stream', level: data.level }); feed({ source: 'stream', text: data.text, level: data.level, ts: ev.ts }); break;
     case 'twitch_auth': twitchPatch(t => { t.auth = data; if (data.connected) t.needs_login = false; }); break;
@@ -2311,6 +2369,7 @@ function onEvent(ev) {
     case 'notice': notice(data); break;
     default:
       if (SKILL_RENDER[type]) { S.data[type] = data; paintSkill(type); queueSystems(); }
+      if (type === 'stream_privacy') paintPrivacy();
   }
 }
 
@@ -2335,8 +2394,10 @@ async function load() {
     S.log = (st.log || []).map(l => ({ role: l.role, text: l.text, source: l.source, ts: l.ts }));
     orbState.voice = st.voice?.state || 'off';
     $('#mute-btn').setAttribute('aria-pressed', String(!!st.voice?.muted));
+    S.confirmWindow = st.confirm_window || null;
     paintOrb(); paintPending(st.pending); paintProfile(); paintHalt();
     renderAll();
+    paintPrivacy();
     hydrateFeed();
     strip.restore();
     resolveState(st);

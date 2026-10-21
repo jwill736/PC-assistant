@@ -1,9 +1,11 @@
 """Always-on voice input: mic -> Silero VAD -> speech-to-text -> wake word -> command.
 
 The wake word is matched on the transcript, so it can be any name you choose
-(no custom model training). After the assistant asks something, a short
-follow-up window accepts the next sentence without the name. Push-to-talk
-(hotkey or the dashboard mic button) skips the wake word for one utterance.
+(no custom model training). After a reply, a short follow-up window accepts
+the next sentence without the name ("and tomorrow?"); it closes early when
+you stay quiet. Push-to-talk (hotkey or the dashboard mic button) skips the
+wake word for one utterance. In conversation mode (brain/conversation.py)
+every sentence in your voice is a turn, and talking over a reply stops it.
 Speech-to-text is pluggable (stt.py); Parakeet 110M on CPU is the default.
 """
 
@@ -41,6 +43,14 @@ STOP_PHRASES = {"stop", "stop it", "stop talking", "ok stop", "okay stop", "canc
 # PC control; a missed one is the dangerous case).
 KILL_PHRASES = {"stop everything", "kill switch", "emergency stop", "stop all actions"}
 WAKE_ANCHOR_S = 2.0  # an acoustic wake-word hit counts only this soon after the utterance starts
+# Said over a reply in conversation mode: stop it and end the conversation (the others just stop the reply).
+CONVERSATION_STOP = {"stop talking"}
+# Noises, not words: never a turn without the name.
+NON_WORDS = {"hmm", "hm", "mm", "mmm", "mhm", "uh", "um", "uhm", "er", "ah", "oh", "huh", "lol", "haha", "hahaha", "heh"}
+# Reactions to something else in the room: never a follow-up without the name (fine as answers to a question).
+BACKCHANNEL = NON_WORDS | {"yeah", "yep", "yup", "ok", "okay", "right", "nice", "cool", "wow", "damn", "sure", "uh huh",
+                           "oh nice", "oh wow", "no way", "nah", "true"}
+REPLY_WINDOW_S = 120  # a reply this long after the voice command it answers still opens the follow-up window
 
 
 def _norm(token: str) -> str:
@@ -170,6 +180,8 @@ class VoiceListener:
         self.error = ""
         self.muted = False
         self.paused = False  # calibration borrows the mic
+        self.tap: Callable | None = None  # gets every mic frame, paused or not (dictation records through it)
+        self.taps: list[Callable] = []  # more frame consumers alongside it (the recorder): add_tap / remove_tap
         self.verifier = verifier  # SpeakerVerifier or None
         self.armed_until = 0.0
         self.armed_by = ""
@@ -190,6 +202,14 @@ class VoiceListener:
         self._speech_started_at = 0.0
         self.heartbeat: Callable[[], None] = lambda: None  # set by the watchdog
         self.level = LevelMeter(bus, "mic")  # the HUD orb's mic level, only while you're talking to it
+        # Conversation mode and "on air", wired by skills/conversation.py (no wake word between turns while talking).
+        self.in_conversation: Callable[[], bool] = lambda: False
+        self.is_live: Callable[[], bool] = lambda: False
+        self.conversation_noise: Callable[[], None] = lambda: None  # "hmm" mid-conversation: J is thinking
+        self.unaddressed: deque = deque(maxlen=20)  # when we heard talk that wasn't for us (a chatty room)
+        self.last_voice_end = 0.0  # when the last utterance (anyone's) ended: silence closes the follow-up early
+        self._window = ""  # what the HUD was last told about the open window
+        self._window_check = 0.0
 
     # ---- control ----------------------------------------------------------
     def start(self) -> None:
@@ -222,6 +242,22 @@ class VoiceListener:
     def stop(self) -> None:
         self._stop.set()
 
+    # ---- mic taps: every frame, paused or muted or not, to dictation (``tap``) and any number of others (``taps``)
+    def add_tap(self, fn: Callable) -> None:
+        if fn not in self.taps:
+            self.taps = [*self.taps, fn]  # copy on write: the audio loop iterates it
+
+    def remove_tap(self, fn: Callable) -> None:
+        self.taps = [t for t in self.taps if t != fn]  # ==, not is: a bound method is a new object each time
+
+    def _feed_taps(self, frame) -> None:
+        for fn in (self.tap, *self.taps):
+            if fn is not None:
+                try:
+                    fn(frame)
+                except Exception:  # one bad consumer never stops the mic or the others
+                    log.exception("mic tap failed")
+
     def arm(self, seconds: float = 8, source: str = "hotkey") -> None:
         """Accept the next utterance without the wake word.
 
@@ -242,7 +278,21 @@ class VoiceListener:
         self.state = state
         if state not in ("armed", "hearing"):
             self.level.end()
+        if state == "armed" and "window" not in extra:
+            extra["window"] = self._arm_source() or ""
+        if state in ("armed", "listening"):
+            self._window = extra.get("window", "") if state == "armed" else ""
         self.bus.publish("voice_state", {"state": state, "error": self.error, **extra}, sticky=True)
+
+    def refresh_state(self) -> None:
+        """Between utterances: show the orb listening while no name is needed (a follow-up window, a conversation),
+        and back to standby when that ends."""
+        if self.muted or self.paused or self.state not in ("listening", "armed"):
+            return
+        source = self._arm_source() or ""
+        want = "armed" if source else "listening"
+        if want != self.state or source != self._window:
+            self._set_state(want, window=source)
 
     def status(self) -> dict:
         lat = sorted(self.latencies)
@@ -398,6 +448,7 @@ class VoiceListener:
                     frame = self._audio.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                self._feed_taps(frame)
                 speaking = self.speaker.speaking.is_set()
                 barge_in = self.cfg.get("barge_in", True)
                 if self.muted or self.paused or (speaking and not barge_in):
@@ -408,10 +459,15 @@ class VoiceListener:
                         blocked = True
                     continue
                 blocked = False
+                if not speaking and not segmenter.in_speech and now - self._window_check >= 0.25:
+                    self._window_check = now  # follow-up windows open and close, conversations time out
+                    self.refresh_state()
                 if self.wake:
                     self._on_hits(self.wake.feed(frame), speaking)
                 was_speech = segmenter.in_speech
                 frames = segmenter.feed(frame)
+                if was_speech and not segmenter.in_speech:
+                    self.last_voice_end = time.time()  # speech ended (a whole utterance, or a click dropped)
                 if self.state in ("armed", "hearing") and not speaking:
                     self.level.feed(frame)  # returns at once unless a HUD is open and a sample is due
                 if segmenter.in_speech and not was_speech:
@@ -438,25 +494,55 @@ class VoiceListener:
         return sum(1 for t in self.speech_times if t >= cutoff)
 
     def _drain(self) -> None:
-        """Drop audio captured while we were busy (it's mostly our own voice)."""
+        """Drop audio captured while we were busy (it's mostly our own voice); the taps still get it, so a recording
+        has no gap where a command was being understood."""
         while True:
             try:
-                self._audio.get_nowait()
+                frame = self._audio.get_nowait()
             except queue.Empty:
                 return
+            self._feed_taps(frame)
 
-    def _arm_source(self) -> str | None:
-        """Why the next utterance needs no wake word: hotkey/button/wake/followup, or None."""
+    def _arm_source(self, started_at: float | None = None) -> str | None:
+        """Why an utterance needs no wake word: hotkey/button/wake, conversation (talking with Vesper),
+        followup (it just asked something), next (it just answered you), or None.
+
+        ``started_at``: when the utterance began; a window counts if you started talking while it was open."""
         now = time.time()
         if now < self.armed_until:
             return self.armed_by or "hotkey"
-        follow = self.cfg.get("follow_up_seconds", 8)
-        # Only after a question (or a "say yes" confirmation): an answer that asks nothing
-        # shouldn't leave the mic open, or a false wake turns into a conversation loop.
-        if (getattr(self.speaker, "expects_reply", True) and self.speaker.last_end > self.last_command
-                and now - self.speaker.last_end < follow):
+        try:
+            if self.in_conversation():
+                return "conversation"
+        except Exception:
+            log.exception("conversation check failed")
+        end = self.speaker.last_end
+        if end <= self.last_command:
+            return None  # nothing said since your last command (or still saying it)
+        at = started_at if started_at else now
+        since = at - end
+        # After a question (or a "say yes" confirmation): the answer needs no name.
+        if getattr(self.speaker, "expects_reply", True) and since < self.cfg.get("follow_up_seconds", 8):
             return "followup"
+        # After any reply to you: a few seconds to keep going ("and tomorrow?", "why?"), closed early by silence.
+        # Not after something said unprompted (a reminder), not in a chatty room, and not live (you talk to chat).
+        window = float(self.cfg.get("follow_up_any_seconds", 7))
+        quiet = float(self.cfg.get("follow_up_silence_seconds", 4))
+        voice_end = self.last_voice_end if end < self.last_voice_end < at else end
+        if (window > 0 and since < window and at - voice_end < quiet and end - self.last_command < REPLY_WINDOW_S
+                and not self._room_busy(end) and not (self._live() and not self.cfg.get("follow_up_live", False))):
+            return "next"
         return None
+
+    def _room_busy(self, before: float, window_s: float = 30, count: int = 2) -> bool:
+        """Other talk we weren't addressed in, just before the reply: background voices, not a follow-up."""
+        return sum(1 for t in self.unaddressed if before - window_s <= t <= before + 10) >= count
+
+    def _live(self) -> bool:
+        try:
+            return bool(self.is_live())
+        except Exception:
+            return False
 
     def _armed(self) -> bool:
         return self._arm_source() is not None
@@ -482,7 +568,7 @@ class VoiceListener:
         samples = audio.astype(np.float32) / 32768.0
         if not during_speech:  # you talking (not us): the stream's mic check cross-checks against this
             self.speech_times.append(time.time())
-        source = self._arm_source()
+        source = self._arm_source(started_at)
         acoustic = self._acoustic_wake(started_at)
         if self.wake_mode() == "acoustic" and not (acoustic or source or during_speech):
             return  # the name model didn't fire: nothing addressed to us, skip speech-to-text
@@ -507,18 +593,28 @@ class VoiceListener:
                 if self._owner_ok(samples, source) and not self._stop_word_is_echo(said):
                     self.speaker.interrupt()
                     self.bus.publish("heard", {"text": text, "interrupted": True, "stt_ms": stt_ms})
-                    if said == "cancel":
+                    if said == "cancel" or (said in CONVERSATION_STOP and source == "conversation"):
                         self.last_command = time.time()
-                        self.on_command("cancel")
+                        self.on_command(said)  # cancel what's waiting / end the conversation
                 return
             if not matched:  # talking over a reply needs the name (or push-to-talk)
                 if source in ("hotkey", "button"):
                     matched, command = True, text
+                elif source == "conversation" and self._barge_in_ok(text):
+                    matched, command = True, text  # in a conversation, you talking is the next turn
                 else:
                     self.bus.publish("heard", {"text": text, "ignored": "while speaking", "stt_ms": stt_ms})
                     return
+        if not matched and source in ("next", "conversation") and self._not_a_turn(text, source):
+            # "hmm", or a "lol" at something else: not a turn (in a window after a statement, not even "yeah")
+            self.bus.publish("heard", {"text": text, "ignored": "not a turn", "stt_ms": stt_ms})
+            self.unaddressed.append(time.time())
+            if source == "conversation":
+                self.conversation_noise()  # "hmm…": not a turn, but J is still there (the quiet minute starts over)
+            return
         if not (matched or source):
             self.bus.publish("heard", {"text": text, "wake": False, "armed": False, "stt_ms": stt_ms})
+            self.unaddressed.append(time.time())
             return
         # Only the owner may command it — unless they physically pressed push-to-talk.
         owner = "pressed" if source in ("hotkey", "button") else "unknown"
@@ -541,6 +637,22 @@ class VoiceListener:
         self.last_command = time.time()
         self.last_owner = owner  # read by the runtime: a T3 "yes" in someone else's voice doesn't count
         self.on_command(command if matched else text)
+
+    @staticmethod
+    def _not_a_turn(text: str, source: str) -> bool:
+        said = _norm_sentence(text)
+        return said in (NON_WORDS if source == "conversation" else BACKCHANNEL)
+
+    def _barge_in_ok(self, text: str) -> bool:
+        """Talking over a reply in a conversation: with a voice profile the speaker check decides (it runs next);
+        without one, only a real sentence that isn't the reply coming back through the mic."""
+        if self.verifier is not None and getattr(self.verifier, "active", False):
+            return True
+        words = _norm_sentence(text).split()
+        if len(words) < 3:
+            return False
+        reply = set(_norm_sentence(getattr(self.speaker, "last_text", "")).split())
+        return sum(w in reply for w in words) / len(words) < 0.5
 
     def _owner_ok(self, samples, source) -> bool:
         if self.verifier is None or source in ("hotkey", "button"):

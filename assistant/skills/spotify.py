@@ -23,7 +23,7 @@ import httpx
 
 from ..brain.router import NUMBER, Intent, number
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 from ._kit import LiveEdge, callback_url, pkce, save_secret, save_setting
 
 AUTH_URL = "https://accounts.spotify.com/authorize"
@@ -44,11 +44,12 @@ class SpotifyError(Exception):
 class Spotify(Skill):
     name, title = "spotify", "Spotify"
     poll_s = 10
+    game_essential = True  # the stream-safe music check runs while live
     delay_s = 10
 
     def __init__(self, svc, http: httpx.Client | None = None, clock=time.time, opener=webbrowser.open):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=10)
+        self.http = http or lazy_client(timeout=10)
         self.clock, self.opener = clock, opener
         self.later = lambda fn: threading.Timer(0.8, fn).start()  # Spotify takes a moment to catch up after a change
         self._lock = threading.RLock()
@@ -308,6 +309,17 @@ class Spotify(Skill):
                 self._dmca(out)
         self.publish()
 
+    def selftest(self) -> list[dict]:
+        if not self.connected:
+            return [check("Spotify", "skip", "not connected", "Optional: Setup → Spotify → Connect")]
+        try:
+            self._access(force=True)  # a fresh sign-in token: proves the saved sign-in still works
+        except SpotifyError as exc:
+            return [check("Spotify", "fail", str(exc), "Setup → Spotify → Connect")]
+        except httpx.HTTPError as exc:
+            return [check("Spotify", "warn", f"Spotify didn't answer ({type(exc).__name__})", "Check the internet")]
+        return [check("Spotify", "pass", "signed in (token refreshed)")]
+
     def status(self) -> dict:
         step = None if self.connected else (
             "Make an app at developer.spotify.com/dashboard with the Redirect URI below, then paste its Client ID."
@@ -347,14 +359,17 @@ class Spotify(Skill):
         if re.fullmatch(r"what(?:'s| is) (?:playing|this song|this track|that song)(?: on spotify)?|what song is "
                         r"(?:this|playing)|what am i listening to|now playing|who(?:'s| is) (?:singing|playing) this", t):
             return Intent("tool", "spotify_now_playing")
-        if not self.connected or re.search(r"\byoutube\b|\b(?:ads?|commercial)\b", t):
+        # "put on my list …" is a task (the core router's), never a song
+        if not self.connected or re.search(r"\byoutube\b|\b(?:ads?|commercial)\b", t) \
+                or re.match(r"put on (?:my|the) (?:to-?do )?list\b", t):
             return None
         now = self.now or {}
         active = bool(now.get("playing"))
         if re.fullmatch(r"(?:pause|stop) (?:the )?(?:music|song|spotify)" + ("|pause" if active else ""), t):
             return Intent("tool", "spotify_control", {"action": "pause"})
+        # A bare "play" while Spotify already plays stays here: the generic play/pause media key would pause it.
         if re.fullmatch(r"(?:play|resume|unpause|start) (?:the |some )?(?:music|song|spotify)"
-                        + ("|play|resume|unpause" if now.get("track") and not active else ""), t):
+                        + ("|play|resume|unpause" if now.get("track") or active else ""), t):
             return Intent("tool", "spotify_control", {"action": "play"})
         if re.fullmatch(r"(?:next|skip)(?: the)? (?:song|track)|skip (?:this )?song|next one"
                         + ("|next|skip|skip (?:this|it)" if active else ""), t):
@@ -379,7 +394,10 @@ class Spotify(Skill):
         if m:
             return Intent("tool", "spotify_play", {"query": m.group(1), "kind": "artist"})
         m = re.fullmatch(r"(?:play|put on) (?:some )?(.+?)(?: on spotify)?", t)
-        if m and not re.fullmatch(r"(?:the |some )?(?:music|song|spotify|video|media|it|that|something)", m.group(1)):
+        apps = {str(a).lower() for a in (self.svc.cfg.get("apps") or {})}  # "play valorant": the game, not a song
+        if m and not re.fullmatch(r"(?:the |some )?(?:music|song|spotify|video|media|it|that|something)"
+                                  r"|(?:the |my )?devil'?s advocate(?: .+)?", m.group(1)) \
+                and m.group(1) not in apps:  # "play devil's advocate" is a conversation mode (skills/conversation.py)
             return Intent("tool", "spotify_play", {"query": m.group(1), "kind": "auto"})
         return None
 

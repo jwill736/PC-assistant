@@ -33,7 +33,7 @@ FILLER = re.compile(r"^(?:(?:hey|ok|okay|yo|please|can you|could you|would you|w
 POLITE_TAIL = re.compile(r"\s+(?:please|for me|right now|now|real quick|thanks|thank you)$")
 
 CONFIRM = re.compile(r"^(?:yes|yeah|yep|yup|sure|confirm(?:ed)?|do it|go ahead|affirmative|proceed|send it|let'?s go)(?: please| do it)?$")
-CANCEL = re.compile(r"^(?:no|nope|nah|cancel|never ?mind|abort|don'?t|stop|forget it)(?: that| it)?$")
+CANCEL = re.compile(r"^(?:no|nope|nah|cancel|never ?mind|abort|don'?t|stop|forget it|forget about it)(?: that| it)?$")
 
 PROFILE_WORDS = {"work": "work", "working": "work", "office": "work", "stream": "stream", "streaming": "stream"}
 
@@ -144,7 +144,7 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return skill
 
     # --- briefings -------------------------------------------------------
-    if re.search(r"\bgood morning\b|\bmorning (brief|briefing|report|rundown)\b|\bbrief me\b|\bwhat'?s (on )?(my|the) (day|agenda|plan)( today| look like)?\b|\bgive me (the|my) rundown\b", t):
+    if re.search(r"\bgood morning\b|\bmorning (brief|briefing|report|rundown)\b|\bbrief me\b|\bwhat'?s (on )?(my|the) (day|agenda|plan)( today| look like)?\b|\bgive me (the|my) rundown\b|^start my day$", t):
         return Intent("briefing")
     if re.search(r"\b(recap|summar(y|ize)|rundown|review)\b.*\b(day|today)\b|\bend of (the )?day\b|\bhow did (i|my day) (do|go)\b|\bwhat did i (do|get done) today\b", t):
         return Intent("recap")
@@ -156,7 +156,7 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
     # --- calendar & news ------------------------------------------------
     if re.search(r"\b(next|upcoming) (meeting|event|call)\b|\bwhen'?s my next\b", t):
         return Intent("tool", "calendar", {"days": 2, "next_only": True})
-    m = re.search(r"\b(?:what'?s|what is|anything) on (?:my|the) (?:calendar|schedule)(?: for)?(?: (today|tomorrow|this week))?\b|^(?:my )?(?:calendar|schedule)(?: for)?(?: (today|tomorrow|this week))?$", t)
+    m = re.search(r"\b(?:what'?s|what is|anything) on (?:my|the) (?:calendar|schedule)(?: for)?(?: (today|tomorrow|this week))?\b|^(?:(?:check|show|read)(?: me)? )?(?:my )?(?:calendar|schedule)(?: for)?(?: (today|tomorrow|this week))?$", t)
     if m:
         when = m.group(1) or m.group(2) or "today"
         return Intent("tool", "calendar", {"days": {"today": 1, "tomorrow": 2, "this week": 7}[when], "when": when})
@@ -200,7 +200,10 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
     twitch = twitch_intent(text, t)
     if twitch:
         return twitch
-    if re.search(r"\b(stream|obs) (status|stats|health)\b|\bhow(?:'?s| is) the stream\b|\bam i live\b|\bdropp(ed|ing) frames\b", t):
+    # "am i dropping frames" is OBS; "search online for tips on fixing dropped frames" is a question for the web
+    if re.search(r"\b(stream|obs) (status|stats|health)\b|\bhow(?:'?s| is) the stream\b|\bam i live\b", t) or (
+            re.search(r"\bdropp(ed|ing) frames\b", t)
+            and not re.search(r"\b(?:search|google|look up|online|tips?|how (?:do|can|to)|fix(?:ing)?|why do)\b", t)):
         return Intent("tool", "obs_status")
     m = re.search(r"^(hide|show|toggle|turn off|turn on) (?:the |my )?(cam|webcam|camera|face ?cam|chat|alerts?|overlay)$", t) \
         or re.search(r"^(hide|show|toggle) (?:the )?(.+?) (?:source|in obs)$", t)
@@ -252,14 +255,21 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "media_control", {"action": "volume_down", "times": 5})
     if re.search(r"^(?:mute|unmute)(?: (?:the )?(?:pc|computer|sound|volume|audio))?$", t):
         return Intent("tool", "media_control", {"action": "mute"})
-    if re.search(r"^(?:pause|play|resume)(?: (?:the )?(?:music|song|spotify|video|media))?$", t):
+    if re.search(r"^(?:pause|play|resume)(?: (?:the )?(?:music|song|spotify|video|media))?$"
+                 r"|^start (?:the )?(?:music|song|video|media)$", t):  # "start the music" isn't an app called Music
         return Intent("tool", "media_control", {"action": "play_pause"})
-    if re.search(r"^(?:next|skip)(?: (?:song|track))?$|^skip (?:this|it)$", t):
+    if re.search(r"^(?:next|skip)(?: (?:song|track))?$|^skip (?:this|it)(?: song| track)?$", t):
         return Intent("tool", "media_control", {"action": "next"})
     if re.search(r"^(?:previous|last|go back)(?: (?:song|track))?$", t):
         return Intent("tool", "media_control", {"action": "previous"})
     if re.search(r"^lock(?: (?:the|my))?(?: (?:pc|computer|screen|workstation))?$", t):
         return Intent("tool", "power", {"action": "lock"})
+    # Shut down / restart / sleep: the power tool is tier 3 for these, so this only ever asks "Confirm: …?" first.
+    m = re.search(r"^(?:(shut ?down|turn off|power (?:off|down))|(restart|reboot)|(sleep|hibernate)) (?:the |my )?(?:pc|computer)$"
+                  r"|^(?:put )?(?:the |my )?(?:pc|computer) to (sleep)$", t)
+    if m:
+        action = "shutdown" if m.group(1) else "restart" if m.group(2) else "sleep"
+        return Intent("tool", "power", {"action": action})
 
     # --- system ------------------------------------------------------------
     if re.search(r"\boptimi[sz]e\b|\b(system|pc|computer) (status|health|check)\b|\bhow'?s (my |the )?(pc|computer|system|rig)\b|\bwhy is (my |the )?(pc|computer) slow\b", t):
@@ -269,7 +279,8 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
 
     # --- tasks & notes ------------------------------------------------
     # "ad a task", "at a task", "ada task": how speech-to-text heard "add a task" said quickly (first live run)
-    m = re.search(r"^(?:(?:(?:add|ad|at) (?:a )?|ada )(?:task|to-?do)(?: to)?|remind me to|new task|put on my list) (.+)$", t)
+    # "remember to buy eggs" is a to-do like "remind me to", not a note ("remember that …" is the note)
+    m = re.search(r"^(?:(?:(?:add|ad|at) (?:a )?|ada )(?:task|to-?do)(?: to)?|remind me to|remember to|new task|put on my list) (.+)$", t)
     if m:
         return Intent("tool", "add_task", {"title": _restore_case(text, m.group(1))})
     m = re.search(r"^(?:mark|check off|complete|finish(?:ed)?|done with) (?:the )?(?:task )?(.+?)(?: as done| as complete)?$", t)
@@ -318,7 +329,7 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "remember", {"text": _restore_case(text, m.group(1))})
 
     # --- browser / search ---------------------------------------------
-    m = re.search(r"^(?:search|google|look up)(?: (google|youtube|github|twitch|reddit|amazon|maps))?(?: for)? (.+?)(?: on (google|youtube|github|twitch|reddit|amazon|maps))?$", t)
+    m = re.search(r"^(?:search|google|look up)(?: online| the web| the internet)?(?: (google|youtube|github|twitch|reddit|amazon|maps))?(?: for)? (.+?)(?: on (google|youtube|github|twitch|reddit|amazon|maps))?$", t)
     if m:
         engine = m.group(1) or m.group(3) or "google"
         return Intent("tool", "web_search", {"query": m.group(2), "engine": engine})
@@ -334,7 +345,8 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
     if m and m.group(1) not in {"pc", "computer", "the pc", "the computer"}:
         return Intent("tool", "close_app", {"name": m.group(1)})
     m = re.search(r"^(?:open|launch|start|fire up|pull up|bring up|run|load up|boot up|go to|take me to)(?: up)? (?:the |my )?(.+?)(?: app| program| website| site)?(?: in chrome)?$", t)
-    if m:
+    # "start a timer", "run a scan": an article means a thing to do, not an app's name; the model asks or does it
+    if m and not m.group(1).startswith(("a ", "an ")):
         target = m.group(1).strip()
         if ctx.is_site(target) or "in chrome" in t or t.startswith(("go to", "take me to")):
             return Intent("tool", "open_urls", {"targets": [target]})

@@ -29,6 +29,9 @@ from pathlib import Path
 from ..bus import EventBus
 from . import neural
 from .level import LevelMeter
+from .phrases import PhraseCache
+
+PREWARM = ("prewarm",)  # a queue item: open the audio device and make the common phrases ahead
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +80,10 @@ class Speaker:
         self._playing_turn = -1
         self._gen = 0  # bumped by configure(): a replaced worker must not install the model it was loading
         self.first_audio_ms: deque[int] = deque(maxlen=30)
+        self.phrases = PhraseCache()  # "Done.", "Okay." ... as ready-made audio (phrases.py)
+        self.on_first_audio = None  # (turn, time) when a turn's first words start playing (voice/latency.py)
+        self.latency = None  # () -> the wake-to-first-words report shown with the voice settings
+        self._audio_turn = -1
         self._q: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._browser_done = threading.Event()
@@ -157,6 +164,43 @@ class Speaker:
         self.expects_reply = asks_something(text) if expects_reply is None else expects_reply
         self._q.put((turn, text, time.perf_counter(), self.out is None or not self.out.playing))
 
+    def prewarm(self) -> None:
+        """You're talking to it: open the audio device now and make the common short replies ahead, so the reply
+        doesn't pay for either (on the worker thread, after anything already queued)."""
+        if self.engine_name in neural.ENGINES and self._thread is not None:
+            self._q.put(PREWARM)
+
+    def _prewarm(self) -> None:
+        if self.neural is None or self.out is None:
+            return
+        warm = getattr(self.out, "warm", None)
+        if warm is not None:
+            warm()
+        key = self._voice_key()
+        for phrase in self.phrases.missing(key):
+            if not self._q.empty():  # a real reply is waiting: it goes first
+                return
+            try:
+                self.phrases.put(key, phrase, self.neural.synth(phrase))
+            except Exception:
+                log.debug("could not pre-make %r", phrase, exc_info=True)
+                return
+
+    def _voice_key(self) -> tuple:
+        n = self.neural
+        return (n.engine, n.voice.id, round(float(n.speed), 2)) if n is not None else ()
+
+    def _started(self, turn: int) -> None:
+        """The first words of ``turn`` are playing (once per turn)."""
+        if turn == self._audio_turn:
+            return
+        self._audio_turn = turn
+        if self.on_first_audio is not None:
+            try:
+                self.on_first_audio(turn, time.time())
+            except Exception:
+                log.exception("first-audio hook failed")
+
     def preview(self, text: str | None = None) -> None:
         self.interrupt()
         self.say(text or PREVIEW_TEXT, expects_reply=False, turn=self.new_turn())
@@ -211,6 +255,7 @@ class Speaker:
             "voice": self.neural.voice.id if self.neural else (self.voice_hint if engine == "pyttsx3" else self.voice_id),
             "speed": self.speed,
             "first_audio_ms": round(statistics.median(lat)) if lat else None,
+            "turns": self.latency() if self.latency is not None else None,
             "voices": {e: [{"id": v.id, "label": v.label} for v in vs] for e, vs in neural.VOICES.items()},
             "labels": {**neural.LABELS, "pyttsx3": "Windows voice (SAPI)", "browser": "Browser voice", "none": "Silent"},
             "neural_available": neural.available(),
@@ -245,6 +290,9 @@ class Speaker:
                 continue
             if item is None:
                 return
+            if item is PREWARM:
+                self._prewarm()
+                continue
             turn, text, queued_at, waited = item
             if self._stale(turn):
                 self._finish_if_idle()
@@ -257,6 +305,7 @@ class Speaker:
                 if self.neural is not None:
                     self._speak_neural(turn, text, queued_at, waited)
                     continue
+                self._started(turn)
                 if engine is not None:
                     try:
                         if isinstance(engine, _SapiVoice):
@@ -281,17 +330,22 @@ class Speaker:
         for sentence in neural.split_sentences(text):
             if self._stale(turn) or self._cancel.is_set():
                 break
-            try:
-                audio = self.neural.synth(sentence)
-            except Exception:
-                log.exception("speech synthesis failed for %r", sentence[:60])
-                continue
+            key = self._voice_key()
+            audio = self.phrases.get(key, sentence)
+            if audio is None:
+                try:
+                    audio = self.neural.synth(sentence)
+                except Exception:
+                    log.exception("speech synthesis failed for %r", sentence[:60])
+                    continue
+                self.phrases.put(key, sentence, audio)  # short ones only: said once, instant the next time
             if self._stale(turn) or self._cancel.is_set():
                 break
             if first and waited:  # someone was waiting for this: that's the latency that matters
                 self.first_audio_ms.append(round((time.perf_counter() - queued_at) * 1000))
             first = False
             self.out.play(audio)
+            self._started(turn)
 
     def _start_level_pump(self) -> None:
         """While a neural voice plays and a HUD is open, sample what's about to play ~20 times a second

@@ -1,8 +1,9 @@
 """Local HTTP + WebSocket API that the dashboard talks to.
 
 Bound to 127.0.0.1. Every /api and /ws call must carry the per-install token
-(injected into the dashboard page) and a localhost Host header, so a random
-website open in your browser can't drive your PC through this port.
+(injected into the dashboard page) and a localhost Host header (and, from a
+browser, a localhost Origin), so a random website open in your browser can't
+drive your PC through this port. docs/SECURITY.md has the whole model.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import secrets
 from contextlib import asynccontextmanager
 from html import escape
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
@@ -23,6 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .phone import PhoneAccess, is_lan, lan_guard, lan_socket_ok
 from .runtime import Runtime
 
 WEB = Path(__file__).parent / "web"
@@ -36,6 +39,18 @@ def token_exempt(method: str, path: str) -> bool:
     return path == "/api/google/callback" or (method == "GET" and bool(SKILL_CALLBACK.match(path)))
 
 
+def origin_ok(origin: str | None) -> bool:
+    """A browser names the page that made a request in ``Origin``: only Vesper's own (localhost) pages may call it.
+    No header (a sign-in redirect, the tray, curl) is fine: the Host check and the token still apply."""
+    if origin is None:
+        return True
+    try:
+        host = urlsplit(origin).hostname or ""
+    except ValueError:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1", "testserver"}
+
+
 def done_page(title: str, line: str, ok: bool) -> HTMLResponse:
     """The page a browser lands on after signing in somewhere."""
     page = (f"<!doctype html><meta charset=utf-8><title>{escape(title)}</title><body style='font:16px system-ui;"
@@ -45,7 +60,8 @@ def done_page(title: str, line: str, ok: bool) -> HTMLResponse:
 
 def hud_version() -> str:
     """Changes whenever any of the HUD's files do, so an open HUD reloads onto an update and never runs cached code."""
-    files = [*sorted(WEB.glob("*.js")), WEB / "styles.css", WEB / "index.html", *sorted((WEB / "skills").glob("*.*"))]
+    files = [*sorted(WEB.glob("*.js")), *sorted(WEB.glob("*.css")), *sorted(WEB.glob("*.html")),
+             *sorted((WEB / "skills").glob("*.*"))]
     return hashlib.sha1(b"".join(f.read_bytes() for f in files)).hexdigest()[:10]
 
 
@@ -86,18 +102,24 @@ class JobIn(BaseModel):
 
 def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     token = load_token(runtime.cfg.data_dir)
+    # The HUD on a phone over home Wi-Fi (off until Setup turns it on): a second listener, PIN, session cookie.
+    phone = PhoneAccess(runtime.cfg, runtime.bus, token)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         runtime.bus.bind_loop(asyncio.get_running_loop())
         if start_background:
             runtime.start()
+            if phone.enabled:
+                await phone.start(_app)
         yield
+        await phone.stop()
         if start_background:
             runtime.stop()
 
     app = FastAPI(title=f"{runtime.cfg['assistant']['name']} HUD", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.token = token
+    app.state.phone = phone
     app.mount("/static", StaticFiles(directory=WEB), name="static")
 
     def host_ok(host: str | None) -> bool:
@@ -105,8 +127,12 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
+        if is_lan(request.scope):  # came in on the phone listener: PIN session + its own token, never this one
+            return await lan_guard(phone, request, call_next)
         if not host_ok(request.headers.get("host")):
             return JSONResponse({"error": "bad host"}, status_code=403)
+        if not origin_ok(request.headers.get("origin")):  # a web page in your browser calling Vesper's port
+            return JSONResponse({"error": "bad origin"}, status_code=403)
         if request.url.path.startswith("/api") and not token_exempt(request.method, request.url.path):
             supplied = request.headers.get("x-assistant-token", "")
             if not hmac.compare_digest(supplied, token):
@@ -120,22 +146,28 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     # ones instead of a copy Chrome cached (an updated Vesper was showing the old Setup → Brain panel).
     version = hud_version()
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index():
-        html = (WEB / "index.html").read_text(encoding="utf-8")
-        html = html.replace('/static/app.js"', f'/static/app.js?v={version}"').replace(
-            '/static/fx.js"', f'/static/fx.js?v={version}"').replace(
-            '/static/styles.css"', f'/static/styles.css?v={version}"')
-        # each loaded skill's HUD script (web/skills/<name>.js), after app.js so it can use its helpers
-        loaded = [sk.name for sk in (runtime.svc.skills or [])]
-        styles = "".join(f'<link rel="stylesheet" href="/static/skills/{n}.css?v={version}">'
-                         for n in loaded if (WEB / "skills" / f"{n}.css").exists())
-        scripts = "".join(f'<script src="/static/skills/{n}.js?v={version}"></script>'
-                          for n in loaded if (WEB / "skills" / f"{n}.js").exists())
-        html = html.replace("</head>", styles + "\n</head>", 1).replace("</body>", scripts + "\n</body>", 1)
-        html = html.replace("{{TOKEN}}", token).replace("{{NAME}}", runtime.cfg["assistant"]["name"]).replace(
-            "{{VERSION}}", version)
+    def page(name: str, request: Request, skills: bool = False) -> HTMLResponse:
+        """A HUD page (index.html, mini.html) with its token, name and versioned scripts. On the phone listener the
+        token is that phone's session token, so the install token never leaves this PC."""
+        html = (WEB / name).read_text(encoding="utf-8")
+        html = re.sub(r'(/static/[\w./-]+\.(?:js|css))"', rf'\1?v={version}"', html)
+        if skills:  # each loaded skill's HUD script (web/skills/<name>.js), after app.js so it can use its helpers
+            loaded = [sk.name for sk in (runtime.svc.skills or [])]
+            styles = "".join(f'<link rel="stylesheet" href="/static/skills/{n}.css?v={version}">'
+                             for n in loaded if (WEB / "skills" / f"{n}.css").exists())
+            scripts = "".join(f'<script src="/static/skills/{n}.js?v={version}"></script>'
+                              for n in loaded if (WEB / "skills" / f"{n}.js").exists())
+            html = html.replace("</head>", styles + "\n</head>", 1).replace("</body>", scripts + "\n</body>", 1)
+        sid = getattr(request.state, "phone_sid", None) if is_lan(request.scope) else None
+        if sid:
+            html = html.replace('<html lang="en">', '<html lang="en" data-remote="phone">', 1)
+        html = html.replace("{{TOKEN}}", phone.csrf(sid) if sid else token).replace(
+            "{{NAME}}", runtime.cfg["assistant"]["name"]).replace("{{VERSION}}", version)
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index(request: Request):
+        return page("index.html", request, skills=True)
 
     @app.get("/api/state")
     async def state():
@@ -426,6 +458,16 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
             await run_in_threadpool(skill.publish)
         return done_page(title, line, ok)
 
+    @app.get("/api/skill/{name}/{page}", response_class=HTMLResponse)
+    async def skill_page(name: str, page: str, request: Request):
+        """A page a skill renders (e.g. the life review card): its ``pages()[page](params) -> html``. Needs the token."""
+        skill = runtime.svc.skills.get(name) if runtime.svc.skills is not None else None
+        fn = (getattr(skill, "pages", dict)() or {}).get(page) if skill is not None else None
+        if fn is None:
+            raise HTTPException(404, f"no page {page} for {name}")
+        params = {**dict(request.query_params), "base": str(request.base_url)}
+        return HTMLResponse(await run_in_threadpool(fn, params))
+
     @app.post("/api/skill/{name}/{action}")
     async def skill_action(name: str, action: str, body: dict | None = None):
         if runtime.svc.skills is None:
@@ -519,7 +561,12 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
         supplied = socket.query_params.get("token", "")
-        if not host_ok(socket.headers.get("host")) or not hmac.compare_digest(supplied, token):
+        if is_lan(socket.scope):
+            allowed = lan_socket_ok(phone, socket)
+        else:
+            allowed = host_ok(socket.headers.get("host")) and origin_ok(socket.headers.get("origin")) \
+                and hmac.compare_digest(supplied, token)
+        if not allowed:
             await socket.close(code=4401)
             return
         await socket.accept()
@@ -533,4 +580,8 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
         finally:
             runtime.bus.unsubscribe(queue)
 
+    # Customisable layout, the mini HUD, the phone's PIN pages and the OBS overlay (assistant/surfaces.py).
+    from .surfaces import register as register_surfaces
+
+    register_surfaces(app, runtime, page=page, phone=phone, host_ok=host_ok)
     return app

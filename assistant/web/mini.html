@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="token" content="{{TOKEN}}">
+  <meta name="hud-version" content="{{VERSION}}">
+  <title>{{NAME}} mini</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23080a0d'/%3E%3Cpath d='M16 3.5 26.8 9.75v12.5L16 28.5 5.2 22.25V9.75z' fill='none' stroke='%2332373e' stroke-width='1.6'/%3E%3Cpath d='M10.5 11.5 16 21l5.5-9.5' fill='none' stroke='%23ff772d' stroke-width='2.4' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%2359e4f3'/%3E%3C/svg%3E">
+  <link rel="preload" href="/static/fonts/jost.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/mini.css">
+  <script>
+    (() => {  /* same theme and motion as the big HUD (Setup → Display) */
+      const root = document.documentElement;
+      const get = k => { try { return localStorage.getItem(k); } catch { return null; } };
+      if (get('hud.theme')) root.dataset.theme = get('hud.theme');
+      root.dataset.motion = get('hud.motion') || (matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduced' : 'full');
+    })();
+  </script>
+</head>
+<body class="mini">
+<div class="backdrop" aria-hidden="true"><div class="bd-aura"></div><div class="bd-hex"></div></div>
+
+<header class="mini-head">
+  <div class="mini-orb" id="mini-orb-wrap" data-state="">
+    <canvas class="orb" id="mini-orb" width="72" height="72" aria-hidden="true"></canvas>
+  </div>
+  <div class="mini-id">
+    <div class="mini-name">{{NAME}} <span class="badge-live" id="mini-onair" hidden title="Live: private lines are blurred (hover to read)">LIVE</span>
+      <span class="badge-live mini-rec" id="mini-rec" hidden title="Recording (the Recorder panel on the Work tab)">REC</span></div>
+    <div class="mini-state" id="mini-state"><span class="dot" aria-hidden="true"></span><span class="lbl">Connecting</span></div>
+  </div>
+  <div class="mini-btns">
+    <button class="icon-btn" id="mini-mic" title="Push to talk (skip the wake word)" aria-label="Push to talk">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg></button>
+    <button class="icon-btn" id="mini-mute" title="Mute the microphone" aria-label="Mute microphone" aria-pressed="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5M2 14 14 2"/></svg></button>
+    <a class="icon-btn" id="mini-full" href="/" target="_blank" rel="noopener" title="Open the full HUD" aria-label="Open the full HUD">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5h4v4M13.5 2.5 8 8M6.5 3.5h-4v10h10v-4"/></svg></a>
+  </div>
+</header>
+
+<section class="mini-said" aria-label="What was said">
+  <div class="mini-line you" data-empty=""><span class="tag">You</span><span class="txt mini-private" id="mini-you">Say “{{NAME}}, …”</span></div>
+  <div class="mini-line ves" data-empty=""><span class="tag">{{NAME}}</span><span class="txt mini-private" id="mini-ves"></span></div>
+</section>
+
+<section class="mini-card mini-next" id="mini-next" aria-label="Next event">
+  <div class="mini-k">Next</div>
+  <div class="mini-next-row"><div class="mini-cd num" id="mini-cd">—</div>
+    <div class="mini-next-txt"><div class="t1 mini-private" id="mini-next-title">Nothing scheduled</div><div class="t2" id="mini-next-when"></div></div></div>
+</section>
+
+<section class="mini-card mini-update" id="mini-update" aria-label="Latest update">
+  <div class="mini-k">Latest <span class="mini-src" id="mini-update-src"></span><span class="mini-ago" id="mini-update-ago"></span></div>
+  <div class="t1 mini-private" id="mini-update-txt">All quiet.</div>
+</section>
+
+<section class="mini-card mini-music" id="mini-music" aria-label="Now playing" hidden>
+  <div class="mini-art" id="mini-art"></div>
+  <div class="mini-music-txt"><div class="mini-k">Now playing</div><div class="t1" id="mini-track"></div><div class="t2" id="mini-artist"></div>
+    <div class="mini-bar"><i id="mini-prog"></i></div></div>
+</section>
+
+<section class="mini-card mini-timers" id="mini-timers" aria-label="Timers" hidden>
+  <div class="mini-k">Timers</div>
+  <div class="mini-timer-list" id="mini-timer-list"></div>
+</section>
+
+<div class="sr-only" id="mini-live" aria-live="polite" aria-atomic="true"></div>
+<script src="/static/fx.js"></script>
+<script src="/static/mini.js"></script>
+</body>
+</html>

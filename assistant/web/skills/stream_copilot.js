@@ -36,6 +36,44 @@
   }
   const stat = (label, value) => h('div', { class: 'sc-stat' }, h('div', { class: 'num sc-v' }, value ?? '—'), h('div', { class: 't3 muted' }, label));
 
+  /* One-tap stream cards ("Switch category to Hades II?", "Clip that?", raid picks): a stack at the top right, on every
+     tab, never spoken. The stream skills share it: Vesper.streamCards.set(skill, cards, render?). A card's Yes is J's yes. */
+  const SRC = { stream_copilot: 'Stream', stream_moments: 'Clip', stream_raid: 'Raid' };
+  const stack = { el: null, by: {} };
+  function cardEl(src, c, custom) {
+    const left = Math.max(0, c.expires - Date.now() / 1000), life = Math.max(1, c.expires - c.ts);
+    const answer = async (a, btn) => {
+      if (btn) btn.disabled = true;
+      const r = await Vesper.act(src, 'card', { id: c.id, answer: a });
+      if (r.ok === false) toast(r.error || 'That didn’t work.', { level: 'warn', source: 'stream' });
+      else if (r.reply) toast(r.reply, { level: 'good', source: 'stream' });
+      if (btn) btn.disabled = false;
+    };
+    const yes = c.yes ? h('button', { class: 'btn small primary', onclick: e => answer('yes', e.currentTarget) }, c.yes) : null;
+    const el = h('div', { class: 'sc-qcard', 'data-kind': c.kind, role: 'group', 'aria-label': c.text },
+      h('div', { class: 'sc-qsrc' }, SRC[src] || 'Stream', h('span', { class: 'spacer' }),
+        h('button', { class: 'sc-qx', title: c.no || 'Not now', 'aria-label': c.no || 'Not now', onclick: () => answer('no') }, '✕')),
+      h('div', { class: 't1 sc-qtext' }, c.text),
+      custom ? custom(c) : null,
+      h('div', { class: 'sc-row' }, yes, h('button', { class: 'btn small ghost', onclick: e => answer('no', e.currentTarget) }, c.no || 'Not now')),
+      h('span', { class: 'sc-qlife', 'aria-hidden': 'true', style: `--left: ${left.toFixed(1)}s; --from: ${(left / life).toFixed(3)}` }));
+    return el;
+  }
+  function paintStack() {
+    if (!stack.el) { stack.el = h('div', { class: 'sc-cards', role: 'region', 'aria-label': 'Stream questions', 'aria-live': 'polite' }); document.body.append(stack.el); }
+    const now = Date.now() / 1000, kids = [];
+    for (const [src, { cards, custom }] of Object.entries(stack.by)) for (const c of cards || []) if (c.expires > now) kids.push(cardEl(src, c, custom));
+    fill(stack.el, kids);
+  }
+  Vesper.streamCards = { set(src, cards, custom) {
+    const ids = (cards || []).map(c => c.id).join();
+    if (stack.by[src] && stack.by[src].ids === ids) return;  // same cards: keep the DOM (and its countdown) as it is
+    stack.by[src] = { cards, custom, ids }; paintStack();
+  } };
+  setInterval(() => { if (!document.hidden && Object.values(stack.by).some(s => (s.cards || []).some(c => c.expires <= Date.now() / 1000))) {
+    for (const s of Object.values(stack.by)) { s.cards = (s.cards || []).filter(c => c.expires > Date.now() / 1000); s.ids = s.cards.map(c => c.id).join(); }
+    paintStack(); } }, 2000);
+
   function questions(d) {
     const qs = d.questions || [];
     return h('section', { class: 'sc-col' }, h('h3', {}, 'Questions in chat', h('span', { class: 'muted' }, qs.length ? ` · ${qs.length}` : '')),
@@ -55,7 +93,7 @@
   function side(d) {
     const out = [];
     if (d.hint) out.push(h('div', { class: 'sc-card sc-hint' }, h('div', { class: 't1' }, `Playing ${d.hint.game}, category is ${d.hint.category}`),
-      h('button', { class: 'btn small primary', onclick: () => act('switch_category', { game: d.hint.game }, r => r.reply || 'Asked Twitch to switch.') }, `Switch to ${d.hint.game}`)));
+      h('button', { class: 'btn small primary', onclick: () => act('switch_category', { game: d.hint.game }, r => r.reply || 'Category switched.') }, `Switch to ${d.hint.game}`)));
     if (d.plan) out.push(h('div', { class: 'sc-card' }, h('div', { class: 't2' }, 'Up next'), h('div', { class: 't1' }, d.plan.event),
       h('div', { class: 't3' }, [d.plan.game, d.plan.title].filter(Boolean).join(' · ') || 'No game in the event title'),
       h('div', { class: 'sc-row' }, h('button', { class: 'btn small', onclick: () => act('prestream', {}, r => (r.spoken || 'Checked.')) }, 'Pre-stream check'),
@@ -79,6 +117,7 @@
   }
 
   function paint(d) {
+    Vesper.streamCards.set('stream_copilot', d?.cards || []);
     for (const p of panels('stream_copilot')) {
       const b = body(p);
       if (!d) { fill(b, empty('Loading…')); continue; }

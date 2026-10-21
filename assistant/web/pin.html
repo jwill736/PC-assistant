@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#0b0d10">
+  <title>{{NAME}} · PIN</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/surfaces.css">
+</head>
+<body class="pin-page">
+<div class="backdrop" aria-hidden="true"><div class="bd-aura"></div><div class="bd-hex"></div></div>
+<main class="pin-card">
+  <svg class="pin-mark" viewBox="0 0 120 120" aria-hidden="true">
+    <circle cx="60" cy="60" r="56"/><path class="hx" d="M60 12 101.6 36v48L60 108 18.4 84V36z"/><path class="v" d="M38 42 60 80l22-38"/>
+  </svg>
+  <h1>{{NAME}}</h1>
+  <p class="pin-lede">Type the 6-digit PIN from <b>Setup → Phone</b> on your PC.</p>
+  <form id="pin-form" autocomplete="off">
+    <label class="sr-only" for="pin">PIN</label>
+    <input id="pin" name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code"
+      placeholder="••••••" aria-describedby="pin-msg" required>
+    <div class="pin-cells" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <button class="btn primary" type="submit">Unlock</button>
+  </form>
+  <p class="pin-msg" id="pin-msg" role="status" aria-live="polite"></p>
+  <p class="pin-foot">This phone stays signed in for 30 days. Five wrong PINs lock it out for 15 minutes.</p>
+</main>
+<script>
+  (() => {
+    const input = document.getElementById('pin'), msg = document.getElementById('pin-msg');
+    const cells = [...document.querySelectorAll('.pin-cells i')];
+    const paint = () => cells.forEach((c, i) => c.classList.toggle('on', i < input.value.length));
+    input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 6); paint(); msg.textContent = ''; });
+    document.getElementById('pin-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      if (input.value.length !== 6) { msg.textContent = 'Six digits.'; return; }
+      msg.textContent = 'Checking…';
+      try {
+        const r = await fetch('/pin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: input.value }) });
+        const body = await r.json().catch(() => ({}));
+        if (r.ok && body.ok) { msg.textContent = 'Unlocked.'; location.replace('/'); return; }
+        msg.textContent = body.error || 'That didn’t work.';
+        document.body.classList.remove('shake'); void document.body.offsetWidth; document.body.classList.add('shake');
+      } catch { msg.textContent = 'Can’t reach the PC. Same Wi-Fi?'; }
+      input.value = ''; paint(); input.focus();
+    });
+    input.focus();
+  })();
+</script>
+</body>
+</html>

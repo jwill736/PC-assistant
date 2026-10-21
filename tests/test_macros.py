@@ -75,8 +75,8 @@ def test_command_steps_run_like_speech(svc):
 def test_risky_macro_asks_once_then_runs(svc, monkeypatch):
     calls = obs_spy(svc, monkeypatch)
     waits = []
-    monkeypatch.setattr("assistant.brain.assistant.time.sleep", waits.append)
     a = with_macros(svc)
+    a.wait = waits.append  # only this macro's waits: other threads' time.sleep must not land here
     out = a.handle("wrap it up")
     assert out["kind"] == "pending" and "end the stream" in out["reply"]
     assert calls == []

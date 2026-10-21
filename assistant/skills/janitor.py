@@ -29,7 +29,7 @@ import psutil
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check
 
 IS_WINDOWS = sys.platform == "win32"
 MB, GB = 1 << 20, 1 << 30
@@ -287,6 +287,7 @@ def gb(n: float | None) -> str:
 class Janitor(Skill):
     name, title = "janitor", "PC Health"
     poll_s = 60
+    game_essential = True  # the GPU heat/power watch matters most in a game
     delay_s = 20
 
     def __init__(self, svc, runner=run_smi, list_drives=drives, read_cpu=cpu_temp, recycle=recycle_bin_bytes,
@@ -485,6 +486,13 @@ class Janitor(Skill):
         return f"move {p.get('count', 0)} files in Downloads into {_folders(p.get('by_folder') or {})} (nothing is deleted)"
 
     # ---- skill surface ------------------------------------------------------------------------------------
+    def selftest(self) -> list[dict]:
+        out = self.runner(["--query-gpu=name,driver_version", "--format=csv,noheader"])
+        if not out:
+            return [check("nvidia-smi", "warn", "didn't answer: no GPU temperature or throttling alerts",
+                          "Install or update the NVIDIA driver")]
+        return [check("nvidia-smi", "pass", out.strip().splitlines()[0])]
+
     def status(self) -> dict:
         s = self.sample or {}
         rep = max(self.reports.values(), key=lambda r: r["at"], default=None)

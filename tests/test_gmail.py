@@ -120,7 +120,7 @@ def test_accounts_connected_before_gmail_need_reconnect(tmp_path, fake):
     assert gm.accounts() == [] and gm.missing() == [WORK]
     st = gm.needs_you()
     assert st["ok"] is False and "Reconnect" in st["error"] and "tick Gmail" in st["error"]
-    assert acc.accounts()[0]["missing"] == ["Gmail"]
+    assert acc.accounts()[0]["missing"] == ["Gmail", "Gmail drafts", "Google Tasks", "Calendar events"]
 
 
 def test_html_mail_becomes_text():

@@ -46,6 +46,7 @@ def names(people: list[dict], n: int = 3) -> str:
 class Meetings(Skill):
     name, title = "meetings", "Meetings"
     poll_s = 60
+    game_poll_s = 120  # still in time for the 10-minute heads-up
     delay_s = 45
 
     def __init__(self, svc, clock=time.time):
@@ -168,7 +169,8 @@ class Meetings(Skill):
                 self.nudge(self.line(self.prep(e, fresh=True)), priority="urgent", key=f"meetings:prep:{e['key']}",
                            expires_in=max(60.0, mins * 60))
             after = (now - end).total_seconds() / 60
-            if 0 <= after <= 30 and self._once(f"followup:{e['key']}"):
+            debrief = self.svc.skills is not None and self.svc.skills.get("debrief") is not None  # asks its own question
+            if 0 <= after <= 30 and not debrief and self._once(f"followup:{e['key']}"):
                 self.nudge(f"Any follow-ups from {e['title']}? Say “note: …”.", priority="normal",
                            key=f"meetings:followup:{e['key']}", expires_in=3600)
         self._next = self.prep(nxt) if nxt else None

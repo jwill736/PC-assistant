@@ -184,7 +184,7 @@ def test_announcing_by_voice_waits_for_a_yes(dc, fake, svc):
     svc.skills = sk
     a = Assistant(svc)
     r = a.handle("announce stream at 8 tonight")
-    assert r["kind"] == "pending" and "post to Discord: “Stream at 8 tonight”" in r["reply"] and not fake.posts
+    assert r["kind"] == "pending" and r["reply"] == "Post to Discord: “Stream at 8 tonight”? Say yes or no." and not fake.posts
     assert a.handle("yes")["reply"] == "Posted to Discord."
     assert fake.posts[-1]["content"] == "Stream at 8 tonight"
 

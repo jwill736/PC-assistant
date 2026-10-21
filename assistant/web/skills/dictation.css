@@ -1,0 +1,25 @@
+/* Dictation skill */
+.dict-chip { position: fixed; left: 50%; bottom: 24px; z-index: 60; display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-radius: 999px; border: 1px solid oklch(from var(--ion) l c h / 0.45); background: var(--panel-2);
+  color: var(--ink); font-size: 13px; box-shadow: var(--shadow), 0 0 24px -10px var(--ion-glow); pointer-events: none;
+  opacity: 0; transform: translate(-50%, 12px); transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-base) var(--ease-out); }
+.dict-chip.on { opacity: 1; transform: translate(-50%, 0); }
+.dict-chip kbd { font-size: 10px; padding: 2px 4px; }
+.dict-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ion); flex: none; }
+.dict-chip[data-state="transcribing"], .dict-chip[data-state="typing"] { border-color: oklch(from var(--iris) l c h / 0.45); box-shadow: var(--shadow), 0 0 24px -10px var(--iris-glow); }
+.dict-chip[data-state="transcribing"] .dict-dot, .dict-chip[data-state="typing"] .dict-dot { background: var(--iris); }
+:root[data-motion="full"] .dict-chip[data-state="recording"] .dict-dot,
+:root[data-motion="full"] .dict-chip[data-state="awaiting"] .dict-dot { animation: dict-pulse .9s var(--ease-in-out) infinite alternate; }
+:root[data-motion="full"] .dict-chip[data-state="transcribing"] .dict-dot { animation: dict-pulse .45s linear infinite alternate; }
+@keyframes dict-pulse { from { opacity: .35; transform: scale(.7); } to { opacity: 1; transform: scale(1.1); } }
+.dict-how { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin-bottom: 10px; }
+.dict-how kbd + kbd { margin-left: 3px; }
+.dict-note { margin-bottom: 8px; }
+.dict-item { align-items: flex-start; gap: 10px; }
+.dict-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; display: -webkit-box;
+  -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.dict-latest .dict-text { -webkit-line-clamp: 6; color: var(--ink); }
+.dict-ai { color: var(--iris); }
+.dict-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+@media (prefers-reduced-motion: reduce) { .dict-chip { transition: none; } }
+@media (max-width: 600px) { .dict-chip { bottom: 12px; max-width: calc(100vw - 32px); } }

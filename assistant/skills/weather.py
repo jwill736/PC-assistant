@@ -14,7 +14,7 @@ import httpx
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 
 FORECAST = "https://api.open-meteo.com/v1/forecast"
 GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
@@ -32,6 +32,24 @@ CODES = {0: ("clear", "sun"), 1: ("mostly clear", "sun"), 2: ("partly cloudy", "
          95: ("thunderstorms", "storm"), 96: ("thunderstorms with hail", "storm"), 99: ("severe thunderstorms", "storm")}
 
 
+NOT_PLACES = re.compile(r"(?:the |this |that |next |my )?(?:today|tonight|tomorrow|morning|afternoon|evening|night|weekend|week|"
+                        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|here|my area|my city|my town|now|"
+                        r"the next (?:few |\w+ )?(?:hours?|days?))(?: .*)?|(?:an? )?(?:hour|minute|day)s?(?: .*)?|\d.*")
+
+
+def asked_place(t: str) -> str | None:
+    """'Denver' from "what's the weather in denver" / "is it raining in new york"; None for "the weather tomorrow"."""
+    m = re.fullmatch(r"(?:what'?s|what is|how'?s|how is|tell me|give me|get|check)? ?(?:the |)?(?:weather|forecast|temperature)"
+                     r"(?: like| going to be(?: like)?| looking)? (?:in|for|at|over) (.+?)(?: (?:today|tomorrow|this week|right now|now))?|"
+                     r"(?:is it|will it be|will it) (?:raining|snowing|cold|hot|warm|sunny|rain|snow) in (.+?)"
+                     r"(?: (?:today|tomorrow|this week|right now|now))?", t)
+    place = (m.group(1) or m.group(2)).strip() if m else None
+    if place and re.search(r"\b(?:room|house|home|office|bedroom|garage|basement|gpu|cpu|graphics|card|pc|computer|rig|"
+                           r"case|drive|disk|ssd)\b", place):
+        return None  # a sensor or the PC, not a town
+    return None if not place or NOT_PLACES.fullmatch(place) else place
+
+
 def describe(code) -> tuple[str, str]:
     return CODES.get(int(code or 0), ("unknown", "cloud"))
 
@@ -39,10 +57,11 @@ def describe(code) -> tuple[str, str]:
 class Weather(Skill):
     name, title = "weather", "Weather"
     poll_s = 900
+    game_poll_s = 3600
 
     def __init__(self, svc, http: httpx.Client | None = None):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=15, headers={"User-Agent": "Vesper/1.0"})
+        self.http = http or lazy_client(timeout=15, headers={"User-Agent": "Vesper/1.0"})
         self._data: dict | None = None
         self._at = 0.0
         self.error: str | None = None
@@ -124,6 +143,19 @@ class Weather(Skill):
         self._at, self.error = time.time(), None
         return self._data
 
+    def selftest(self) -> list[dict]:
+        p = self.setting("place")
+        if not (isinstance(p, dict) and "lat" in p):
+            return [check("Forecast", "warn", "no location yet", "Say “Vesper, set my location to <your city>”")]
+        try:
+            r = self.http.get(FORECAST, params={"latitude": p["lat"], "longitude": p["lon"], "current": "temperature_2m"},
+                              timeout=8)
+            ok = r.status_code == 200 and "current" in r.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            return [check("Forecast", "warn", f"the weather service didn't answer ({type(exc).__name__})")]
+        return [check("Forecast", "pass" if ok else "warn", f"works for {p.get('name') or 'your place'}" if ok else
+                      f"the weather service said {r.status_code}")]
+
     def status(self) -> dict:
         data = self.forecast()
         return data if data.get("ok") else {"ok": False, "error": data.get("error")}
@@ -158,9 +190,23 @@ class Weather(Skill):
         return {**d, "asked": day or "today", "pick": pick_day(d, day)}
 
     def route(self, t: str):
-        m = re.search(r"^(?:set|change|update) my (?:location|city|town) to (.+)$|^i (?:live|am|'m) (?:in|at) (.+)$", t)
+        # "i am in a meeting" / "i'm at the gym" are not a new home town: only "i live in …" and "based in …" are.
+        m = re.search(r"^(?:set|change|update) my (?:location|city|town) to (.+)$|^i live in (.+)$"
+                      r"|^i(?:'m| am) (?:based|located|living) in (.+)$", t)
         if m:
-            return Intent("tool", "set_location", {"name": m.group(1) or m.group(2)})
+            return Intent("tool", "set_location", {"name": next(g for g in m.groups() if g)})
+        # The weather words appear inside other skills' commands ("every day at 8 give me the weather" is a routine,
+        # "remind me to check the weather" a reminder, "what's my gpu temperature" the PC): those aren't ours.
+        if re.match(r"(?:every|each|remind|after|when|search|google|youtube|play|journal|dear diary|remember|note|add)\b", t) \
+                or re.search(r"\b(?:gpu|cpu|graphics|card|pc|computer|rig|room|house|drive|disk|ssd)\b", t):
+            return None
+        if asked_place(t):
+            return None  # "the weather in Denver": travel.py's weather_in answers
+        # get_weather only knows J's own town: any other "the weather in London" goes elsewhere too (model, web search).
+        if re.search(r"\b(?:weather|forecast|temperature)\b(?: like)? (?:in|for|at) (?!(?:the |this |next )?(?:morning|"
+                     r"afternoon|evening|night|weekend|week)\b|today|tomorrow|tonight|my |here|home|(?:mon|tues|wednes|"
+                     r"thurs|fri|satur|sun)day)\w", t):
+            return None
         if re.search(r"\b(?:weather|forecast|temperature)\b|\bwill it (?:rain|snow|storm)\b|\bis it (?:going to )?(?:rain|snow)"
                      r"|\bdo i need (?:an? )?(?:umbrella|jacket|coat|sunscreen)\b|^how (?:hot|cold|warm) is it", t) \
                 and not re.search(r"\b(?:stream|twitch|obs|document|email)\b", t):

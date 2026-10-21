@@ -27,7 +27,7 @@ from datetime import datetime
 import httpx
 
 from ..brain.tools import Tool, obj
-from . import Skill
+from . import Skill, check, lazy_client
 
 log = logging.getLogger(__name__)
 
@@ -51,11 +51,12 @@ def new_code() -> str:
 class Phone(Skill):
     name, title = "phone", "Phone"
     poll_s = 20
+    game_poll_s = 60  # you're at the PC: nothing waits to be pushed
     delay_s = 20
 
     def __init__(self, svc, http: httpx.Client | None = None, idle=None, clock=time.time):
         super().__init__(svc)
-        self.http = http or httpx.Client(timeout=40, headers={"User-Agent": "Vesper/1.0"})
+        self.http = http or lazy_client(timeout=40, headers={"User-Agent": "Vesper/1.0"})
         self.clock = clock
         if idle is None:
             from ..integrations import desktop
@@ -72,7 +73,7 @@ class Phone(Skill):
         self.error = ""
         self.last_poll = self.last_message = 0.0
         self._pushed: dict[str, float] = {}
-        self._bad, self._locked_until = 0, 0.0
+        self._bad, self._locked_until = int(self.state.get("bad") or 0), float(self.state.get("locked_until") or 0)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.ntfy_suggest = "vesper-" + secrets.token_urlsafe(12).replace("_", "x").replace("-", "y").lower()
@@ -211,7 +212,7 @@ class Phone(Skill):
         m = re.fullmatch(r"/start(?:@\w+)?\s+(\S+)", text)
         if m and hmac.compare_digest(m.group(1).encode(), str(self.state["code"]).encode()):
             who = " ".join(x for x in (chat.get("first_name"), chat.get("last_name")) if x) or chat.get("username") or "your phone"
-            self.state.update(chat_id=cid, chat_name=who, paired_at=self.clock(), code=None)
+            self.state.update(chat_id=cid, chat_name=who, paired_at=self.clock(), code=None, bad=0, lockouts=0)
             self._save()
             self._bad = 0
             self.send(f"Paired with Vesper. Send me anything you'd say to it.\n\n{HELP}")
@@ -219,11 +220,19 @@ class Phone(Skill):
             self.publish()
             return
         self._bad += 1
-        if self._bad >= 5:  # someone guessing: new code, and no more tries for 10 minutes
-            self.state["code"], self._bad, self._locked_until = new_code(), 0, self.clock() + 600
+        self.state["bad"] = self._bad  # kept across restarts: a restart is no fresh set of guesses
+        if self._bad >= 5:
+            # Someone guessing: a new code, and no tries at all for 10 minutes, doubling each time (at most a day), so
+            # a million codes at 5 guesses a lockout stays out of reach. The lockout survives a restart too.
+            strikes = int(self.state.get("lockouts") or 0) + 1
+            self._bad, self._locked_until = 0, self.clock() + min(600 * 2 ** (strikes - 1), 86400)
+            self.state.update(code=new_code(), bad=0, lockouts=strikes, locked_until=self._locked_until)
             self._save()
+            self.notify("Someone sent your Telegram bot wrong pairing codes. Pairing is locked for a while and the "
+                        "code changed.", level="warning", key="phone:guessing")
             self.publish()
             return
+        self._save()
         self.send("That code doesn't match. Check Vesper's HUD (Setup → Phone)." if m else
                   "Send /start followed by the 6-digit code on Vesper's HUD (Setup → Phone).", chat_id=cid)
 
@@ -267,7 +276,9 @@ class Phone(Skill):
         if not waiting:
             self.send(reply)
             return
-        reply = re.sub(r"\s*Say yes or cancel\.?\s*$", "", reply).strip()
+        reply = re.sub(r"\s*Say yes or (?:cancel|no)\.?\s*$", "", reply).strip()
+        if reply.rstrip("?").lower() == str(waiting["text"]).lower():  # the spoken question: "Launch the rocket?"
+            reply = ""
         if "confirm" not in reply.lower():
             reply = f"{reply}\n\nConfirm: {waiting['text']}?".strip()
         self.send(f"{reply} Reply yes or no.", buttons=[("Yes", "yes"), ("No", "no")])
@@ -395,6 +406,18 @@ class Phone(Skill):
             return {"ok": False, "error": "Pair your phone or set an ntfy topic first."}
         return self.push("Test from your PC. Replies work too: try /status.")
 
+    def selftest(self) -> list[dict]:
+        if not self.token():
+            return [check("Telegram", "skip", "not set up", "Optional: Setup → Phone")]
+        try:
+            me = self.api("getMe", timeout=8) or {}
+        except PhoneError as exc:
+            return [check("Telegram", "fail", f"the bot token doesn't work: {exc}", "Setup → Phone → Change token")]
+        paired = bool(self.chat_id)
+        return [check("Telegram", "pass" if paired else "warn",
+                      f"bot @{me.get('username')} answers" + ("; phone paired" if paired else "; no phone paired yet"),
+                      "" if paired else "Setup → Phone: send the bot /start with the code shown")]
+
     def status(self) -> dict:
         topic = self.svc.cfg.secret(NTFY_ENV)
         return {"token": bool(self.token()), "bot": self.bot, "paired": bool(self.chat_id),
@@ -430,6 +453,7 @@ class Phone(Skill):
 
     def start(self, runtime) -> None:
         self.run_command = lambda text: runtime.command(text, source="phone")
+        self._stop.clear()  # turned back on in Setup → Skills after a stop()
         self.pending = runtime.assistant.pending_view
         self._thread = threading.Thread(target=self._loop, name="phone", daemon=True)
         self._thread.start()

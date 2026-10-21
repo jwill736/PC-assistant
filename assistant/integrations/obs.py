@@ -224,6 +224,39 @@ class OBSController:
         return scene, [{"id": i.get("sceneItemId"), "name": i.get("sourceName"), "enabled": bool(i.get("sceneItemEnabled"))}
                        for i in items]
 
+    SCREEN_KINDS = ("monitor_capture", "display_capture", "window_capture", "screen_capture", "xshm_input",
+                    "pipewire-desktop-capture-source", "pipewire-screen-capture-source", "pipewire-window-capture-source")
+
+    def screen_captures(self) -> list[dict]:
+        """Display and window captures that show in the program scene (nested scenes and groups too), for "is my
+        screen on the stream": [{name, kind, display: bool, window: "Title:Class:app.exe" or ""}]."""
+        out: list[dict] = []
+        seen: set = set()
+
+        def walk(scene: str, group: bool = False, depth: int = 0) -> None:
+            if depth > 3 or (scene, group) in seen:
+                return
+            seen.add((scene, group))
+            items = self._send("GetGroupSceneItemList" if group else "GetSceneItemList", {"sceneName": scene}).get("sceneItems", [])
+            for i in items:
+                if not i.get("sceneItemEnabled"):
+                    continue
+                name, kind = i.get("sourceName") or "", i.get("inputKind") or ""
+                if i.get("isGroup") or i.get("sourceType") == "OBS_SOURCE_TYPE_SCENE":
+                    walk(name, bool(i.get("isGroup")), depth + 1)
+                elif any(kind.startswith(k) for k in self.SCREEN_KINDS):
+                    window = ""
+                    if "window" in kind:
+                        try:
+                            window = str((self._send("GetInputSettings", {"inputName": name}).get("inputSettings") or {})
+                                         .get("window") or "")
+                        except Exception:
+                            pass
+                    out.append({"name": name, "kind": kind, "display": "window" not in kind, "window": window})
+
+        walk(self._send("GetCurrentProgramScene").get("currentProgramSceneName"))
+        return out
+
     SOURCE_WORDS = {"cam": ("cam", "webcam", "camera", "facecam", "video capture"), "chat": ("chat",),
                     "alerts": ("alert",), "overlay": ("overlay",)}
 

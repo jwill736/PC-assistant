@@ -16,12 +16,15 @@
   };
 
   function owedItem(x) {
-    return h('a', { class: 'item mail iz-item', href: x.link, target: '_blank', rel: 'noopener' },
+    // Other skills add buttons to an owed reply (skills/drafts.js: "Draft reply") through Vesper.hooks.owedItem.
+    const extra = (Vesper.hooks?.owedItem || []).map(fn => fn(x)).filter(Boolean);
+    const item = h('a', { class: 'item mail iz-item', href: x.link, target: '_blank', rel: 'noopener' },
       h('div', { class: 'main' },
         h('div', { class: 't1' }, x.important ? h('span', { class: 'mail-flag', title: 'Gmail marked it important' }, '◆ ') : null, x.name, ' ', acct(x.account)),
         h('div', { class: 't2' }, x.subject),
         x.snippet ? h('div', { class: 't3 muted' }, x.snippet) : null),
       h('span', { class: 'muted mail-age', title: 'waiting on you' }, age(x.ts)));
+    return extra.length ? h('div', { class: 'iz-row' }, item, h('div', { class: 'iz-btns' }, extra)) : item;
   }
   function waitingItem(x) {
     return h('a', { class: 'item mail iz-item', href: x.link, target: '_blank', rel: 'noopener' },
@@ -31,6 +34,7 @@
       h('span', { class: 'iz-days', title: 'since you wrote' }, `${x.days}d`));
   }
   function promiseItem(p) {
+    if (p.confirm) return keptItem(p);
     const row = h('div', { class: 'item iz-item' },
       h('div', { class: 'main' },
         h('div', { class: 't1' }, p.task, ' ', due(p.due)),
@@ -40,6 +44,27 @@
         h('button', { class: 'btn small', onclick: () => decide(row, 'add_task', p.id, 'Added to your tasks.') }, 'Add as task'),
         h('button', { class: 'btn small ghost', 'aria-label': 'Dismiss', onclick: () => decide(row, 'dismiss', p.id) }, 'Dismiss')));
     return row;
+  }
+  /* J's later email looks like he kept the promise: ask, never tick it off alone. */
+  function keptItem(p) {
+    const row = h('div', { class: 'item iz-item iz-kept' },
+      h('div', { class: 'main' },
+        h('div', { class: 'iz-kept-tag' }, 'looks done'),
+        h('div', { class: 't1' }, p.question || p.task),
+        h('div', { class: 't2' }, `to ${p.person || 'someone'} · `, h('a', { href: p.link, target: '_blank', rel: 'noopener', class: 'iz-link' }, p.subject),
+          p.state === 'added' ? ' · on your tasks' : ''),
+        p.confirm_quote ? h('div', { class: 't3 muted iz-quote' }, `You wrote: “${p.confirm_quote}”`) : null),
+      h('div', { class: 'iz-btns' },
+        h('button', { class: 'btn small iz-yes', 'aria-label': 'Yes, it is done', onclick: () => decide(row, 'kept_yes', p.id, p.state === 'added' ? 'Done, and ticked off your tasks.' : 'Marked done.') }, '✓ Done'),
+        h('button', { class: 'btn small ghost', 'aria-label': 'Not yet', onclick: () => decide(row, 'kept_no', p.id, 'Okay, still open.') }, '✕ Not yet')));
+    return row;
+  }
+  function closedList(d, kind) {
+    const items = (d.closed || []).filter(c => c.kind === kind);
+    if (!items.length) return null;
+    return h('div', { class: 'iz-closed' }, h('div', { class: 'sub-h' }, 'Closed by themselves'),
+      items.slice(0, 4).map(c => h('div', { class: 'iz-closed-row t3' }, h('span', { class: 'iz-tick', 'aria-hidden': 'true' }, '✓'),
+        h('span', {}, c.text), h('span', { class: 'muted' }, ` · ${ago(c.ts)}`))));
   }
   async function decide(row, action, id, ok) {
     row.classList.add('iz-leaving');
@@ -65,6 +90,7 @@
       const make = { owed: owedItem, waiting: waitingItem, promises: promiseItem }[tab];
       fill(b, seg,
         items.length ? h('div', { class: 'list iz-list' }, items.slice(0, 12).map(make)) : empty(d.loading ? 'Reading your mail…' : none),
+        tab === 'promises' ? null : closedList(d, tab === 'waiting' ? 'replied' : 'answered'),
         (d.missing || []).length ? h('div', { class: 't3 muted', style: { marginTop: '8px' } },
           `Gmail isn't allowed yet for ${d.missing.join(', ')}: Setup → Google accounts → Reconnect, and tick Gmail.`) : null);
     }

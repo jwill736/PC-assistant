@@ -207,24 +207,148 @@ def test_regulars_are_greeted(env, svc):
     assert cop.actions()["greeted"]({"user": "Ana"})["ok"] and cop.greet == []
 
 
-def test_category_hint_and_switch(env, svc):
+class Runtime:
+    """What the skills take at start(): the ToolBox (a real one, so tiers and the audit log apply) and runtime.command."""
+
+    def __init__(self, svc):
+        from assistant.brain.policy import AuditLog
+        from assistant.brain.tools import ToolBox
+
+        self.audit = AuditLog(None)
+        self.assistant = type("A", (), {})()
+        self.assistant.tools = ToolBox(svc, audit=self.audit)
+        self.ran = []
+
+    def command(self, text, source=""):
+        self.ran.append((text, source))
+        return {"reply": "ok"}
+
+
+def test_category_card_after_a_minute_and_yes_switches(env, svc):
     cop, clock, state, nudges = env
-    ran = []
-    cop.start(type("RT", (), {"command": lambda self, text, source="": ran.append((text, source)) or {"reply": "Sure?"}})())
-    svc.bus.publish("activity_now", {"app": "VALORANT-Win64-Shipping.exe", "title": "VALORANT"})
+    rt = Runtime(svc)
+    cop.start(rt)
+    changed, tools_seen, notices = [], [], []
+    svc.twitch.set_channel = lambda title=None, category=None: changed.append((title, category)) or {"ok": True, "category": "Hades II"}
+    svc.bus.on(lambda ev: (tools_seen if ev["type"] == "tool" else notices if ev["type"] == "notice" else []).append(ev["data"]))
+    game = {"app": "Hades2.exe", "title": "Hades II"}
+    cop.fullscreen = lambda: "game"
+    svc.bus.publish("activity_now", game, sticky=True)
     assert cop.hint is None  # not live
     state["live"] = True
     twitch(svc, game="Just Chatting")
-    svc.bus.publish("activity_now", {"app": "VALORANT-Win64-Shipping.exe", "title": "VALORANT"})
-    assert cop.hint["game"] == "VALORANT" and cop.hint["category"] == "Just Chatting"
-    text, kw = nudges[-1]
-    assert text == "You're playing VALORANT but the category is Just Chatting. Switch?" and kw["priority"] == "low"
-    assert kw["action"]["command"] == "set category to VALORANT"
-    out = cop.actions()["switch_category"]({"game": "VALORANT"})
-    assert out == {"ok": True, "game": "VALORANT", "reply": "Sure?"} and ran == [("set category to VALORANT", "hud")]
-    twitch(svc, game="VALORANT")
-    svc.bus.publish("activity_now", {"app": "obs64.exe", "title": "OBS"})
-    assert cop.hint is None and len(nudges) == 1
+    cop.tick()
+    assert cop.hint["game"] == "Hades II" and cop.status()["cards"] == []  # not a minute yet
+    clock.t += 30
+    cop.tick()
+    assert cop.cards.live() == []
+    clock.t += 31
+    cop.tick()  # still playing it a minute later (no new activity event: the tick re-checks)
+    [card] = cop.status()["cards"]
+    assert card["kind"] == "category" and card["text"] == "Switch category to Hades II?" and card["data"]["from"] == "Just Chatting"
+    assert notices[-1]["level"] == "urgent" and "Hades II" in notices[-1]["text"] and nudges == []  # HUD only, never spoken
+    cop.tick()
+    assert len(cop.status()["cards"]) == 1 and len(notices) == 1  # asked once
+    out = cop.actions()["card"]({"id": card["id"], "answer": "yes"})
+    assert out["ok"] and out["reply"] == "Category is now Hades II." and changed == [(None, "Hades II")]
+    entry = rt.audit.recent[-1]  # J's tap on the card is the yes the tier-2 change needs
+    assert entry["tool"] == "twitch_set_channel" and entry["confirmed_by"] == "hud" and entry["source"] == "hud"
+    assert entry["outcome"] == "ok" and tools_seen[-1]["name"] == "twitch_set_channel"
+    assert cop.status()["cards"] == [] and cop.hint is None
+    cop.tick()  # the Twitch poll hasn't caught up yet: no second card
+    assert cop.status()["cards"] == []
+    assert cop.actions()["card"]({"id": card["id"], "answer": "yes"})["ok"] is False  # answered already
+
+
+def test_category_card_not_now_and_other_games(env, svc):
+    cop, clock, state, nudges = env
+    cop.start(Runtime(svc))
+    state["live"] = True
+    twitch(svc, game="Just Chatting")
+    svc.bus.publish("activity_now", {"app": "VALORANT-Win64-Shipping.exe", "title": "VALORANT"}, sticky=True)
+    cop.tick()
+    clock.t += 61
+    cop.tick()
+    [card] = cop.cards.live()
+    assert cop.actions()["card"]({"id": card["id"], "answer": "no"}) == {"ok": True, "answer": "no"}
+    clock.t += 300
+    cop.tick()
+    assert cop.cards.live() == []  # J said not now to VALORANT: not again this stream
+    svc.bus.publish("activity_now", {"app": "cs2.exe", "title": "Counter-Strike 2"}, sticky=True)
+    clock.t += 30
+    cop.tick()
+    assert cop.cards.live() == [] and cop.hint["game"] == "Counter-Strike"  # a new game restarts the minute
+    clock.t += 31
+    cop.tick()
+    assert [c["data"]["game"] for c in cop.cards.live()] == ["Counter-Strike"]
+    twitch(svc, game="Counter-Strike 2")  # switched by hand on Twitch
+    cop.tick()
+    assert cop.cards.live() == [] and cop.hint is None
+    svc.bus.publish("activity_now", {"app": "obs64.exe", "title": "OBS"}, sticky=True)
+    cop.tick()
+    assert cop.cards.live() == []
+
+
+def test_switch_category_without_the_runtime_and_on_failure(env, svc):
+    cop, clock, state, nudges = env
+    assert cop.switch_category("Hades II")["error"] == "Vesper is still starting up."
+    assert cop.switch_category()["error"] == "Which game?"
+    cop.start(Runtime(svc))
+    svc.twitch.set_channel = lambda title=None, category=None: {"ok": False, "error": "No Twitch category matches Hdes."}
+    out = cop.actions()["switch_category"]({"game": "Hdes"})
+    assert out["ok"] is False and out["error"] == "No Twitch category matches Hdes."
+
+
+def test_title_card_from_the_calendar_at_go_live(env, svc):
+    cop, clock, state, nudges = env
+    rt = Runtime(svc)
+    cop.start(rt)
+    changed = []
+    svc.twitch.set_channel = lambda title=None, category=None: changed.append((title, category)) or {"ok": True, "title": title}
+    now = datetime.fromtimestamp(clock.t, svc.tz)
+    ev = {"title": "Stream: Ranked grind + Q&A", "start": (now + timedelta(minutes=5)).isoformat(),
+          "end": (now + timedelta(hours=3)).isoformat(), "all_day": False, "profile": "stream"}
+    svc.calendars.agenda = lambda days, start=None: [ev]
+    state["live"] = True
+    twitch(svc, title="old title", game="VALORANT")
+    cop.tick()
+    [card] = cop.status()["cards"]
+    assert card["kind"] == "title" and card["text"] == "Use title “Ranked grind + Q&A”?"
+    out = cop.actions()["card"]({"id": card["id"], "answer": "yes"})
+    assert out == {"ok": True, "error": None, "reply": "Title updated."} and changed == [("Ranked grind + Q&A", None)]
+    assert rt.audit.recent[-1]["confirmed_by"] == "hud"
+    clock.t += 120
+    cop.tick()
+    assert cop.cards.live() == []  # once per stream
+
+
+@pytest.mark.parametrize("event,category,title", [
+    ("Stream: Elden Ring | Boss rush", "Elden Ring", "Boss rush"),
+    ("Stream: Ranked grind + Q&A", "VALORANT", "Ranked grind + Q&A"),
+    ("Stream: Elden Ring", "Just Chatting", ""),  # just a game's name
+    ("Stream: Hades II", "Hades II", ""),
+    ("Streaming", "", ""),
+])
+def test_plan_title(event, category, title):
+    assert sc.plan_title(event, category) == title
+
+
+def test_no_title_card_when_it_already_matches_or_no_event(env, svc):
+    cop, clock, state, nudges = env
+    now = datetime.fromtimestamp(clock.t, svc.tz)
+    ev = {"title": "Stream: VALORANT | Ranked grind", "start": (now - timedelta(minutes=10)).isoformat(),
+          "end": (now + timedelta(hours=2)).isoformat(), "all_day": False, "profile": "stream"}
+    other = {"title": "Dentist", "start": now.isoformat(), "end": (now + timedelta(hours=1)).isoformat(), "all_day": False,
+             "profile": "personal"}
+    svc.calendars.agenda = lambda days, start=None: [other]
+    state["live"] = True
+    twitch(svc, title="Ranked grind", game="VALORANT")
+    cop.tick()
+    assert cop.cards.live() == []
+    svc.calendars.agenda = lambda days, start=None: [other, ev]
+    clock.t += 61
+    cop.tick()
+    assert cop.cards.live() == []  # the title is already that
 
 
 def test_go_live_prep_from_the_calendar(env, svc):

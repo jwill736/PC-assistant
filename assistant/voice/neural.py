@@ -264,6 +264,14 @@ class AudioOut:
             self._stream = self._open()
             self._stream.start()
 
+    def warm(self) -> None:
+        """Open the device ahead of a reply (opening costs 50-100 ms) and keep it open for another ``idle_close_s``."""
+        with self._lock:
+            self._last_active = time.monotonic()
+        if self._stream is None:
+            self._stream = self._open()
+            self._stream.start()
+
     def abort(self) -> None:
         import numpy as np
 

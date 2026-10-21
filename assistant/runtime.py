@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -27,6 +28,8 @@ from .services import Services, build_services
 from .voice.hotkey import register_hotkey
 from .voice import calibrate as calib
 from .voice import neural
+from .voice.confirm_window import ConfirmWindow
+from .voice.latency import Prewarm, TurnLatency
 from .voice.listener import VoiceListener
 from .voice.speaker_id import SpeakerVerifier, delete_profile
 from .voice.tts import Speaker
@@ -37,16 +40,28 @@ log = logging.getLogger(__name__)
 
 class Runtime:
     def __init__(self, cfg: Config, services: Services | None = None, assistant: Assistant | None = None):
+        t0 = time.perf_counter()
+        self.timings: dict = {"imports_s": round(time.time() - _process_start(), 2)}  # startup speed (diagnostics)
         self.cfg = cfg
         self.bus = services.bus if services else EventBus()
         self.svc = services or build_services(cfg, self.bus)
+        self.timings["services_s"] = round(time.perf_counter() - t0, 2)
         self.assistant = assistant or Assistant(self.svc)
+        self.timings["assistant_s"] = round(time.perf_counter() - t0 - self.timings["services_s"], 2)
         tts = cfg["voice"]["tts"]
         self.speaker = Speaker(self.bus, tts.get("engine", "auto"), tts.get("rate", 190), tts.get("voice_hint", ""),
                                voice=tts.get("voice") or None, speed=float(tts.get("speed", 1.0)),
                                threads=int(tts.get("threads", 2)), models_dir=cfg.data_dir / "models",
                                output_device=tts.get("output_device"))
         self.svc.speak = self.speaker.say
+        # Wake to first words, per turn (the Speaking voice panel), and the voice made ready while you talk.
+        self.latency = TurnLatency(lambda: self.speaker.turn,
+                                   on_change=lambda: self.bus.publish("tts", self.speaker.status(), sticky=True))
+        self.speaker.on_first_audio, self.speaker.latency = self.latency.first_audio, self.latency.report
+        self.bus.on(self.latency.on_event)
+        self.bus.on(Prewarm(self.speaker).on_event)
+        # Voice commands pass these first: (text, owner) -> None (go on), True (handled), or new text to run.
+        self.voice_taps: list = []
         # Voice commands run here, not on the mic thread, so "stop" is heard while Claude thinks or talks.
         self._commands = ThreadPoolExecutor(max_workers=1, thread_name_prefix="command")
         self._bench_running = False  # the model test (one at a time)
@@ -95,15 +110,25 @@ class Runtime:
                 cfg=cfg["voice"], hint_words=self._hint_words, verifier=self.verifier,
                 models_dir=cfg.data_dir / "models",
             )
-        self.supervisor = Supervisor(self.bus)
+        self.supervisor = Supervisor(self.bus, low_power=self._low_power)
         self.started = time.time()
+        self.timings["runtime_s"] = round(time.perf_counter() - t0, 2)
+        if self.svc.skills is not None:  # Setup → Skills: the brain's tools follow; a skill turned on gets started
+            self.svc.skills.on_change = self._skills_changed
+            self.svc.skills.starter = self._start_skill
         # PC control safety: the kill switch also silences speech and stops background jobs.
         self.assistant.on_kill = self._on_kill
         pc = cfg.get("pc_control") or {}
+        toaster = None
         if pc.get("toast_confirm", True) and toast.available():
-            self.assistant.on_pending = toast.ToastConfirmer(
+            toaster = toast.ToastConfirmer(
                 lambda pid: self.confirm_pending(pid, "toast"), lambda pid: self.assistant.cancel(pid),
                 cfg["assistant"]["name"])
+        # Asked once out loud, ten seconds to answer without the wake word, then the HUD card and the toast wait.
+        self.confirm_window = ConfirmWindow(self.bus, self.speaker, lambda: self.listener, self.assistant,
+                                            toast=toaster, window_s=float(pc.get("confirm_listen_s", 10)))
+        self.assistant.on_pending = self.confirm_window.on_pending
+        self.voice_taps.append(self.confirm_window.tap)
 
     def _hint_words(self) -> list[str]:
         """Vocabulary that biases speech recognition toward your scene/app names."""
@@ -118,6 +143,17 @@ class Runtime:
             self.kill_switch("voice")
             return
         owner = getattr(self.listener, "last_owner", "unknown") if self.listener else "unknown"
+        for tap in list(self.voice_taps):  # a yes/no window, dictation
+            try:
+                out = tap(text, owner)
+            except Exception:
+                log.exception("voice tap failed")
+                continue
+            if out is True:
+                return
+            if isinstance(out, str) and out:
+                text = out
+                break
         self._commands.submit(self._run_voice_command, text, turn, owner)
 
     def command(self, text: str, source: str = "automation") -> dict:
@@ -163,6 +199,7 @@ class Runtime:
 
     # ------------------------------------------------------------------
     def start(self) -> None:
+        t0 = time.perf_counter()
         sup = self.supervisor
         # Long-lived services: restarted if their thread dies or they stop beating.
         if self.cfg["tracking"].get("enabled", True):
@@ -177,36 +214,54 @@ class Runtime:
                         is_disabled=lambda: listener.state == "unavailable")
             register_hotkey(self.cfg["voice"].get("push_to_talk_hotkey"), listener.arm)
         register_hotkey((self.cfg.get("pc_control") or {}).get("kill_hotkey"), self.kill_switch)
-        # Pollers: the supervisor owns their loops.
-        sup.poller("system stats", 2, self._poll_system, stall_after=60)
+        # Pollers: the supervisor owns their loops. The last number is the pace in low-power mode (a fullscreen game
+        # or live: see _low_power): 0 pauses, none keeps the normal pace (the essential ones: OBS, Twitch, pre-stream).
+        sup.poller("system stats", 2, self._poll_system, stall_after=60, game_interval=6)
         sup.poller("obs", 3, self._poll_obs, stall_after=60)
-        sup.poller("activity summary", 60, self._poll_activity)
+        sup.poller("activity summary", 60, self._poll_activity, game_interval=300)
         sup.poller("twitch", 90, self._poll_twitch)
         if self.eventsub:
             events = self.eventsub
             events.heartbeat = lambda: sup.beat("twitch events")
             sup.service("twitch events", events.restart, heartbeat_s=60,
                         is_disabled=lambda: not self.svc.twitch.auth.connected)
-        sup.poller("projects", 120, self._poll_projects)
-        sup.poller("calendars", 300, self._poll_calendar)
-        sup.poller("gmail", 180, self._poll_gmail, delay=20)
-        for skill in self.svc.skills or []:
-            try:
-                skill.start(self)
-            except Exception:
-                log.exception("skill %s: start failed", skill.name)
-            if skill.poll_s:
-                sup.poller(f"skill · {skill.title or skill.name}", skill.poll_s, skill.tick, delay=skill.delay_s)
-        threading.Thread(target=self._first_skill_panels, name="skill-panels", daemon=True).start()
+        sup.poller("projects", 120, self._poll_projects, game_interval=900)  # git status in every repo
+        sup.poller("calendars", 300, self._poll_calendar, game_interval=900)
+        sup.poller("gmail", 180, self._poll_gmail, delay=20, game_interval=900)
+        # Skills start in the background, so the HUD answers at once (one skill's start used to import a big package)
+        threading.Thread(target=self._start_skills, name="skills-start", daemon=True).start()
         sup.poller("pre-stream check", 60, self._prestream_tick, delay=30)
-        sup.poller("news", 900, self._poll_news)
+        sup.poller("news", 900, self._poll_news, game_interval=3600)
         sup.poller("morning briefing", 60, self._morning_check)
-        sup.poller("pc scan", 6 * 3600, self._rescan_if_stale, delay=6 * 3600)  # startup already scanned
-        sup.poller("model test", 3600, self._auto_bench, delay=45)
+        sup.poller("pc scan", 6 * 3600, self._rescan_if_stale, delay=6 * 3600, game_interval=0)  # startup already scanned
+        sup.poller("model test", 3600, self._auto_bench, delay=45, game_interval=0)  # never load models mid-game
         if self.svc.library is not None:
             minutes = max(5.0, float((self.cfg.get("library") or {}).get("refresh_minutes", 30)))
-            sup.poller("library", minutes * 60, self._index_library, delay=60)
+            sup.poller("library", minutes * 60, self._index_library, delay=60, game_interval=0)  # reading files: later
         sup.start()
+        self.timings["start_s"] = round(time.perf_counter() - t0, 2)
+        self.timings["hud_ready_s"] = round(time.time() - _process_start(), 2)  # the server answers right after this
+
+    def _low_power(self) -> str:
+        """Why Vesper should hold back now: "game" (a fullscreen game, Windows' own signal), "live", or ""."""
+        if (self.cfg.get("low_power") or {}).get("enabled", True) is False:
+            return ""
+        try:
+            if self.svc.live and self.svc.live():
+                return "live"
+        except Exception:
+            pass
+        nud = self.svc.skills.get("nudges") if self.svc.skills is not None else None
+        try:
+            if nud is not None:
+                state = nud.fullscreen()
+            else:
+                from .skills.nudges import fullscreen_state
+
+                state = fullscreen_state()
+        except Exception:
+            state = ""
+        return "game" if state == "game" else ""
 
     def stop(self) -> None:
         self.supervisor.stop()
@@ -449,23 +504,64 @@ class Runtime:
         self.bus.publish("gmail", out, sticky=True)
         return out
 
+    # ---- skills ----------------------------------------------------------------------------------------
+    def _start_skill(self, skill) -> None:
+        """Start one skill and give its tick to the watchdog (also for a skill turned on in Setup → Skills)."""
+        sk = self.svc.skills
+        t0 = time.perf_counter()
+        try:
+            skill.start(self)
+        except Exception as exc:
+            log.exception("skill %s: start failed", skill.name)
+            sk._failed(skill, "start", exc)
+        sk.started[skill.name] = round((time.perf_counter() - t0) * 1000, 1)
+        name = f"skill · {skill.title or skill.name}"
+        if skill.poll_s and name not in self.supervisor.parts:
+            self.supervisor.poller(name, skill.poll_s, lambda s=skill: sk.tick(s), delay=skill.delay_s,
+                                   game_interval=skill.low_power_poll())
+
+    def _start_skills(self) -> None:
+        t0 = time.perf_counter()
+        for skill in self.svc.skills or []:
+            self._start_skill(skill)
+        self.timings["skills_started_s"] = round(time.perf_counter() - t0, 2)
+        self._first_skill_panels()
+        self.timings["skill_panels_s"] = round(time.perf_counter() - t0, 2)
+        if self.svc.skills is not None:
+            self.timings["skill_load_ms"] = dict(self.svc.skills.timings)
+            self.timings["skill_start_ms"] = dict(self.svc.skills.started)
+        self.timings["at"] = time.time()
+        try:  # for a report made by --diagnose while Vesper is closed
+            from .diagnostics import STARTUP_FILE
+
+            (self.cfg.data_dir / STARTUP_FILE).write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
+        except (OSError, TypeError):
+            pass
+
+    def _skills_changed(self) -> None:
+        """A skill was switched on or off: the brain's tool list follows."""
+        try:
+            self.assistant.tools.refresh_skill_tools()
+        except Exception:
+            log.exception("refreshing the skills' tools failed")
+
     def _first_skill_panels(self) -> None:
         """Fill every skill's HUD panel now, not at its first tick (some tick every 15 minutes)."""
-        for skill in self.svc.skills or []:
+        sk = self.svc.skills
+        for skill in sk or []:
             if skill.last_status is None:
-                try:
-                    skill.publish()
-                except Exception:
-                    log.exception("skill %s: first status failed", skill.name)
+                sk.guard(skill, "status", skill.publish)
 
     def skills_state(self, latest: dict | None = None) -> dict:
-        """Each skill's latest HUD data, and which skills are loaded (the HUD loads their scripts)."""
+        """Each skill's latest HUD data, which skills are loaded (the HUD loads their scripts), and every skill's
+        state for Setup → Skills."""
         sk = self.svc.skills
         if sk is None:
-            return {"loaded": [], "data": {}, "errors": {}}
+            return {"loaded": [], "data": {}, "errors": {}, "health": []}
         latest = latest if latest is not None else {k: v["data"] for k, v in self.bus.latest.items()}
         return {"loaded": [{"name": s.name, "title": s.title} for s in sk],
-                "data": {s.name: latest.get(s.name, s.last_status) for s in sk}, "errors": sk.errors}
+                "data": {s.name: latest.get(s.name, s.last_status) for s in sk}, "errors": sk.errors,
+                "health": sk.overview()}
 
     def _poll_news(self) -> None:
         self.svc.news.refresh(force=True)
@@ -506,16 +602,17 @@ class Runtime:
             listener.paused = True  # the wizard owns the mic; nothing it hears is a command
             result: dict = {"error": "calibration crashed"}
             try:
-                if calibrator is None and self.verifier:
-                    cal.emit(step="prepare", prompt="Getting the voice model ready (first run downloads ~26 MB)…")
-                    cal.embedder = self.verifier.embedder()
-                result = cal.run()
+                try:
+                    if calibrator is None and self.verifier:
+                        cal.emit(step="prepare", prompt="Getting the voice model ready (first run downloads ~26 MB)…")
+                        cal.embedder = self.verifier.embedder()
+                    result = cal.run()
+                finally:
+                    listener.paused = False
+                if not result.get("cancelled") and not result.get("error"):
+                    self.apply_voice_calibration()
             finally:
-                listener.paused = False
-                self.calibrator = None
-            if not result.get("cancelled") and not result.get("error"):
-                self.apply_voice_calibration()
-            else:
+                self.calibrator = None  # only once the new settings are live: "done" means applied
                 self.bus.publish("voice_profile", self.voice_status(), sticky=True)
 
         threading.Thread(target=run, name="calibration", daemon=True).start()
@@ -959,9 +1056,12 @@ class Runtime:
         names = (g.get("client_id_env", "GOOGLE_CLIENT_ID"), g.get("client_secret_env", "GOOGLE_CLIENT_SECRET"))
         env = self.cfg.root / ".env"
         text = env.read_text(encoding="utf-8") if env.exists() else ""
-        for name, value in zip(names, (client_id, client_secret)):
-            text = set_env_value(text, name, value)
-            os.environ[name] = value
+        try:  # both checked before either is kept: a line break inside one never adds a line to .env
+            for name, value in zip(names, (client_id, client_secret)):
+                text = set_env_value(text, name, value)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        os.environ.update(zip(names, (client_id, client_secret)))
         env.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
         self.svc.google.set_client(client_id, client_secret)
         return {"ok": True, **self.google_status()}
@@ -1070,6 +1170,7 @@ class Runtime:
             "active_profile": self.assistant.active_profile,
             "voice": self.listener.status() if self.listener else {"state": "disabled"},
             "pending": self.assistant.pending_view(),
+            "confirm_window": self.confirm_window.status(),
             "tasks": self.svc.storage.list_tasks(),
             "notes": self.svc.storage.list_notes(8),
             "jobs": self.svc.storage.list_jobs(15),
@@ -1087,6 +1188,15 @@ class Runtime:
             "pc_control": self.assistant.control_status(),
             **{k: latest.get(k) for k in ("system", "obs", "twitch", "activity", "projects", "calendar", "news", "activity_now")},
         }
+
+
+def _process_start() -> float:
+    try:
+        import psutil
+
+        return psutil.Process().create_time()
+    except Exception:
+        return time.time()
 
 
 def _guess_profile(cal: dict) -> str:

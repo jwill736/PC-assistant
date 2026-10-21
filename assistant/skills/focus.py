@@ -46,6 +46,7 @@ def break_minutes(focused_min: float) -> int:
 class Focus(Skill):
     name, title = "focus", "Focus"
     poll_s = 10
+    game_essential = True  # a focus session ends on time
     delay_s = 5
 
     def __init__(self, svc, clock=time.time):
@@ -237,8 +238,12 @@ class Focus(Skill):
         ]
 
     def route(self, t: str):
-        m = re.fullmatch(r"(?:(?:let'?s |time to )?(start|begin|enter|do|go into|turn on|start a|begin a|do a)(?: an?| my)? )?"
-                         r"(?:(.+?)[ -]minutes? )?(?:focus|focusing|deep work|focused work)( session| mode| block| sprint| time)?"
+        if re.fullmatch(r"(?:let'?s|time to) (?:focus|do (?:some )?deep work|get focused)", t):
+            return Intent("tool", "focus_start", {"minutes": 0})
+        # "a focus timer" is a focus session (automations leaves any timer with "focus" in it to us)
+        m = re.fullmatch(r"(?:(?:let'?s |time to )?(start|begin|enter|do|go into|turn on|start a|begin a|do a|set)(?: an?| my)? )?"
+                         r"(?:(.+?)[ -]minutes? )?(?:focus|focusing|deep work|focused work)( session| mode| block| sprint| time"
+                         r"| timer)?"
                          r"(?: for (.+? (?:minutes?|hours?)))?(?: on (.+?))?(?: for (.+? (?:minutes?|hours?)))?", t)
         if m and (m.group(1) or m.group(3) or m.group(2) or m.group(4) or m.group(6)):
             span = m.group(4) or m.group(6) or (m.group(2) + " minutes" if m.group(2) else "")

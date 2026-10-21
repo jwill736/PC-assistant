@@ -1,0 +1,5 @@
+/* Google Tasks sync */
+.gt-n { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.gt-line { margin-top: 6px; }
+.gt-err { font-size: 12px; margin-top: 6px; padding: 6px 10px; border-radius: var(--radius); background: var(--amber-soft);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); color: var(--ink); }

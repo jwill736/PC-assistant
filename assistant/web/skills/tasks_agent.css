@@ -1,0 +1,123 @@
+/* Jobs (skills/tasks_agent.js). Accents keep their meaning: iris = the job is working (thinking, tools), phosphor =
+   done, amber = needs J (the approval card), alert = failed. */
+.ta-top { display: flex; gap: 8px; align-items: center; }
+.ta-new { flex: 1; display: flex; gap: 8px; align-items: center; min-width: 0; }
+.ta-goal-in { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--inset); color: var(--ink); font: inherit; font-size: 13px; }
+.ta-goal-in:focus-visible, .ta-tile-f input:focus-visible { outline: 2px solid var(--ion); outline-offset: 1px; border-color: transparent; }
+.ta-just-l { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); white-space: nowrap; cursor: pointer; }
+.ta-rtoggle { white-space: nowrap; }
+
+/* the recipes */
+.ta-recipes { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 8px; margin: 12px 0 4px; }
+.ta-recipes[hidden] { display: none; }
+.ta-tile { border: 1px solid var(--line); border-radius: var(--radius); background: var(--inset); display: flex; flex-direction: column;
+  transition: border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+.ta-tile:hover { border-color: color-mix(in srgb, var(--iris) 45%, var(--line)); }
+.ta-tile.picked { border-color: var(--iris); background: var(--iris-soft); }
+.ta-tile-b { all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; padding: 9px 10px; cursor: pointer; }
+.ta-tile-b:focus-visible { outline: 2px solid var(--ion); outline-offset: -2px; border-radius: var(--radius); }
+.ta-tile-h { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink); }
+.ta-tile-h b { font-weight: 550; flex: 1; min-width: 0; }
+.ta-tile-t { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.ta-ic { width: 15px; height: 15px; flex: none; fill: none; stroke: var(--iris); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.ta-ai { color: var(--iris); border-color: color-mix(in srgb, var(--iris) 45%, transparent); font-size: 9.5px; }
+.ta-tile-f { display: flex; gap: 6px; padding: 0 10px 10px; flex-wrap: wrap; }
+.ta-tile-f input { flex: 1 1 120px; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); color: var(--ink); font: inherit; font-size: 12.5px; }
+
+/* Claude Code jobs (kind badge) */
+.ta-cc { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.ta-cc-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px dashed var(--line-2); border-radius: var(--radius); }
+.ta-cc-t { flex: 1; min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ta-kind { color: var(--iris); }
+
+/* the job cards */
+.ta-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; margin-top: 12px; align-items: start; }
+.ta-list > .empty, .ta-hint { grid-column: 1 / -1; }
+.ta-hint { font-size: 12px; color: var(--ink-2); padding: 6px 10px; border-left: 2px solid var(--iris); background: var(--iris-soft); border-radius: var(--radius); }
+.ta-hint.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+.ta-card { --tone: var(--muted); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--inset); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; animation: ta-in var(--dur-base) var(--ease-out) both; }
+.ta-card.t-iris { --tone: var(--iris); border-color: color-mix(in srgb, var(--iris) 35%, var(--line)); }
+.ta-card.t-amber { --tone: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, var(--line)); }
+.ta-card.t-phosphor { --tone: var(--phosphor); }
+.ta-card.t-alert { --tone: var(--alert); border-color: color-mix(in srgb, var(--alert) 40%, var(--line)); }
+.ta-card-h { display: flex; gap: 10px; align-items: flex-start; }
+.ta-card-t { flex: 1; min-width: 0; }
+.ta-title { font-weight: 550; font-size: 13.5px; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ta-goal { margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ta-card-m { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; white-space: nowrap; }
+.ta-time { font: 500 13px/1.2 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+.ta-chip { display: inline-flex; align-items: center; gap: 6px; font: 500 10px/1.6 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--tone); padding: 1px 8px; border: 1px solid color-mix(in srgb, var(--tone) 45%, transparent); border-radius: 2px; white-space: nowrap; }
+.ta-chip .ta-dot { background: var(--tone); }
+.ta-pri { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 45%, transparent); }
+.btn.ta-pri-on { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 50%, var(--line)); }
+
+.ta-progress { height: 3px; background: var(--grid); border-radius: 2px; overflow: hidden; }
+.ta-progress i { display: block; height: 100%; background: var(--tone); transform-origin: left; transition: transform var(--dur-slow) var(--ease-out); }
+.ta-sub { display: flex; align-items: center; gap: 8px; }
+.ta-sub .t2 { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the step timeline */
+.ta-steps { list-style: none; margin: 0; padding: 0 0 0 2px; display: flex; flex-direction: column; }
+.ta-step { --c: var(--line-2); position: relative; display: flex; align-items: center; gap: 8px; padding: 3px 0 3px 16px; font-size: 12.5px; color: var(--ink-2); min-width: 0; }
+.ta-step::before { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+.ta-step:first-child::before { top: 50%; }
+.ta-step:last-child::before { bottom: 50%; }
+.ta-step .ta-dot { position: absolute; left: 0; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--c); background: var(--inset); }
+.ta-step-t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ta-step-m { font: 11px/1.3 var(--mono); color: var(--muted); max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ta-step.st-running { --c: var(--iris); color: var(--ink); }
+.ta-step.st-running .ta-dot { background: var(--iris); }
+.ta-step.st-done { --c: var(--phosphor); }
+.ta-step.st-done .ta-dot { background: var(--phosphor); }
+.ta-step.st-failed { --c: var(--alert); }
+.ta-step.st-failed .ta-dot { background: var(--alert); }
+.ta-step.st-failed .ta-step-m { color: var(--alert); }
+.ta-step.st-waiting { --c: var(--amber); color: var(--ink); }
+.ta-step.st-waiting .ta-dot { background: var(--amber-soft); }
+.ta-step.st-skipped, .ta-step.st-cancelled { opacity: .6; }
+.ta-step.st-skipped .ta-step-t { text-decoration: line-through; text-decoration-color: var(--line-2); }
+.ta-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+/* the approval card: one per job, amber = needs J */
+.ta-approval { border: 1px solid color-mix(in srgb, var(--amber) 55%, transparent); background: var(--amber-soft); border-radius: var(--radius); padding: 8px 10px; }
+.ta-approval-h { font-size: 12.5px; color: var(--ink); }
+.ta-approval-h b { color: var(--amber); font-weight: 600; }
+.ta-approval-l { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.ta-approval-l li { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.ta-approval-l label { display: flex; gap: 6px; align-items: flex-start; flex: 1; min-width: 0; cursor: pointer; overflow-wrap: anywhere; }
+.ta-approval-l input { margin-top: 2px; accent-color: var(--amber); }
+.ta-public { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, transparent); }
+
+
+/* the result */
+.ta-summary { margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink); border-left: 2px solid var(--tone); padding-left: 8px; }
+.ta-md { margin: 6px 0 0; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  font: 12px/1.55 var(--mono); color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+.ta-result-b, .ta-card-b, .ta-approval-b { gap: 6px; flex-wrap: wrap; margin: 0; }
+.ta-card-b { justify-content: flex-end; }
+.ta-result-b { margin-top: 8px; }
+.ta-error { font-size: 12.5px; color: var(--alert); }
+.ta-notes { margin-top: 4px; }
+
+@keyframes ta-in { from { opacity: 0; transform: translateY(4px); } }
+@keyframes ta-pulse { 50% { opacity: .35; } }
+:root[data-motion="full"] .ta-step.st-running .ta-dot, :root[data-motion="full"] .ta-card.s-running .ta-chip .ta-dot { animation: ta-pulse 1.4s var(--ease-in-out) infinite; }
+@media (prefers-reduced-motion: reduce) { .ta-card { animation: none; } .ta-progress i, .ta-tile { transition: none; } }
+:root[data-motion="off"] .ta-card { animation: none; }
+
+/* on air: the results and what's waiting stay private (the titles stay) */
+body.live-private .panel[data-panel="tasks_agent"] :is(.ta-result, .ta-approval-l, .ta-goal, .ta-step-m) { filter: blur(6px); user-select: none; pointer-events: none; }
+
+@media (max-width: 600px) {
+  .ta-top { flex-direction: column; align-items: stretch; }
+  .ta-new { flex-wrap: wrap; }
+  .ta-goal-in { flex-basis: 100%; }
+  .ta-new .btn.primary { margin-left: auto; }
+  .ta-list { grid-template-columns: 1fr; }
+  .ta-recipes { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 380px) { .ta-recipes { grid-template-columns: 1fr; } }

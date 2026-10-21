@@ -41,7 +41,28 @@
 @keyframes sc-pulse { 50% { opacity: 0.25; transform: scale(0.8); } }
 @keyframes sc-in { from { opacity: 0; transform: translateY(4px); } }
 @media (max-width: 900px) { .sc-cols, .sc-recap-grid { grid-template-columns: minmax(0, 1fr); } .sc-top { grid-template-columns: minmax(0, 1fr); } }
+/* the one-tap stream cards: top right on every tab, amber (needs J), never spoken */
+.sc-cards { position: fixed; top: 100px; right: 20px; z-index: 65; display: grid; gap: 8px; width: min(340px, calc(100vw - 32px)); pointer-events: none; }
+.sc-cards:empty { display: none; }
+.sc-qcard { position: relative; pointer-events: auto; display: grid; gap: 6px; padding: 10px 12px 12px 14px; overflow: hidden;
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--radius); box-shadow: var(--shadow), inset 3px 0 0 var(--amber);
+  animation: sc-card-in var(--dur-base, 240ms) var(--ease-out, ease-out) both; }
+.sc-qcard[data-kind="clip"] { box-shadow: var(--shadow), inset 3px 0 0 var(--alert); }
+.sc-qsrc { display: flex; align-items: center; gap: 6px; font: 500 9.5px/1.3 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--amber); }
+.sc-qcard[data-kind="clip"] .sc-qsrc { color: var(--alert); }
+.sc-qsrc .spacer { flex: 1; }
+.sc-qx { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 2px; font-size: 13px; line-height: 1; border-radius: 2px; }
+.sc-qx:hover { color: var(--ink); }
+.sc-qtext { font-size: 14px; font-weight: 500; }
+.sc-qlife { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--amber); opacity: .55; transform-origin: left;
+  transform: scaleX(var(--from, 1)); }
+.sc-qcard[data-kind="clip"] .sc-qlife { background: var(--alert); }
+:root[data-motion="full"] .sc-qlife { animation: sc-life var(--left, 60s) linear forwards; }
+@keyframes sc-life { from { transform: scaleX(var(--from, 1)); } to { transform: scaleX(0); } }
+@keyframes sc-card-in { from { opacity: 0; transform: translateX(16px); } }
+:root:not([data-motion="full"]) .sc-qcard { animation: none; }
+@media (max-width: 700px) { .sc-cards { top: auto; bottom: 84px; right: 16px; } }
 @media (prefers-reduced-motion: reduce) {
   .sc-needle { transition: none; }
-  .sc-pulse, .sc-q, .sc-card { animation: none; }
+  .sc-pulse, .sc-q, .sc-card, .sc-qcard, .sc-qlife { animation: none; }
 }

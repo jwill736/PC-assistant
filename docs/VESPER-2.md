@@ -14,6 +14,10 @@ account connected once. Do the parts in order; each says how long it takes and w
 | Gmail | Who's waiting on a reply (work + personal), search, read; briefing names them | Google sign-in (Part 7 of SETUP) |
 | Replies | Replies you owe, people who owe you, promises you made in sent mail → tasks | Google sign-in |
 | Meetings | A prep card 10 minutes before each meeting: attendees, last emails, docs, notes | Google sign-in |
+| Reply drafts | "Draft reply" on any owed email: a Gmail draft in your own style, never sent | Google sign-in + the drafts box (Part D) |
+| Meeting debrief | After a meeting: "anything to note?" → note, tasks with due dates, People notes | Google calendars |
+| Google Tasks | "Vesper · Work" / "Vesper · Personal" lists kept in step both ways | the Tasks box (Part D) |
+| Focus blocks | "Protect 2 hours tomorrow for the Q3 deck" → a busy 🔒 event, after your yes | the Calendar events box (Part D) |
 | People | Who you deal with, last contact, "remember that Dana's daughter…", who's gone quiet | Google sign-in |
 | Money | Subscriptions, bills due, free trials ending (from receipts) | Google sign-in |
 | On the way | Packages (out for delivery) and flights (check-in opens) | Google sign-in |
@@ -87,24 +91,62 @@ ollama pull qwen2.5vl:7b
 
 **Send back:** what Vesper said for step 21, and the Memory panel's top line.
 
-## Part D · Gmail (2 minutes; needs Google sign-in from SETUP Part 7)
+## Part D · Gmail, drafts, Google Tasks and focus blocks (5 minutes; needs Google sign-in from SETUP Part 7)
 
-Already connected before Gmail was added? Each account needs one more tick.
+Vesper 2.1 asks Google for three more permissions, each its own tickbox on Google's page:
 
-22. **Setup** tab → **Google accounts**. An account showing **Partly** means Gmail isn't allowed yet.
-23. Click **Reconnect** next to it. Your browser opens Google.
-24. Pick the account, click **Continue**, tick **every** box including **Gmail**, click **Continue**, close the tab.
-25. Do 23–24 for the other account.
-26. **Command** tab → **Inbox**: who's waiting on you, work and personal side by side.
-27. **Work** tab: **Replies · owed, waiting, promised**, **Next meeting · prep** and **People** fill in within two
+| Box on Google's page | Called in the HUD | What Vesper does with it |
+|---|---|---|
+| “Manage drafts and send emails” | Gmail drafts | saves reply drafts in your Gmail Drafts. **It never sends**: you open the draft and press Send yourself |
+| “Create, edit, organize, and delete all your tasks” | Google Tasks | keeps a “Vesper · Work” list (work account) and “Vesper · Personal” (personal account) in step with your tasks |
+| “View and edit events on all your calendars” | Calendar events | puts a 🔒 focus block on your calendar, only after you said yes to the exact time |
+
+Already connected? Each account shows **Partly: didn't allow Gmail drafts, Google Tasks, Calendar events** until
+you do steps D1–D5. Every feature checks its own box and says which one is missing, so the others keep working.
+
+**Once · Turn on Google Tasks in Google Cloud (2 minutes, once)**
+
+D1. Open [the Google Tasks API page](https://console.cloud.google.com/apis/library/tasks.googleapis.com), check the
+    top bar says **Vesper**, click **Enable**. (Gmail and Calendar are already on from SETUP Part 7.)
+
+**Then · Reconnect each account (1 minute each)**
+
+D2. **Setup** tab → **Google accounts**. An account showing **Partly** has a box still unticked.
+D3. Click **Reconnect** next to it. Your browser opens Google.
+D4. Pick the account, click **Continue**, tick **every** box, click **Continue**, close the tab. You should see
+    **Connected** next to the account.
+D5. Do D3–D4 for the other account.
+
+**Try it (5 minutes)**
+
+D6. **Command** tab → **Inbox**: who's waiting on you, work and personal side by side.
+D7. **Work** tab: **Replies · owed, waiting, promised**, **Next meeting · prep** and **People** fill in within two
     minutes. **Life** tab: **Money** and **On the way** too (click **Read receipts** / **Check email** to start now).
-28. Say “Vesper, who do I owe a reply”, “Vesper, what did I promise”, “Vesper, prep me for my next meeting”.
+D8. Say “Vesper, who do I owe a reply”, “Vesper, what did I promise”, “Vesper, prep me for my next meeting”.
+D9. **Work** tab → **Replies** → **Owed**: click **Draft reply** next to someone. The **Reply drafts** panel shows the
+    text; click **Open in Gmail** to check it and send it yourself. Or say:
+```
+Vesper, draft a reply to Dana saying Thursday works
+```
+D10. **Setup** tab → **Google Tasks**: one line per list, e.g. “Vesper · Work ↔ jon@talent-sdk.com”. Click **Sync now**.
+    Open Google Tasks on your phone: the **Vesper · Work** list has your work tasks. Tick one off there; within
+    5 minutes it's done in Vesper too.
+D11. Say:
+```
+Vesper, protect 2 hours tomorrow for the Q3 deck
+```
+    Vesper says the exact day and time and waits. Say “yes” (or click **Confirm** on the HUD). A busy
+    “🔒 Q3 deck” appears on your work calendar. The **Focus blocks** panel (Command tab) lists it.
+D12. After a meeting with other people ends, Vesper asks “Anything to note from …?”. Just answer, e.g. “I'll send
+    Dana the deck by Friday”: it becomes a note, a task due Friday and a note on Dana. Or type it in the
+    **Meeting debrief** panel (Work tab), or say “Vesper, debrief my last meeting” any time that day.
 
 If the work account says “Access blocked” or `admin_policy_enforced`: your company's Google admin blocks apps it
 hasn't approved. The admin adds the Client ID in **admin.google.com → Security → Access and data control → API
 controls → Manage third-party app access** as **Trusted**. Personal Gmail works either way.
 
-**Send back:** a screenshot of the Work tab.
+**Send back:** a screenshot of the Work tab and of **Setup → Google accounts / Google Tasks**, what Vesper said in
+step D11, and anything in red or amber.
 
 ## Part E · Phone: Telegram (5 minutes)
 
@@ -196,6 +238,10 @@ Each server adds abilities; every action they take asks you first unless you low
 | “check my email” / “did Dana email me” / “search my email for the contract” | Gmail |
 | “who do I owe a reply” / “what am I waiting on” / “what did I promise” | replies |
 | “prep me for my next meeting” / “who's in my next meeting” | meetings |
+| “draft a reply to Dana” / “draft a reply to Dana saying Thursday works” | a Gmail draft in your voice (never sent) |
+| “debrief my last meeting” / “nothing to note” | meeting debrief → note, tasks, People notes |
+| “sync my tasks with Google” | Google Tasks, both ways |
+| “protect 2 hours tomorrow for the Q3 deck” / “block my afternoon for deep work” / “put my plan on my calendar” | 🔒 focus blocks (asks first) |
 | “who is Dana” / “remember that Dana …” / “who haven't I talked to” | people |
 | “what subscriptions do I have” / “what bills are due” | money |
 | “where's my package” / “when's my flight” | on the way |

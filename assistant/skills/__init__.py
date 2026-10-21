@@ -25,9 +25,9 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 # Load order is the order on the HUD and in the briefing.
-MODULES = ["nudges", "memory", "weather", "automations", "inbox_zero", "meetings", "people", "planner", "focus", "habits",
-           "journal", "bills", "travel", "pulse", "screen", "clipboard", "rewind", "janitor", "mcp", "phone", "spotify",
-           "home", "youtube", "discord", "stream_copilot"]
+MODULES = ["nudges", "memory", "weather", "automations", "inbox_zero", "drafts", "meetings", "debrief", "people", "planner",
+           "focusblocks", "focus", "habits", "journal", "bills", "travel", "pulse", "screen", "clipboard", "rewind", "janitor",
+           "mcp", "phone", "spotify", "home", "youtube", "discord", "stream_copilot", "gtasks"]
 
 
 class Skill:

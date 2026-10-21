@@ -1289,8 +1289,10 @@ render.google = function google() {
       ].filter(Boolean).join(' · ')),
       (st.accounts || []).length ? h('div', { class: 'list' }, st.accounts.map(a => h('div', { class: 'item' },
         h('div', { class: 'main' }, h('div', { class: 't1' }, status(...(a.error ? ['critical', 'Signed out'] : a.missing?.length ? ['warning', 'Partly'] : ['good', 'Connected'])), ' ', a.email),
-          h('div', { class: 't2' }, a.error || (a.missing?.length ? `You didn't allow ${a.missing.join(' or ')}: click Reconnect and tick every box on Google's page.` :
-            `connected ${ago(a.connected_at)} · reads Docs, Sheets, Slides and calendars (never changes them)`))),
+          h('div', { class: 't2' }, a.error || (a.missing?.length ? `Partly: didn't allow ${a.missing.join(', ')}. Click Reconnect and tick every box on Google's page` +
+            (a.boxes?.length ? `, including ${a.boxes.map(x => `“${x}”`).join(', ')}.` : '.') :
+            `connected ${ago(a.connected_at)} · reads Docs, Sheets, Slides, calendars and Gmail · saves reply drafts (never sends) · keeps “Vesper · …” lists in Google Tasks · adds focus blocks you say yes to`)),
+          a.missing?.includes('Gmail drafts') ? h('div', { class: 't3 muted' }, 'Google words the drafts box “Manage drafts and send emails”; Vesper only ever saves drafts and never sends.') : null),
         h('button', { class: 'btn small', onclick: () => googleConnect(a.email) }, 'Reconnect'),
         h('button', { class: 'btn small', onclick: () => googleRemove(a.email) }, 'Disconnect')))) :
         empty('No account yet. Connect your work account, then your personal one.'),
@@ -1298,7 +1300,7 @@ render.google = function google() {
         h('button', { class: 'btn primary', onclick: () => googleConnect('') }, 'Connect a Google account'),
         (st.accounts || []).length ? h('button', { class: 'btn', onclick: () => googleCalendars(b._g.cals) }, 'Choose calendars') : null,
         h('button', { class: 'btn small', onclick: () => { b._g.editKey = true; render.google(); } }, 'Change sign-in key')),
-      h('div', { class: 't3 muted', style: { marginTop: '6px' } }, 'Each Connect opens Google in your browser: pick the account, allow, then close that tab.'));
+      h('div', { class: 't3 muted', style: { marginTop: '6px' } }, 'Each Connect opens Google in your browser: pick the account, tick every box, then close that tab.'));
   }
 };
 

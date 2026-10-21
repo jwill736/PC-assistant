@@ -1,0 +1,12 @@
+/* Focus blocks */
+.fb-form { display: flex; gap: 6px; align-items: center; }
+.fb-form input { flex: 1; min-width: 0; }
+.fb-lock { font-size: 14px; opacity: .8; }
+.fb-offer { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px;
+  padding: 8px 10px; border-radius: var(--radius); border: 1px dashed color-mix(in srgb, var(--ember) 45%, var(--line)); }
+.fb-need { font-size: 12px; margin-top: 8px; padding: 6px 10px; border-radius: var(--radius); background: var(--amber-soft);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); color: var(--ink); }
+.fb-list { margin-top: 8px; }
+.fb-item { border-left: 2px solid var(--ember); animation: fb-in .28s cubic-bezier(.23, 1, .32, 1) both; }
+@keyframes fb-in { from { opacity: 0; transform: translateX(-4px); } }
+@media (prefers-reduced-motion: reduce) { .fb-item { animation: none; } }

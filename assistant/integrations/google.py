@@ -1,9 +1,15 @@
-"""Google accounts: sign in once per account (work and personal) and Vesper can read, never change:
+"""Google accounts: sign in once per account (work and personal). Vesper reads:
 
 - the text of your Google Docs, Sheets and Slides (a .gdoc in Google Drive for desktop is only a link, so the
   library asks Google for the words: Drive "export");
 - your Google calendars, without the secret iCal links a Workspace admin can switch off;
 - your Gmail (integrations/gmail.py): what needs a reply, search, one message at a time.
+
+and writes only what you ask for, each behind its own box on Google's consent page (checked with ``can()`` first):
+
+- reply drafts in Gmail (``gmail.compose``): saved as drafts, never sent; you send them yourself from Gmail;
+- a "Vesper · Work" / "Vesper · Personal" list in Google Tasks kept in step with your tasks (``tasks``);
+- focus blocks you said yes to, on your calendar (``calendar.events``).
 
 Sign-in is Google's own page in your browser ("installed app" OAuth with PKCE); it comes back to Vesper on
 127.0.0.1. You create the sign-in key once (a Google Cloud "Desktop app" client, docs/SETUP.md) because Google
@@ -33,10 +39,22 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 DRIVE = "https://www.googleapis.com/drive/v3"
 CALENDAR = "https://www.googleapis.com/calendar/v3"
+TASKS_API = "https://tasks.googleapis.com/tasks/v1"
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose"  # drafts: Vesper never sends
+TASKS_SCOPE = "https://www.googleapis.com/auth/tasks"
+EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 SCOPES = ["openid", "email", "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/calendar.readonly", GMAIL_SCOPE]
-ALLOWS = {SCOPES[2]: "Google Drive", SCOPES[3]: "Google Calendar", GMAIL_SCOPE: "Gmail"}  # Google's consent boxes
+          "https://www.googleapis.com/auth/calendar.readonly", GMAIL_SCOPE, COMPOSE_SCOPE, TASKS_SCOPE, EVENTS_SCOPE]
+# Google's consent page has one box per permission: what Vesper calls each, and the words next to the box
+ALLOWS = {SCOPES[2]: "Google Drive", SCOPES[3]: "Google Calendar", GMAIL_SCOPE: "Gmail",
+          COMPOSE_SCOPE: "Gmail drafts", TASKS_SCOPE: "Google Tasks", EVENTS_SCOPE: "Calendar events"}
+BOXES = {SCOPES[2]: "See and download all your Google Drive files",
+         SCOPES[3]: "See and download any calendar you can access using your Google Calendar",
+         GMAIL_SCOPE: "Read your email messages and settings",
+         COMPOSE_SCOPE: "Manage drafts and send emails",
+         TASKS_SCOPE: "Create, edit, organize, and delete all your tasks",
+         EVENTS_SCOPE: "View and edit events on all your calendars"}
 # What a Drive-for-desktop link stands for, and what Google can turn it into
 EXPORT = {".gdoc": "text/plain", ".gsheet": "text/csv", ".gslides": "text/plain"}
 OPEN_URL = {".gdoc": "https://docs.google.com/document/d/{}/edit",
@@ -90,9 +108,12 @@ class GoogleAccounts:
     def accounts(self) -> list[dict]:
         """``missing``: what was left unticked on Google's consent page (Reconnect and tick every box)."""
         with self._lock:
-            return [{"email": email, "connected_at": t.get("connected_at"), "error": t.get("error"),
-                     "missing": [name for scope, name in ALLOWS.items() if scope not in t.get("scope", "").split()]}
-                    for email, t in sorted(self._tokens.items())]
+            out = []
+            for email, t in sorted(self._tokens.items()):
+                left = [scope for scope in ALLOWS if scope not in t.get("scope", "").split()]
+                out.append({"email": email, "connected_at": t.get("connected_at"), "error": t.get("error"),
+                            "missing": [ALLOWS[s] for s in left], "boxes": [BOXES[s] for s in left]})
+            return out
 
     def emails(self) -> list[str]:
         with self._lock:
@@ -103,6 +124,19 @@ class GoogleAccounts:
         with self._lock:
             t = self._tokens.get(email) or {}
             return not t.get("error") and scope in t.get("scope", "").split()
+
+    def able(self, scope: str) -> list[str]:
+        """Connected accounts that allowed ``scope``."""
+        return [e for e in self.emails() if self.can(e, scope)]
+
+    def need(self, scope: str, what: str, emails: list[str] | None = None) -> str:
+        """What J should do so ``what`` works: which account, and the exact box to tick on Google's page."""
+        if not self.configured or not self.emails():
+            return "No Google account is connected: Setup → Google accounts."
+        left = [e for e in (emails if emails is not None else self.emails()) if not self.can(e, scope)]
+        who = " and ".join(left) or "your account"
+        return (f"{what} needs one more tick for {who}: Setup → Google accounts → Reconnect, and tick "
+                f"“{BOXES.get(scope, scope)}” ({ALLOWS.get(scope, scope)}).")
 
     # ---- signing in --------------------------------------------------------------
     def begin(self, redirect_uri: str, login_hint: str = "") -> str:
@@ -194,13 +228,22 @@ class GoogleAccounts:
             return tok["access_token"]
 
     def get(self, email: str, url: str, params: dict | None = None, headers: dict | None = None) -> httpx.Response:
-        resp = self.http.get(url, params=params, headers={"Authorization": f"Bearer {self._access(email)}",
-                                                          **(headers or {})})
+        return self.request("GET", email, url, params=params, headers=headers)
+
+    def request(self, method: str, email: str, url: str, *, params: dict | None = None, json: dict | None = None,
+                headers: dict | None = None) -> httpx.Response:
+        """One call to a Google API as ``email``: reads, and the writes J asked for (drafts, tasks, events)."""
+        if method != "GET" and url.split("?")[0].rstrip("/").endswith("/send"):
+            raise GoogleError("Vesper never sends email: drafts only.")  # whatever asks, and on whatever account
+
+        def once() -> httpx.Response:
+            return self.http.request(method, url, params=params, json=json,
+                                     headers={"Authorization": f"Bearer {self._access(email)}", **(headers or {})})
+        resp = once()
         if resp.status_code == 401:  # an access token Google already dropped: one fresh try
             with self._lock:
                 self._tokens.get(email, {})["expires_at"] = 0
-            resp = self.http.get(url, params=params, headers={"Authorization": f"Bearer {self._access(email)}",
-                                                              **(headers or {})})
+            resp = once()
         return resp
 
     # ---- Drive -------------------------------------------------------------------
@@ -256,6 +299,15 @@ class GoogleAccounts:
             if not page:
                 break
         return out
+
+    def insert_event(self, email: str, calendar_id: str, body: dict) -> dict:
+        """Create one event (needs the Calendar events box). Returns Google's event: id, htmlLink, ..."""
+        if not self.can(email, EVENTS_SCOPE):
+            raise GoogleError(self.need(EVENTS_SCOPE, "Putting time on your calendar", [email]))
+        resp = self.request("POST", email, f"{CALENDAR}/calendars/{_quote(calendar_id)}/events", json=body)
+        if resp.status_code not in (200, 201):
+            raise GoogleError(_reason(resp))
+        return resp.json()
 
 
 def _event(ev: dict, tz: tzinfo) -> dict | None:

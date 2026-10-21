@@ -63,7 +63,8 @@ jobs:
 
   local-llm:
     # The local brain against a real Llama: Ollama installs, pulls the model, and Vesper answers
-    # a question, calls a tool, answers from memory and writes the morning plan with it.
+    # a question, calls a tool, answers from memory and writes the morning plan with it; then the answer-quality
+    # eval scores it on the golden set.
     name: local Llama (Ollama, ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 30  # CPU inference is slow; a stuck call must fail, not run for GitHub's 6-hour default
@@ -92,6 +93,24 @@ jobs:
         env:
           ASSISTANT_LLM_TESTS: "1"
         run: python -m pytest -v -rs -s tests/test_local_llm_live.py
+      - name: Answer-quality eval (CI subset)
+        # The golden set (evals/golden.yaml) against the small model: tool choice, memory, plan-my-day JSON, prompt
+        # injection, saying "I don't know". k=1 at temperature 0 so a run repeats; no new case starts after 7
+        # minutes. It fails only below the floor in evals/floors.json (how to set it: evals/README.md); the table
+        # is on the run's Summary page and the full results are the eval-results artifact.
+        timeout-minutes: 12
+        run: >-
+          python -m evals.run --model "$OLLAMA_MODEL" --subset ci --k 1 --temperature 0
+          --budget 420 --timeout 120 --floor auto --summary "$GITHUB_STEP_SUMMARY"
+      - name: Keep the eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            evals/results/*.json
+            evals/results/*.md
+          if-no-files-found: warn
 
   setup-script:
     # The beginner path exactly as the setup guide runs it: double-click setup.bat,

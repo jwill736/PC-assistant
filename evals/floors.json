@@ -1,0 +1,4 @@
+{
+  "_how": "The lowest pass^k rate (0-1) CI accepts per model and subset (python -m evals.run --floor auto). Provisional until a real CI run: set it to the 'Floor this run supports' line of the job summary (pass rate minus 15 points). See evals/README.md.",
+  "llama3.2:3b": {"ci": 0.35}
+}

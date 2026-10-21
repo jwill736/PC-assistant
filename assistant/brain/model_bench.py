@@ -7,8 +7,13 @@ work is loaded in turn and given the checks Vesper depends on, with Vesper's rea
 - two spoken commands that must become the right action (set the volume to 20; put a mic arm on the task list)
 - one question it must start answering quickly, without any reasoning text
 
-Nothing is executed: the checks only read which action the model chose. The strongest model that passes wins
-(``best``); the smallest one that passes is kept for stream nights (``light``). Results go to
+Then Vesper's everyday jobs, said the way people say them ("can you see if Dana got back to me about the
+contract", "I need to remember to pay rent friday"): the answer-quality eval's tool-choice cases marked
+``bench: true`` (evals/golden.yaml, scored the same way as there). They don't decide pass or fail; they decide
+which passing model is best: the one that gets the most jobs right, then the strongest.
+
+Nothing is executed: the checks only read which action the model chose. The model that passes and does the most
+jobs right wins (``best``); the smallest one that passes is kept for stream nights (``light``). Results go to
 data/brain_bench.json, which LocalBrain reads.
 """
 
@@ -44,6 +49,24 @@ def _num(v) -> float | None:
         return None
 
 
+def job_probes(tools: list[dict]) -> list[dict]:
+    """The eval's everyday jobs (evals/golden.yaml, ``bench: true``) that the offered tools can do. Empty when the
+    evals folder isn't there: the test then works exactly as before."""
+    try:
+        from evals import golden
+        cases = golden.bench_cases()
+    except Exception:  # no evals folder, or a broken golden.yaml: never stops the model test
+        return []
+    offered = {(t.get("function") or {}).get("name") for t in tools}
+    return [c for c in cases if golden.score.tools_named(c["expect"]) & offered]
+
+
+def _job_done(case: dict, calls: list[dict]) -> bool:
+    from evals import golden
+
+    return golden.bench_ok(case, calls)
+
+
 def run(found: dict, tools: list[dict], vram_mb: float | None = None, system: str = SYSTEM,
         http: httpx.Client | None = None, first_word_s: float = FIRST_WORD_S,
         on_progress: Callable[[dict], None] | None = None, timeout: float = 300, num_ctx: int = 8192) -> dict:
@@ -54,6 +77,7 @@ def run(found: dict, tools: list[dict], vram_mb: float | None = None, system: st
     url = found["url"]
     models = [m for m in found["models"] if not any(s in m["name"].lower() for s in local_llm.SKIP)]
     models.sort(key=local_llm.strength, reverse=True)
+    jobs = job_probes(tools)
     results = []
 
     def note(row: dict) -> None:
@@ -75,17 +99,18 @@ def run(found: dict, tools: list[dict], vram_mb: float | None = None, system: st
             continue
         if on_progress:
             on_progress({"done": len(results), "total": len(models), "testing": name})
-        note(_test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_ctx))
+        note(_test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_ctx, jobs))
 
     passed = [r for r in results if r["result"] == "pass"]
-    best = max(passed, key=lambda r: r["strength"], default=None)
+    # the one that does Vesper's everyday jobs best; of equals, the strongest
+    best = max(passed, key=lambda r: (r.get("jobs_score", 0), r["strength"]), default=None)
     light = min((r for r in passed if r["strength"] >= 3), key=lambda r: (r.get("size_gb") or 0), default=None)
     return {"best": best["name"] if best else None, "light": (light or best or {}).get("name"),
             "results": results, "models": [m["name"] for m in found["models"]],
             "vram_gb": round(vram_mb / 1024, 1) if vram_mb else None, "at": datetime.now().isoformat(timespec="seconds")}
 
 
-def _test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_ctx) -> dict:
+def _test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_ctx, jobs=()) -> dict:
     name = m["name"]
     llm = local_llm.OllamaLLM(url, name, http=http, caps=m.get("caps"), keep_alive="2m", timeout=timeout,
                               num_ctx=num_ctx)
@@ -105,6 +130,19 @@ def _test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_
                                         ", ".join(c["name"] for c in out["tool_calls"]) or repr(out["content"][:60])))
         row["actions"] = f"{acted}/{len(PROBES)}"
         row["did"] = did
+        if jobs:
+            right, missed = 0, []
+            for case in jobs:
+                out = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": case["say"]}],
+                               tools=tools, temperature=0, max_tokens=200)
+                if _job_done(case, out["tool_calls"]):
+                    right += 1
+                else:
+                    missed.append(f"{case['say']} -> " + (", ".join(f"{c['name']}({json.dumps(c['arguments'])})"
+                                                                    for c in out["tool_calls"]) or "no action"))
+            row["jobs"] = f"{right}/{len(jobs)}"
+            row["jobs_score"] = round(right / len(jobs), 3)
+            row["jobs_missed"] = missed
         first, words = [None], []
         t0 = time.perf_counter()
 
@@ -147,7 +185,8 @@ def summary(result: dict) -> str:
     if not result.get("best"):
         return "None of your models passed: " + "; ".join(f"{r['name']} {r['note']}" for r in result["results"][:4])
     best = next(r for r in result["results"] if r["name"] == result["best"])
-    line = f"Using {best['name']}: it took the right actions and starts answering in {best['first_word_s']} seconds."
+    jobs = f", got {best['jobs'].replace('/', ' of ')} everyday jobs right" if best.get("jobs") else ""
+    line = f"Using {best['name']}: it took the right actions{jobs} and starts answering in {best['first_word_s']} seconds."
     if result.get("light") and result["light"] != result["best"]:
         line += f" On stream nights I'll switch to {result['light']} to leave the GPU to the game."
     return line

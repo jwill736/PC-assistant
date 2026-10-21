@@ -159,7 +159,9 @@ Out of the box it answers with whatever it finds (Setup → **Brain** shows whic
   the CPU. So Vesper loads each of your Ollama models that can take actions and fits the card (with room left for
   Windows, a game and OBS's encoder: the larger of 4 GB or a fifth of it), gives each the same checks with its real
   instructions and tools (two spoken commands that must become the right action, and a question it must start
-  answering within 3 seconds), and uses the strongest that passes. Nothing is executed during the test. It runs by
+  answering within 3 seconds), then asks it for Vesper's everyday jobs the way people say them ("can you see if Dana
+  got back to me about the contract", from the answer-quality eval in `evals/`), and uses the one that passes and gets
+  the most jobs right (of equals, the strongest). Nothing is executed during the test. It runs by
   itself a minute after the first start and again when your list of models changes, or from Setup → Brain → **Test my
   models**; results are in `data/brain_bench.json`, and each model in the picker says how it did. Pick one yourself
   (Setup → Brain, or `brain.local.model`) and that one is used. Untested, it takes the strongest that fits the card;

@@ -1,0 +1,3 @@
+# eval results stay on the PC that made them (CI uploads them as a job artifact)
+*
+!.gitignore

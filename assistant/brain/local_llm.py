@@ -429,8 +429,8 @@ def _finish(content: str, calls: list[dict], tools_offered: bool) -> dict:
 class LocalBrain:
     """Finds the local model and keeps looking (every minute) if it isn't running yet.
 
-    Which model: the one you pinned (brain.local.model or Setup → Brain), else the strongest that passed the
-    test on this PC (model_bench), else the strongest that fits the graphics card. While you stream it moves to
+    Which model: the one you pinned (brain.local.model or Setup → Brain), else the one that passed the test on
+    this PC and did the most everyday jobs right (model_bench), else the strongest that fits the graphics card. While you stream it moves to
     the light model and unloads the big one, so the game and OBS's encoder keep the video memory.
     """
 
@@ -566,7 +566,7 @@ class LocalBrain:
             row = tested.get(m["name"]) or {}
             choices.append({"name": m["name"], "size_gb": round(m["bytes"] / GIB, 1) if m.get("bytes") else None,
                             "tools": m.get("tools"), "fits": fits(m, vram), "result": row.get("result"),
-                            "first_word_s": row.get("first_word_s")})
+                            "first_word_s": row.get("first_word_s"), "jobs": row.get("jobs")})
         return {"ready": self.llm is not None, "server": server_label(f.get("kind"), f.get("url")),
                 "url": f.get("url"), "model": self.llm.model if self.llm else None,
                 "can_act": self.llm.can_act if self.llm else None,

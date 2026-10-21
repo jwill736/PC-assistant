@@ -961,7 +961,10 @@ render.speech = function speech() {
         voices ? h('span', { class: 'k' }, 'Speed') : null, voices ? h('span', { class: 'range-row' }, speed, speedOut) : null,
         h('span', { class: 'k' }, 'First words after'),
         h('span', {}, t.first_audio_ms != null ? `${t.first_audio_ms} ms` : '—', h('span', { class: 'muted' }, t.first_audio_ms != null ? ' · median of recent replies' : ' · measured on the next reply')),
-        h('span', { class: 'k' }, 'You stop → it speaks'), turnLatency(t.turns)),
+        h('span', { class: 'k' }, 'You stop → it speaks'), turnLatency(t.turns),
+        h('span', { class: 'k' }, 'Glitches'), h('span', {}, t.underruns
+          ? status('warning', `${t.underruns} this session · the sound card ran dry (raise voice.tts.output_latency)`)
+          : status('good', 'none this session'))),
       t.error ? h('div', { class: 'empty' }, status('warning', t.error)) : null,
       !t.neural_available ? h('div', { class: 'empty' }, status('warning', 'Natural voices need the voice packages: run setup.bat again.')) : null,
       h('div', { class: 'controls' },

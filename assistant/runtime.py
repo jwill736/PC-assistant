@@ -52,7 +52,8 @@ class Runtime:
         self.speaker = Speaker(self.bus, tts.get("engine", "auto"), tts.get("rate", 190), tts.get("voice_hint", ""),
                                voice=tts.get("voice") or None, speed=float(tts.get("speed", 1.0)),
                                threads=int(tts.get("threads", 2)), models_dir=cfg.data_dir / "models",
-                               output_device=tts.get("output_device"))
+                               output_device=tts.get("output_device"),
+                               output_latency=_latency(tts.get("output_latency", "high")))
         self.svc.speak = self.speaker.say
         # Wake to first words, per turn (the Speaking voice panel), and the voice made ready while you talk.
         self.latency = TurnLatency(lambda: self.speaker.turn,
@@ -1236,3 +1237,13 @@ def _guess_profile(cal: dict) -> str:
     if cal.get("primary") and not cal.get("account", "").endswith("@gmail.com"):
         return "work"
     return "work" if "work" in name else "personal"
+
+
+def _latency(value) -> str | float:
+    """voice.tts.output_latency: "low" / "high" (PortAudio's), or seconds (0.25)."""
+    if isinstance(value, str) and value.strip().lower() in ("low", "high"):
+        return value.strip().lower()
+    try:
+        return min(1.0, max(0.02, float(value)))
+    except (TypeError, ValueError):
+        return "high"

@@ -66,6 +66,7 @@ voice:
     speed: 1.0
     stream: true                # speak Claude's reply sentence by sentence as it arrives
     # output_device: null       # speakers/headphones by index or name; default = Windows default
+    output_latency: high        # sound-card buffer: high (smooth), low (~0.15 s sooner, can stutter), or seconds e.g. 0.3
     # voice_hint: David         # pyttsx3 only: part of a SAPI voice name, e.g. "David", "Zira"
 
 # Conversation mode: "Vesper, let's talk" (or Talk on the HUD). Every sentence in your voice is a turn, no name

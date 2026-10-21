@@ -451,7 +451,7 @@ def run(cfg, svc=None, runtime=None, *, timeout: float = 15.0, write: bool = Tru
                    if runtime is not None and getattr(runtime, "started", None) else None},
         "system": got("system", {}), "gpu": got("gpu", {}), "models": models,
         "checks": checks, "skills": skills, "connections": connections, "startup": startup,
-        "watchdog": watchdog, "log": recent_log_lines(cfg.data_dir),
+        "watchdog": watchdog, "voice": voice_report(runtime), "log": recent_log_lines(cfg.data_dir),
     }
     report = Redactor.for_cfg(cfg).deep(report)
     if write:
@@ -599,10 +599,49 @@ def to_markdown(r: dict) -> str:
             for p in wd])
     else:
         lines += ["Vesper wasn't running in this process: run diagnostics from the HUD (Setup → Diagnostics) for this.", ""]
+    v = r.get("voice")
+    lines += ["## Voice · what the mic heard and why", ""]
+    if v:
+        tts = v.get("speaker") or {}
+        prof = v.get("profile") or {}
+        lines += [f"Speech: {tts.get('engine') or '—'}, first word {tts.get('first_audio_ms') or '—'} ms, "
+                  f"glitches (sound card ran dry) {tts.get('underruns', 0)}, buffer {v.get('output_latency') or '—'}.",
+                  f"Voice check: {prof.get('mode') or 'off'}, threshold {prof.get('threshold', '—')}"
+                  f" (calibrated {prof.get('enrolled_threshold', '—')}), last score {prof.get('last_score', '—')}, "
+                  f"learned {prof.get('learned', 0)}. Wake words: {', '.join(v.get('wake_words') or []) or '—'}.", ""]
+        rows = [[datetime.fromtimestamp(h["ts"]).strftime("%H:%M:%S"), h.get("text") or "",
+                 "ran" if (h.get("wake") or h.get("armed")) and not h.get("ignored") else
+                 h.get("ignored") or ("no name" if h.get("wake") is False else "—"),
+                 h.get("score") if h.get("score") is not None else "", h.get("stt_ms") or ""] for h in v.get("heard") or []]
+        lines += _table(["Time", "Heard", "Outcome", "Voice score", "STT ms"], rows) if rows else ["Nothing heard yet.", ""]
+    else:
+        lines += ["Voice is off, or Vesper wasn't running in this process.", ""]
     lines += [f"## Recent warnings and errors (last {LOG_LINES}, data/logs/assistant.log)", ""]
     log_lines = r.get("log") or []
     lines += (["```", *log_lines, "```"] if log_lines else ["None."]) + [""]
     return "\n".join(lines)
+
+
+def voice_report(runtime) -> dict | None:
+    """The last 40 sentences the mic caught (what ran, what was ignored and why), the voice check and the speaker."""
+    lst = getattr(runtime, "listener", None) if runtime is not None else None
+    if lst is None:
+        return None
+    sp = getattr(runtime, "speaker", None)
+    ver = getattr(runtime, "verifier", None)
+    try:
+        tts = sp.status() if sp is not None else {}
+    except Exception:
+        tts = {}
+    try:
+        prof = ver.status() if ver is not None else {}
+    except Exception:
+        prof = {}
+    out = getattr(sp, "out", None)
+    return {"heard": list(getattr(lst, "recent_heard", []) or []), "wake_words": list(getattr(lst, "wake_words", []) or []),
+            "speaker": {k: tts.get(k) for k in ("engine", "first_audio_ms", "underruns")},
+            "output_latency": getattr(out, "latency", None),
+            "profile": {k: prof.get(k) for k in ("mode", "threshold", "enrolled_threshold", "last_score", "learned")}}
 
 
 # ---- python -m assistant --diagnose ---------------------------------------------------------------------------------

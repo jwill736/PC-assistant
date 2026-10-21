@@ -85,6 +85,33 @@ def test_audio_out_plays_chunks_in_order_then_goes_idle():
     assert not out.playing and out.wait(timeout=0.1)
 
 
+def test_a_dry_buffer_mid_reply_is_counted_and_silence_between_replies_is_not():
+    out, streams = audio_out()
+    dry = SimpleNamespace(output_underflow=True)
+    out.play(np.ones(2000, np.float32))
+    buf = np.zeros((480, 1), np.float32)
+    streams[0].callback(buf, 480, None, dry)  # the card asked late while a reply was playing: a glitch J heard
+    streams[0].callback(buf, 480, None, SimpleNamespace(output_underflow=False))
+    assert out.underruns == 1
+    streams[0].pull(2000)  # the reply ends
+    assert not out.playing
+    streams[0].callback(buf, 480, None, dry)  # idle: nothing was audible, nothing to count
+    assert out.underruns == 1
+
+
+def test_the_sound_card_buffer_defaults_to_high_and_follows_the_setting(monkeypatch):
+    from assistant.runtime import _latency
+
+    assert AudioOut(24000).latency == "high"
+    assert (_latency("LOW"), _latency("high"), _latency(0.3), _latency("0.25"), _latency(9), _latency("bogus")) == (
+        "low", "high", 0.3, 0.25, 1.0, "high")
+    seen = {}
+    fake_sd = SimpleNamespace(OutputStream=lambda **kw: seen.update(kw) or SimpleNamespace(start=lambda: None))
+    monkeypatch.setitem(__import__("sys").modules, "sounddevice", fake_sd)
+    AudioOut(24000, latency=0.3).play(np.ones(10, np.float32))
+    assert seen["latency"] == 0.3
+
+
 def test_abort_fades_out_within_ten_ms_instead_of_clicking():
     out, streams = audio_out(sr=1000)
     out.play(np.ones(5000, np.float32))

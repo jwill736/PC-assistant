@@ -27,6 +27,8 @@ from .services import Services, build_services
 from .voice.hotkey import register_hotkey
 from .voice import calibrate as calib
 from .voice import neural
+from .voice.confirm_window import ConfirmWindow
+from .voice.latency import Prewarm, TurnLatency
 from .voice.listener import VoiceListener
 from .voice.speaker_id import SpeakerVerifier, delete_profile
 from .voice.tts import Speaker
@@ -47,6 +49,14 @@ class Runtime:
                                threads=int(tts.get("threads", 2)), models_dir=cfg.data_dir / "models",
                                output_device=tts.get("output_device"))
         self.svc.speak = self.speaker.say
+        # Wake to first words, per turn (the Speaking voice panel), and the voice made ready while you talk.
+        self.latency = TurnLatency(lambda: self.speaker.turn,
+                                   on_change=lambda: self.bus.publish("tts", self.speaker.status(), sticky=True))
+        self.speaker.on_first_audio, self.speaker.latency = self.latency.first_audio, self.latency.report
+        self.bus.on(self.latency.on_event)
+        self.bus.on(Prewarm(self.speaker).on_event)
+        # Voice commands pass these first: (text, owner) -> None (go on), True (handled), or new text to run.
+        self.voice_taps: list = []
         # Voice commands run here, not on the mic thread, so "stop" is heard while Claude thinks or talks.
         self._commands = ThreadPoolExecutor(max_workers=1, thread_name_prefix="command")
         self._bench_running = False  # the model test (one at a time)
@@ -100,10 +110,16 @@ class Runtime:
         # PC control safety: the kill switch also silences speech and stops background jobs.
         self.assistant.on_kill = self._on_kill
         pc = cfg.get("pc_control") or {}
+        toaster = None
         if pc.get("toast_confirm", True) and toast.available():
-            self.assistant.on_pending = toast.ToastConfirmer(
+            toaster = toast.ToastConfirmer(
                 lambda pid: self.confirm_pending(pid, "toast"), lambda pid: self.assistant.cancel(pid),
                 cfg["assistant"]["name"])
+        # Asked once out loud, ten seconds to answer without the wake word, then the HUD card and the toast wait.
+        self.confirm_window = ConfirmWindow(self.bus, self.speaker, lambda: self.listener, self.assistant,
+                                            toast=toaster, window_s=float(pc.get("confirm_listen_s", 10)))
+        self.assistant.on_pending = self.confirm_window.on_pending
+        self.voice_taps.append(self.confirm_window.tap)
 
     def _hint_words(self) -> list[str]:
         """Vocabulary that biases speech recognition toward your scene/app names."""
@@ -118,6 +134,17 @@ class Runtime:
             self.kill_switch("voice")
             return
         owner = getattr(self.listener, "last_owner", "unknown") if self.listener else "unknown"
+        for tap in list(self.voice_taps):  # a yes/no window, dictation
+            try:
+                out = tap(text, owner)
+            except Exception:
+                log.exception("voice tap failed")
+                continue
+            if out is True:
+                return
+            if isinstance(out, str) and out:
+                text = out
+                break
         self._commands.submit(self._run_voice_command, text, turn, owner)
 
     def command(self, text: str, source: str = "automation") -> dict:
@@ -1070,6 +1097,7 @@ class Runtime:
             "active_profile": self.assistant.active_profile,
             "voice": self.listener.status() if self.listener else {"state": "disabled"},
             "pending": self.assistant.pending_view(),
+            "confirm_window": self.confirm_window.status(),
             "tasks": self.svc.storage.list_tasks(),
             "notes": self.svc.storage.list_notes(8),
             "jobs": self.svc.storage.list_jobs(15),

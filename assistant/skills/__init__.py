@@ -26,8 +26,8 @@ log = logging.getLogger(__name__)
 
 # Load order is the order on the HUD and in the briefing.
 MODULES = ["nudges", "memory", "weather", "automations", "inbox_zero", "meetings", "people", "planner", "focus", "habits",
-           "journal", "bills", "travel", "pulse", "screen", "clipboard", "rewind", "janitor", "mcp", "phone", "spotify",
-           "home", "youtube", "discord", "stream_copilot"]
+           "journal", "bills", "travel", "pulse", "screen", "selection", "dictation", "clipboard", "rewind", "janitor", "mcp",
+           "phone", "spotify", "home", "youtube", "discord", "stream_copilot"]
 
 
 class Skill:

@@ -267,7 +267,9 @@ class Phone(Skill):
         if not waiting:
             self.send(reply)
             return
-        reply = re.sub(r"\s*Say yes or cancel\.?\s*$", "", reply).strip()
+        reply = re.sub(r"\s*Say yes or (?:cancel|no)\.?\s*$", "", reply).strip()
+        if reply.rstrip("?").lower() == str(waiting["text"]).lower():  # the spoken question: "Launch the rocket?"
+            reply = ""
         if "confirm" not in reply.lower():
             reply = f"{reply}\n\nConfirm: {waiting['text']}?".strip()
         self.send(f"{reply} Reply yes or no.", buttons=[("Yes", "yes"), ("No", "no")])

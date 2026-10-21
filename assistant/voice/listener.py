@@ -170,6 +170,7 @@ class VoiceListener:
         self.error = ""
         self.muted = False
         self.paused = False  # calibration borrows the mic
+        self.tap: Callable | None = None  # gets every mic frame, paused or not (dictation records through it)
         self.verifier = verifier  # SpeakerVerifier or None
         self.armed_until = 0.0
         self.armed_by = ""
@@ -398,6 +399,9 @@ class VoiceListener:
                     frame = self._audio.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                tap = self.tap
+                if tap is not None:
+                    tap(frame)
                 speaking = self.speaker.speaking.is_set()
                 barge_in = self.cfg.get("barge_in", True)
                 if self.muted or self.paused or (speaking and not barge_in):

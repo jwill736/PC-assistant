@@ -26,7 +26,7 @@ def test_risky_router_action_waits_for_yes(svc, monkeypatch):
     monkeypatch.setattr("assistant.brain.tools.desktop.close_processes", lambda names, protected: closed.append(names) or {"ok": True, "closed": 1, "still_running": 0, "names": sorted(names)})
     a = Assistant(svc)
     out = a.handle("close steam")
-    assert out["kind"] == "pending" and "close steam" in out["reply"]
+    assert out["kind"] == "pending" and out["reply"] == "Close steam? Say yes or no."
     assert closed == []
     assert a.handle("yes")["reply"].startswith("Closed")
     assert closed and "steam" in closed[0]

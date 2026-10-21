@@ -215,12 +215,15 @@ A long rewrite asks "Replace your selection with it?" first.
    ```
    notepad %USERPROFILE%\Vesper\config.yaml
    ```
-   Under the `skills:` line add these two lines (35 = your usual minutes to the airport; change it), save, then
-   restart Vesper: press <kbd>Win</kbd>, type `Update Vesper`, press <kbd>Enter</kbd>:
+   Go to the very end of the file and paste these three lines (35 = your usual minutes to the airport; change it).
+   If the file already has a line that is exactly `skills:`, paste only the last two lines straight under it instead.
    ```
+   skills:
      travel:
        drive_min: 35
    ```
+   Save (<kbd>Ctrl</kbd>+<kbd>S</kbd>), then restart Vesper: press <kbd>Win</kbd>, type `Update Vesper`, press
+   <kbd>Enter</kbd>.
 
 ---
 

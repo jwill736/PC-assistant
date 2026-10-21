@@ -205,6 +205,7 @@ class VoiceListener:
         # Conversation mode and "on air", wired by skills/conversation.py (no wake word between turns while talking).
         self.in_conversation: Callable[[], bool] = lambda: False
         self.is_live: Callable[[], bool] = lambda: False
+        self.conversation_noise: Callable[[], None] = lambda: None  # "hmm" mid-conversation: J is thinking
         self.unaddressed: deque = deque(maxlen=20)  # when we heard talk that wasn't for us (a chatty room)
         self.last_voice_end = 0.0  # when the last utterance (anyone's) ended: silence closes the follow-up early
         self._window = ""  # what the HUD was last told about the open window
@@ -608,6 +609,8 @@ class VoiceListener:
             # "hmm", or a "lol" at something else: not a turn (in a window after a statement, not even "yeah")
             self.bus.publish("heard", {"text": text, "ignored": "not a turn", "stt_ms": stt_ms})
             self.unaddressed.append(time.time())
+            if source == "conversation":
+                self.conversation_noise()  # "hmm…": not a turn, but J is still there (the quiet minute starts over)
             return
         if not (matched or source):
             self.bus.publish("heard", {"text": text, "wake": False, "armed": False, "stt_ms": stt_ms})

@@ -113,6 +113,7 @@ class Assistant:
         svc.off_record = self.set_off_record
         self.convo = convo_mod.Conversation(svc)  # conversation mode (brain/conversation.py)
         self.convo.brain = self.brain
+        self.convo.off_record_check = lambda: time.time() < self.off_record_until
         svc.conversation = self.convo
         self.on_kill = None  # the runtime adds what only it can stop: speech, background jobs
         self.on_pending = None  # e.g. a Windows toast with Yes/No buttons
@@ -244,7 +245,7 @@ class Assistant:
             out += convo_mod.ON_STREAM.format(user=user)
         if self.convo.summary:
             out += f"\nEarlier in this conversation (summary): {self.convo.summary}"
-        return out
+        return out + self.convo.prompt_extra()  # style, mode, the thread it continues (Vesper 2.2)
 
     def _fold(self, msgs: list, is_turn) -> list:
         """Drop all but the last few exchanges from ``msgs``; what's dropped goes into the rolling summary."""
@@ -255,11 +256,17 @@ class Assistant:
         self.convo.fold(self.think, keep)
         return msgs[starts[-keep]:]
 
-    def start_conversation(self, on_stream: bool = False, topic: str = "", source: str = "voice") -> dict:
-        """"Let's talk" (or the HUD's Talk button): no wake word between turns until it ends."""
-        ok, why = self.convo.begin(on_stream=on_stream, source=source)
+    def start_conversation(self, on_stream: bool = False, topic: str = "", source: str = "voice", mode: str = "",
+                           resume: str | None = None, off_record: bool = False) -> dict:
+        """"Let's talk" (or the HUD's Talk button): no wake word between turns until it ends. ``mode`` (brainstorm,
+        coach…), ``resume`` (continue an earlier thread: its topic, or "" for the last one), ``off_record``."""
+        ok, why = self.convo.begin(on_stream=on_stream, source=source, mode=mode, off_record=off_record,
+                                   fresh=bool(topic or mode or resume is not None))
         if not ok:
             return {"reply": why, "kind": "conversation_off"}
+        opener = self.convo.opener(topic=topic, resume=resume, mode=mode, already=why == "already")
+        if opener:  # a recap, an offer to pick up an earlier talk, or a mode's hello: no model call
+            return {"reply": opener, "kind": "conversation"}
         if topic:
             with self._lock:
                 return {"reply": self._ask(f"Let's talk about {topic}.", convo=True), "kind": self.brain() or "offline"}
@@ -400,7 +407,8 @@ class Assistant:
         if kind == "conversation":
             return self.start_conversation(on_stream=bool(intent.args.get("on_stream")),
                                            topic=str(intent.args.get("topic") or ""),
-                                           source=self._ctx.get("source") or "text")
+                                           source=self._ctx.get("source") or "text", mode=str(intent.args.get("mode") or ""),
+                                           resume=intent.args.get("resume"), off_record=bool(intent.args.get("off_record")))
         if kind == "conversation_end":
             return self.end_conversation("said")
         if kind == "time":
@@ -592,19 +600,21 @@ class Assistant:
     off_record_until: float = 0.0
 
     def off_record(self) -> bool:
-        """"Off the record": nothing said is written to the log or learned until it ends (skills/memory.py)."""
-        return time.time() < self.off_record_until
+        """"Off the record": nothing said is written to the log or learned until it ends (skills/memory.py), and
+        nothing from an off-the-record conversation either."""
+        return time.time() < self.off_record_until or bool(self.convo.active and self.convo.off_record)
 
     def _memory_context(self, text: str, include_private: bool = True) -> str:
         """The core profile and the facts relevant to this question (skills/memory.py), or nothing."""
+        note = self.convo.context_note()  # a follow-up Vesper just asked (skills/conversation.py)
         mem = self.svc.memory
         if mem is None:
-            return ""
+            return note
         try:
-            return mem.context_for(text, include_private=include_private)
+            return "\n\n".join(x for x in (mem.context_for(text, include_private=include_private), note) if x)
         except Exception:
             log.exception("memory recall failed")
-            return ""
+            return note
 
     def _context_line(self) -> str:
         now = datetime.now(self.svc.tz)

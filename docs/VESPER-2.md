@@ -1,5 +1,7 @@
 # Vesper 2.0 · every new feature, and how to switch each one on
 
+> **Vesper 2.1** (conversation mode and 34 upgrades) has its own walkthrough: [VESPER-2.1.md](VESPER-2.1.md).
+
 This is the walkthrough for the big upgrade: 50+ new abilities. Most work the moment you update. A few need an
 account connected once. Do the parts in order; each says how long it takes and what you should see.
 

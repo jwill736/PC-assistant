@@ -187,6 +187,7 @@ class VoiceListener:
         self.error = ""
         self.muted = False
         self.paused = False  # calibration borrows the mic
+        self.recent_heard: deque = deque(maxlen=40)  # the diagnostics report: why sentences ran or didn't
         self.tap: Callable | None = None  # gets every mic frame, paused or not (dictation records through it)
         self.taps: list[Callable] = []  # more frame consumers alongside it (the recorder): add_tap / remove_tap
         self.verifier = verifier  # SpeakerVerifier or None
@@ -361,7 +362,7 @@ class VoiceListener:
             elif not speaking and not self.muted:  # "clip that": act now, no speech-to-text
                 command = (self.cfg.get("hard_triggers") or {}).get(name) or name.replace("_", " ")
                 self.last_command = time.time()
-                self.bus.publish("heard", {"text": command, "trigger": name, "score": score})
+                self._heard({"text": command, "trigger": name, "score": score})
                 self.on_command(command)
 
     def _acoustic_wake(self, started_at: float | None) -> bool:
@@ -572,6 +573,12 @@ class VoiceListener:
             return True
         return difflib.SequenceMatcher(None, a, b).ratio() >= 0.6
 
+    def _heard(self, data: dict) -> None:
+        """Every sentence the mic caught and what became of it: the HUD strip, and the diagnostics report."""
+        self.recent_heard.append({"ts": time.time(), **{k: v for k, v in data.items() if k != "stt_ms"},
+                                  "stt_ms": data.get("stt_ms")})
+        self.bus.publish("heard", data)
+
     def _suggested(self, text: str, started_at: float | None) -> bool:
         """Is this the phrase Vesper just told J to say ('Say “why is my drive full”…')? Then it's his answer, not
         the reply coming back through the speakers: he started talking after Vesper had finished."""
@@ -607,7 +614,7 @@ class VoiceListener:
             return
         suggested = not during_speech and self._suggested(text, started_at)
         if not suggested and self.is_own_echo(text):
-            self.bus.publish("heard", {"text": text, "ignored": "own voice", "stt_ms": stt_ms})
+            self._heard({"text": text, "ignored": "own voice", "stt_ms": stt_ms})
             return
         matched, command = split_wake(text, self.wake_words)
         if suggested and not matched:
@@ -622,7 +629,7 @@ class VoiceListener:
             if said in STOP_PHRASES:
                 if self._owner_ok(samples, source) and not self._stop_word_is_echo(said):
                     self.speaker.interrupt()
-                    self.bus.publish("heard", {"text": text, "interrupted": True, "stt_ms": stt_ms})
+                    self._heard({"text": text, "interrupted": True, "stt_ms": stt_ms})
                     if said == "cancel" or (said in CONVERSATION_STOP and source == "conversation"):
                         self.last_command = time.time()
                         self.on_command(said)  # cancel what's waiting / end the conversation
@@ -633,17 +640,17 @@ class VoiceListener:
                 elif source == "conversation" and self._barge_in_ok(text):
                     matched, command = True, text  # in a conversation, you talking is the next turn
                 else:
-                    self.bus.publish("heard", {"text": text, "ignored": "while speaking", "stt_ms": stt_ms})
+                    self._heard({"text": text, "ignored": "while speaking", "stt_ms": stt_ms})
                     return
         if not matched and source in ("next", "conversation") and self._not_a_turn(text, source):
             # "hmm", or a "lol" at something else: not a turn (in a window after a statement, not even "yeah")
-            self.bus.publish("heard", {"text": text, "ignored": "not a turn", "stt_ms": stt_ms})
+            self._heard({"text": text, "ignored": "not a turn", "stt_ms": stt_ms})
             self.unaddressed.append(time.time())
             if source == "conversation":
                 self.conversation_noise()  # "hmm…": not a turn, but J is still there (the quiet minute starts over)
             return
         if not (matched or source):
-            self.bus.publish("heard", {"text": text, "wake": False, "armed": False, "stt_ms": stt_ms})
+            self._heard({"text": text, "wake": False, "armed": False, "stt_ms": stt_ms})
             self.unaddressed.append(time.time())
             return
         # Only the owner may command it — unless they physically pressed push-to-talk.
@@ -652,7 +659,7 @@ class VoiceListener:
             accepted, score = self.verifier.check(samples)
             if not accepted:
                 rid, streak = self._remember_rejection(command if matched else text, matched, score)
-                self.bus.publish("heard", {"text": text, "ignored": "voice not recognised", "score": score, "stt_ms": stt_ms,
+                self._heard({"text": text, "ignored": "voice not recognised", "score": score, "stt_ms": stt_ms,
                                            "rejection": rid, "rejections_recent": streak})
                 return
             profile = getattr(self.verifier, "profile", None)
@@ -660,7 +667,7 @@ class VoiceListener:
                 owner = "match" if score >= profile.threshold else "mismatch"
         if during_speech:
             self.speaker.interrupt()
-        self.bus.publish("heard", {"text": text, "wake": matched, "armed": bool(source), "stt_ms": stt_ms,
+        self._heard({"text": text, "wake": matched, "armed": bool(source), "stt_ms": stt_ms,
                                    **({"acoustic": True} if acoustic else {})})
         if matched and not command:
             self.arm(source="wake")  # "Vesper?" -> listen for the actual command

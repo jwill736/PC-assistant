@@ -712,3 +712,23 @@ def test_skills_start_in_the_background(cfg, svc, monkeypatch):
         assert "hud_ready_s" in rt.timings and "start_s" in rt.timings
         assert "skill · Weather" in rt.supervisor.parts
         assert json.loads((cfg.data_dir / diag.STARTUP_FILE).read_text())["skill_start_ms"]["weather"] >= 1400
+
+
+def test_the_report_shows_what_the_mic_heard_and_why_it_was_ignored():
+    heard = [{"ts": 1_790_000_000, "text": "Vesper, what time is it?", "ignored": "voice not recognised", "score": 0.41,
+              "stt_ms": 120},
+             {"ts": 1_790_000_060, "text": "why is my drive full", "wake": False, "armed": False, "stt_ms": 90},
+             {"ts": 1_790_000_120, "text": "Vesper, what time is it?", "wake": True, "armed": False, "stt_ms": 95}]
+    rt = SimpleNamespace(
+        listener=SimpleNamespace(recent_heard=heard, wake_words=["vesper"]),
+        speaker=SimpleNamespace(status=lambda: {"engine": "supertonic", "first_audio_ms": 310, "underruns": 3},
+                                out=SimpleNamespace(latency="high")),
+        verifier=SimpleNamespace(status=lambda: {"mode": "strict", "threshold": 0.5, "enrolled_threshold": 0.52,
+                                                 "last_score": 0.41, "learned": 1}))
+    v = diag.voice_report(rt)
+    assert v["speaker"]["underruns"] == 3 and v["profile"]["threshold"] == 0.5 and len(v["heard"]) == 3
+    md = diag.to_markdown({"summary": {}, "checks": [], "voice": v})
+    section = md.split("## Voice · what the mic heard and why")[1].split("## ")[0]
+    assert "glitches (sound card ran dry) 3, buffer high" in section and "threshold 0.5 (calibrated 0.52)" in section
+    assert "| voice not recognised | 0.41 |" in section and "| no name |" in section and "| ran |" in section
+    assert diag.voice_report(None) is None and diag.voice_report(SimpleNamespace(listener=None)) is None

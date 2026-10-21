@@ -57,7 +57,7 @@ def resolve_engine(engine: str) -> str:
 class Speaker:
     def __init__(self, bus: EventBus, engine: str = "auto", rate: int = 190, voice_hint: str = "", *,
                  voice: str | None = None, speed: float = 1.0, threads: int = 2, models_dir: Path | None = None,
-                 output_device=None, loader=None, audio_factory=None):
+                 output_device=None, output_latency: str | float = "high", loader=None, audio_factory=None):
         self.bus = bus
         self.requested = engine
         self.engine_name = resolve_engine(engine)
@@ -66,7 +66,8 @@ class Speaker:
         self.models_dir = models_dir
         self.output_device = output_device
         self._loader = loader or neural.load
-        self._audio_factory = audio_factory or (lambda sr: neural.AudioOut(sr, device=self.output_device))
+        self._audio_factory = audio_factory or (lambda sr: neural.AudioOut(sr, device=self.output_device,
+                                                                            latency=output_latency))
         self.neural: neural.NeuralVoice | None = None
         self.out: neural.AudioOut | None = None
         self.state, self.error = "idle", ""
@@ -256,6 +257,7 @@ class Speaker:
             "speed": self.speed,
             "first_audio_ms": round(statistics.median(lat)) if lat else None,
             "turns": self.latency() if self.latency is not None else None,
+            "underruns": getattr(self.out, "underruns", 0) if self.out is not None else 0,
             "voices": {e: [{"id": v.id, "label": v.label} for v in vs] for e, vs in neural.VOICES.items()},
             "labels": {**neural.LABELS, "pyttsx3": "Windows voice (SAPI)", "browser": "Browser voice", "none": "Silent"},
             "neural_available": neural.available(),

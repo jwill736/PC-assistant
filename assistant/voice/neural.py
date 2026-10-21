@@ -229,9 +229,15 @@ class AudioOut:
 
     FADE_S = 0.01  # ramp down instead of cutting mid-waveform (a cut clicks)
 
-    def __init__(self, sample_rate: int, device=None, stream_factory=None, idle_close_s: float = 15.0):
+    def __init__(self, sample_rate: int, device=None, stream_factory=None, idle_close_s: float = 15.0,
+                 latency: str | float = "high"):
         self.sample_rate = sample_rate
         self.device = device
+        # "low" asks Windows for the smallest buffer: any moment this process is busy (speech-to-text, a model
+        # call, a background job) it runs dry and the voice stutters. "high" costs ~0.1-0.2 s before the first word.
+        self.latency = latency
+        self.underruns = 0  # times the buffer ran dry mid-reply (the Speaking voice panel shows it)
+        self._underrun_logged = 0.0
         self.idle_close_s = idle_close_s
         self._factory = stream_factory
         self._stream = None
@@ -248,7 +254,7 @@ class AudioOut:
         import sounddevice as sd
 
         return sd.OutputStream(samplerate=self.sample_rate, channels=1, dtype="float32", device=self.device,
-                               latency="low", callback=self._callback)
+                               latency=self.latency, callback=self._callback)
 
     def play(self, samples) -> None:
         import numpy as np
@@ -325,8 +331,15 @@ class AudioOut:
             except Exception:
                 log.debug("closing the output stream failed", exc_info=True)
 
-    def _callback(self, outdata, frames, _time=None, _status=None) -> None:
+    def _callback(self, outdata, frames, _time=None, status=None) -> None:
         out = outdata[:, 0] if getattr(outdata, "ndim", 1) == 2 else outdata
+        if status is not None and getattr(status, "output_underflow", False) and not self._idle.is_set():
+            self.underruns += 1  # a glitch J heard (silence between replies doesn't count)
+            now = time.monotonic()
+            if now - self._underrun_logged > 60:
+                self._underrun_logged = now
+                log.warning("speech output ran dry (%d so far): raise voice.tts.output_latency (now %s)",
+                            self.underruns, self.latency)
         filled = 0
         with self._lock:
             while filled < frames and self._chunks:

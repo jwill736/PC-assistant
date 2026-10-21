@@ -384,7 +384,8 @@ def test_commands_to_vesper_and_vesper_herself_stay_out_of_the_notes(svc):
     assert lines[1]["vesper"] and lines[1]["who"] == "Vesper" and e.r.session.dropped == 2
     e.r.stop_recording()
     md = Path(e.row()["notes_path"]).read_text(encoding="utf-8")
-    assert "Real words" in md and "3 PM" not in md and "mark that" not in md
+    # Vesper's "It's 3 PM." stays out; the bare "3 PM" would also match the heading's clock ("4:43 PM")
+    assert "Real words" in md and "It's 3 PM" not in md and "mark that" not in md
 
 
 def test_a_password_said_out_loud_is_never_written_down(svc):

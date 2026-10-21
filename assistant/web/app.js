@@ -120,7 +120,8 @@ const LEVEL_TONE = { urgent: 'error', critical: 'error', error: 'error', warning
   normal: 'info', info: 'info', low: 'info', quiet: 'info', vesper: 'vesper' };
 
 /* Toasts stack bottom-right (newest nearest the corner, at most 3), slide in, and leave on their own; hovering one
-   holds it. toast(text) still works; toast(text, 'error') or toast(text, { level, source, life }) add a tone. */
+   holds it. toast(text) still works; toast(text, 'error') or toast(text, { level, source, life }) add a tone, and
+   actions: [{ label, run, primary, cls }] adds buttons (a click runs it and closes the toast). */
 function toast(text, opt) {
   const o = typeof opt === 'string' ? { level: opt } : (opt || {});
   const tone = LEVEL_TONE[o.level] || 'info';
@@ -128,12 +129,15 @@ function toast(text, opt) {
   if (!box || !text) return;
   const life = o.life || (tone === 'error' ? 9000 : 6000);
   const close = h('button', { class: 't-x', 'aria-label': 'Dismiss' }, '✕');
+  const acts = (o.actions || []).map(a => h('button', { class: `btn small${a.primary ? ' primary' : ''}${a.cls ? ` ${a.cls}` : ''}`,
+    ...(a.attrs || {}), onclick: () => { dismiss(); a.run(); } }, a.label));
   const el = h('div', { class: 'toast', 'data-level': tone, role: tone === 'error' ? 'alert' : 'status' },
     h('span', { class: 't-ic' }, icon(o.source || (tone === 'error' || tone === 'warn' ? 'warn' : tone === 'good' ? 'ok' : 'vesper'))),
-    h('div', {}, o.source ? h('div', { class: 't-src' }, SOURCE_LABEL_N[o.source] || o.source.replace(/_/g, ' ')) : null, h('div', { class: 't-txt' }, text)),
+    h('div', {}, o.source ? h('div', { class: 't-src' }, SOURCE_LABEL_N[o.source] || o.source.replace(/_/g, ' ')) : null, h('div', { class: 't-txt' }, text),
+      acts.length ? h('div', { class: 't-acts' }, acts) : null),
     close, h('span', { class: 't-bar', 'aria-hidden': 'true' }));
   el.style.setProperty('--life', `${life}ms`);
-  const dismiss = () => { clearTimeout(el._t); el.classList.add('out'); setTimeout(() => el.remove(), 200); };
+  function dismiss() { clearTimeout(el._t); el.classList.add('out'); setTimeout(() => el.remove(), 200); }
   let left = life, started = Date.now();
   const arm = () => { started = Date.now(); el._t = setTimeout(dismiss, left); };
   el.addEventListener('mouseenter', () => { clearTimeout(el._t); left -= Date.now() - started; });
@@ -147,7 +151,7 @@ function toast(text, opt) {
 }
 const SOURCE_LABEL_N = { inbox_zero: 'Email', automations: 'Automation', nudges: 'Updates', calendar: 'Calendar', weather: 'Weather',
   break: 'Break', tasks: 'Tasks', welcome: 'Welcome back', focus: 'Focus', people: 'People', meetings: 'Meetings', janitor: 'PC',
-  pulse: 'Pulse', ambient: 'Look-around', vesper: 'Vesper', stream: 'Stream', obs: 'OBS', twitch: 'Twitch', highlight: 'Highlight', system: 'System' };
+  pulse: 'Pulse', ambient: 'Look-around', vesper: 'Vesper', voice: 'Your voice', stream: 'Stream', obs: 'OBS', twitch: 'Twitch', highlight: 'Highlight', system: 'System' };
 
 // Category -> colour: profiles take categorical slots in config order, then "other"; idle is neutral.
 function categories() { return [...Object.keys(S.data.profiles || { work: 1, stream: 1 }), 'other']; }
@@ -854,11 +858,13 @@ render.voice = function voice() {
     const last = v.last_calibration;
     fill(b,
       prof.enrolled
-        ? h('div', {}, status('good', 'Voice enrolled'), h('span', { class: 'muted' }, ` · ${prof.clips} samples · ${ago(prof.created)}`))
+        ? h('div', {}, status('good', 'Voice enrolled'), h('span', { class: 'muted' }, ` · ${prof.clips} samples · ${ago(prof.created)}`),
+          prof.learned ? h('span', { class: 'muted', title: 'Times you clicked “That was me” after it didn’t recognise you. Re-calibrate starts fresh.' },
+            ` · learned from ${prof.learned} correction${prof.learned === 1 ? '' : 's'}`) : null)
         : h('div', {}, status('warning', 'Not calibrated'), h('span', { class: 'muted' }, ' · anyone near the mic can give commands')),
       h('div', { class: 'kv' },
         h('span', { class: 'k' }, 'Only answer me'), h('span', {}, modes),
-        h('span', { class: 'k' }, 'Match threshold'), h('span', {}, prof.threshold != null ? `${prof.threshold}${prof.last_score != null ? ` · last voice ${prof.last_score}` : ''}` : '—'),
+        h('span', { class: 'k' }, 'Match threshold'), h('span', {}, prof.threshold != null ? `${prof.threshold}${prof.enrolled_threshold != null && prof.enrolled_threshold !== prof.threshold ? ` (calibrated ${prof.enrolled_threshold})` : ''}${prof.last_score != null ? ` · last voice ${prof.last_score}` : ''}` : '—'),
         h('span', { class: 'k' }, 'Speech engine'), h('span', {}, v.pipeline?.engine
           ? `${v.pipeline.engine} · ${v.pipeline.vad === 'silero' ? 'Silero' : 'energy'} voice detection${v.pipeline.latency_ms != null ? ` · ${v.pipeline.latency_ms} ms median` : ''}`
           : 'loads with the listener'),
@@ -870,7 +876,7 @@ render.voice = function voice() {
       prof.error ? h('div', { class: 'empty' }, status('warning', `Speaker check unavailable: ${prof.error}`)) : null,
       h('div', { class: 'controls' },
         h('button', { class: 'btn primary', onclick: startCalibration }, prof.enrolled ? 'Re-calibrate' : 'Calibrate my voice'),
-        prof.enrolled ? h('button', { class: 'btn', onclick: () => { if (confirm('Delete your voice profile?')) api('/api/voice/profile', { method: 'DELETE' }).then(refreshVoice); } }, 'Delete voice profile') : null),
+        prof.enrolled ? h('button', { class: 'btn', onclick: () => { if (confirm(`Delete your voice profile${prof.learned ? ' (and what it learned from your corrections)' : ''}?`)) api('/api/voice/profile', { method: 'DELETE' }).then(refreshVoice); } }, 'Delete voice profile') : null),
       h('div', { class: 't2' }, 'About a minute: stay quiet 5 s, say the name 5 times, read 3 lines. Your voice profile stays on this PC.'));
   }
 };
@@ -1719,6 +1725,7 @@ const strip = {
   you(text, { ignored = false } = {}) {
     const el = $('#heard');
     $('#strip-you').removeAttribute('data-empty');
+    for (const b of $$('.strip-me', $('#strip-you'))) b.remove();  // a "That was me" belongs to the line it sat by
     el.classList.remove('hint'); el.classList.toggle('ignored', ignored);
     el.title = text;
     FX.reveal(el, text, { mode: text.length <= 64 && !ignored ? 'decode' : 'type' });
@@ -2295,6 +2302,40 @@ const IGNORED_WHY = {
   'not a turn': 'just a sound',
 };
 
+/* The speaker check turned J away: "That was me" by the line and in a toast (learns the take, runs the sentence),
+   and "Re-calibrate". Only a click does this: saying "that was me" would let whoever was turned away vouch for
+   themselves (listener.py). After two in 10 minutes, the toast says calibration is the real fix. */
+const voiceMisses = [];
+function notYourVoice(d) {
+  const now = Date.now();
+  voiceMisses.push(now);
+  while (voiceMisses.length && now - voiceMisses[0] > 600000) voiceMisses.shift();
+  const again = Math.max(voiceMisses.length, d.rejections_recent || 0) >= 2;
+  const meAttrs = { 'data-rejection': d.rejection, title: 'Teach Vesper this was your voice and run it (for 2 minutes)' };
+  $('#strip-you')?.append(h('button', { class: 'btn small strip-me that-was-me', ...meAttrs, onclick: () => thatWasMe(d.rejection) }, 'That was me'));
+  toast(again ? 'I keep not recognising your voice — Re-calibrate (1 min) fixes it.'
+    : `That didn't sound like your voice, so I ignored it: “${d.text}”`, {
+    level: 'warn', source: 'voice', life: again ? 20000 : 12000,
+    actions: [
+      { label: 'That was me', primary: !again, cls: 'that-was-me', attrs: meAttrs, run: () => thatWasMe(d.rejection) },
+      { label: 'Re-calibrate', primary: again, run: recalibrateVoice },
+    ],
+  });
+}
+async function thatWasMe(id) {
+  for (const b of $$(`.that-was-me[data-rejection="${CSS.escape(id)}"]`)) b.disabled = true;
+  let r;
+  try { r = await post('/api/voice/that_was_me', { id }); } catch (err) { r = { ok: false, error: `Couldn't reach Vesper (${err.message}).` }; }
+  for (const b of $$(`.that-was-me[data-rejection="${CSS.escape(id)}"]`)) b.remove();
+  if (r.ok === false) { toast(r.error, { level: 'warn', source: 'voice' }); return; }
+  toast(r.ran ? `Got it, I'll know your voice better. Running “${r.ran}”.` : r.message, { level: 'good', source: 'voice' });
+}
+function recalibrateVoice() {
+  const p = panels('voice')[0];
+  if (p) jumpTo(p);
+  startCalibration();
+}
+
 function onEvent(ev) {
   const { type, data } = ev;
   if (type === 'level') { FX.orb.setLevel(data?.rms); return; }  // up to 20/s while listening or speaking: nothing else
@@ -2317,7 +2358,10 @@ function onEvent(ev) {
       strip.reply(data.text || '');
       if ('pending' in data) paintPending(data.pending);
       break;
-    case 'heard': if (!data.wake && !data.armed) strip.you(`(ignored: ${IGNORED_WHY[data.ignored] || 'start with “Vesper”'}) “${data.text}”`, { ignored: true }); break;
+    case 'heard':
+      if (!data.wake && !data.armed) strip.you(`(ignored: ${IGNORED_WHY[data.ignored] || 'start with “Vesper”'}) “${data.text}”`, { ignored: true });
+      if (data.rejection) notYourVoice(data);
+      break;
     case 'thinking': orbState.thinking = data.active; paintOrb(); chips.think(data.active); break;
     case 'speaking': orbState.speaking = data.active; paintOrb(); break;
     case 'voice_state': orbState.voice = data.state; S.data.voice = data; paintOrb(); queueSystems(); break;

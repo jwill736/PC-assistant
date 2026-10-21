@@ -1,11 +1,39 @@
 .nudge-feed .item { align-items: flex-start; animation: nudge-in .42s cubic-bezier(.23,1,.32,1) both; }
-.nudge-urgent { box-shadow: inset 2px 0 0 var(--crit, #ff5f56); padding-left: 8px; }
+.nudge-urgent { box-shadow: inset 2px 0 0 var(--alert, var(--crit, #ff5f56)); padding-left: 8px; }
 .nudge-normal { box-shadow: inset 2px 0 0 var(--accent); padding-left: 8px; }
-.nudge-fb { display: flex; gap: 4px; opacity: .45; transition: opacity .16s; }
-.item:hover .nudge-fb, .nudge-fb:focus-within { opacity: 1; }
+.nudge-fb { display: flex; gap: 4px; opacity: .45; transition: opacity .16s; align-items: center; }
+.item:hover .nudge-fb, .nudge-fb:focus-within, .nudge-fb:has(.why-btn.on) { opacity: 1; }
 .btn.icon { padding: 2px 7px; line-height: 1.2; }
 .nudge-held { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--muted); }
 .nudge-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: nudge-pulse 2.4s ease-in-out infinite; }
 @keyframes nudge-in { from { opacity: 0; transform: translateY(-6px); } }
 @keyframes nudge-pulse { 50% { opacity: .25; transform: scale(.7); } }
-@media (prefers-reduced-motion: reduce) { .nudge-feed .item, .nudge-pulse { animation: none; } }
+
+/* "why": the rule and the evidence behind an update (Updates panel and the notification drawer) */
+.why-btn { font: 500 10.5px/1.4 var(--mono); padding: 2px 7px; color: var(--muted); letter-spacing: .04em; }
+.why-btn.on, .why-btn:hover { color: var(--iris); border-color: oklch(from var(--iris) l c h / 0.55); }
+.nudge-why, .n-why[open] { margin-top: 6px; padding: 6px 10px; border-radius: var(--radius); background: var(--iris-soft, var(--inset));
+  box-shadow: inset 2px 0 0 var(--iris); font-size: 12px; animation: why-in .22s cubic-bezier(.23,1,.32,1) both; }
+.why-rule { font: 500 10px/1.5 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--iris); }
+.why-ev { margin: 3px 0 0; padding-left: 14px; color: var(--ink-2); }
+.why-ev li { margin: 1px 0; overflow-wrap: anywhere; }
+.why-ev li::marker { color: var(--muted); }
+.why-note { margin-top: 3px; color: var(--muted); font-style: italic; }
+.n-why { margin-top: 4px; }
+.n-why summary { cursor: pointer; width: max-content; font: 500 10px/1.6 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); list-style: none; }
+.n-why summary::-webkit-details-marker { display: none; }
+.n-why summary::before { content: "▸ "; }
+.n-why[open] summary::before { content: "▾ "; }
+.n-why summary:hover, .n-why[open] summary { color: var(--iris); }
+.n-why[open] { padding-top: 2px; }
+@keyframes why-in { from { opacity: 0; transform: translateY(-3px); } }
+
+/* the look-around line under the feed */
+.nudge-ambient { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--grid); min-width: 0; }
+.nudge-ambient .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.amb-dot { width: 6px; height: 6px; flex: none; transform: rotate(45deg); background: var(--iris); border-radius: 1px; opacity: .8; }
+
+@media (prefers-reduced-motion: reduce) { .nudge-feed .item, .nudge-pulse, .nudge-why, .n-why[open] { animation: none; } }
+:root[data-motion="reduced"] .nudge-why, :root[data-motion="reduced"] .n-why[open],
+:root[data-motion="off"] .nudge-why, :root[data-motion="off"] .n-why[open] { animation: none; }

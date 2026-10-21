@@ -9,6 +9,12 @@
 
 A short nudge around 10:00 with the count, and an urgent one when Gmail marks a message important and it's from
 someone J wrote to in the last month. Read-only; email is other people's words, so tools are marked untrusted.
+
+Follow-ups close themselves: when someone J was waiting on answers, the item leaves "Waiting on", any "remind me when
+Dana emails me" reminder for that person is resolved (its text goes into the update), and a quiet "Dana replied about
+“Contract redlines”" lands in the notifications. An owed reply J answered leaves "Owed". When J's later mail in the
+same conversation looks like he did what he promised ("here's the deck, attached"), the promise asks "Did you send
+Dana the revised deck?" with ✓/✕ instead of ticking the task off by itself.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from email.utils import getaddresses
 from ..brain.router import Intent
 from ..brain.tools import EMAIL_NOTE, Tool, obj
 from . import Skill
+from .nudges import ago_words
 from .people import ROBOT, account_kind, clean_subject, display_name, first_name, gmail_or_reason, on_air
 
 OWED_Q = "in:inbox -from:me newer_than:14d"
@@ -38,6 +45,12 @@ SCHEMA = {"type": "object", "required": ["promises"], "properties": {"promises":
     "type": "object", "required": ["n", "keep", "task"], "properties": {
         "n": {"type": "integer"}, "keep": {"type": "boolean"}, "task": {"type": "string"},
         "due": {"type": ["string", "null"]}}}}}}
+# J's later mail that looks like the promised thing went out
+SENT = re.compile(r"\b(?:attached|attaching|attachment|enclosed|here(?:'s| is| are)\b|please find|sending (?:you|it|this|"
+                  r"over)|sent (?:you|it|over|the)|as promised|just shared|shared (?:the|it|a)|link\b)|https?://", re.I)
+FILLER = frozenset("the a an to for of on in at by with and or your you my me it this that them back about some any "
+                   "today tonight tomorrow eod eow end week next day monday tuesday wednesday thursday friday saturday "
+                   "sunday asap soon later".split())
 
 
 # ---- promises, by pattern ------------------------------------------------------------------------------------
@@ -86,6 +99,42 @@ def find_promises(body: str, who: str, ts: float, tz) -> list[dict]:
     return out[:5]
 
 
+def task_words(task: str, person: str = "") -> set[str]:
+    """What a promise is about ("revised", "deck"), without the verb, the person and the deadline."""
+    names = {w.lower() for w in re.findall(r"[A-Za-z']+", person or "")}
+    words = re.findall(r"[a-z0-9']+", re.sub(r"\(for [^)]*\)", "", task or "").lower())
+    verb = re.compile(rf"^{VERBS}$")
+    return {w.removesuffix("'s") for w in words[1:] if len(w) > 2 and w not in FILLER and w.removesuffix("'s") not in names
+            and not verb.match(w)}
+
+
+PAST = {"send": "sent", "get": "got", "make": "made", "write": "wrote", "find": "found", "take": "took", "pay": "paid",
+        "have": "had", "put": "put", "set": "set", "run": "ran", "dig": "dug", "be": "was", "come": "came"}
+
+
+def did_it(body: str, words: set[str], verb: str = "") -> str | None:
+    """The sentence in J's later message that looks like the promise was kept, or None. Best effort: J confirms."""
+    body = re.split(r"\n\s*On .{5,200}wrote:|\n-{2,}\s*Original Message|\n_{5,}|\nFrom: ", (body or "").replace("’", "'"))[0]
+    verb = (verb or "").lower()
+    done = {PAST.get(verb, ""), verb + "ed", verb + "d", re.sub(r"e$", "", verb) + "ed"} - {"", "ed", "d"} if verb else set()
+    for s in re.split(r"(?<=[.!?])\s+|\n+", body):
+        s = s.strip()
+        if len(s) < 4 or PROMISE.search(s):  # "I'll send it tomorrow" is another promise, not the thing done
+            continue
+        have = set(re.findall(r"[a-z0-9']+", s.lower()))
+        overlap = len(words & {w.removesuffix("'s") for w in have})
+        if (SENT.search(s) and (overlap or re.search(r"as promised|attach|enclosed", s, re.I))) or overlap >= 2 \
+                or (overlap and done & have):  # "Called the landlord" for "Call the landlord"
+            return s[:200]
+    return None
+
+
+def done_question(task: str) -> str:
+    """'Send Dana the revised deck by Friday' -> 'Did you send Dana the revised deck by Friday?'"""
+    t = re.sub(r"\s*\(for [^)]*\)$", "", (task or "").strip()).rstrip(".…!? ")
+    return f"Did you {t[:1].lower() + t[1:]}?" if t else "Did you do it?"
+
+
 # ---- the skill --------------------------------------------------------------------------------------------------
 
 class InboxZero(Skill):
@@ -106,6 +155,15 @@ class InboxZero(Skill):
                    "state TEXT NOT NULL DEFAULT 'open')")
         db.execute("CREATE TABLE IF NOT EXISTS inbox_zero_scanned (msg_id TEXT PRIMARY KEY, ts REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS inbox_zero_nudged (key TEXT PRIMARY KEY, ts REAL NOT NULL)")
+        # what the last refresh showed, so the next one can tell "Dana replied" from "it aged out"
+        db.execute("CREATE TABLE IF NOT EXISTS inbox_zero_open (thread_id TEXT NOT NULL, kind TEXT NOT NULL, name TEXT, "
+                   "email TEXT, subject TEXT, account TEXT, ts REAL NOT NULL, PRIMARY KEY (thread_id, kind))")
+        for col in ("task_id INTEGER", "confirm_msg TEXT", "confirm_quote TEXT", "skipped TEXT NOT NULL DEFAULT ''"):
+            try:  # databases from before follow-ups closed themselves
+                db.execute(f"ALTER TABLE inbox_zero_promises ADD COLUMN {col}")
+            except Exception:
+                pass
+        self.closed: list[dict] = []  # follow-ups that closed themselves lately (the HUD shows them)
 
     # ---- reading the mail ----------------------------------------------------------------------------------
     def _thread(self, gm, tid: str, account: str, marker: str) -> dict:
@@ -161,6 +219,7 @@ class InboxZero(Skill):
                 th = self._thread(gm, m["thread_id"], m["account"], newest[m["thread_id"]]["id"])
                 msgs = th.get("messages") or []
                 self._scan(msgs, m["account"], mine, now)
+                self._check_kept(m["thread_id"], msgs, now)
                 last = msgs[-1] if msgs else None
                 if not last or not last["from_me"] or now - last["ts"] < wait_s:
                     continue
@@ -173,6 +232,7 @@ class InboxZero(Skill):
                                     "subject": last["subject"], "ts": last["ts"], "days": int((now - last["ts"]) // 86400),
                                     "link": last["link"]})
             waiting.sort(key=lambda w: -w["days"])
+            self._close_followups(owed, pending, waiting, newest, {m["id"] for m in sent}, now)
             self._data = {"ok": True, "at": now, "owed": owed, "waiting": waiting, "pending": pending,
                           "missing": gm.missing(), **({"errors": errors} if errors else {})}
             self._at = now
@@ -223,6 +283,111 @@ class InboxZero(Skill):
                 keep.append({**p, "task": str(r.get("task") or p["task"])[:120], "due": due})
         return keep
 
+    # ---- follow-ups that close themselves ----------------------------------------------------------------------
+    def _close_followups(self, owed: list[dict], pending: list[dict], waiting: list[dict], newest: dict[str, dict],
+                         sent_ids: set[str], now: float) -> list[dict]:
+        """Compare with what the last refresh showed: a reply from someone J waited on, or J's own answer."""
+        db = self.svc.storage
+        still_waiting = {w["thread_id"] for w in waiting}
+        still_owed = {p["thread_id"] for p in pending}
+        closed = []
+        for r in db.query("SELECT * FROM inbox_zero_open"):
+            last = newest.get(r["thread_id"])
+            if not last or last["ts"] <= r["ts"]:
+                continue  # aged out of the search, or nothing new: not a reply
+            if r["kind"] == "waiting" and r["thread_id"] not in still_waiting and last["id"] not in sent_ids:
+                closed.append(self._replied(dict(r), last, now))
+            elif r["kind"] == "owed" and r["thread_id"] not in still_owed and last["id"] in sent_ids:
+                closed.append({"kind": "answered", "thread_id": r["thread_id"], "name": r["name"], "subject": r["subject"],
+                               "account": r["account"], "ts": last["ts"], "text": f"You answered {first_name(r['name'])} "
+                               f"about “{clean_subject(r['subject'])}”."})
+        db.execute("DELETE FROM inbox_zero_open")
+        for kind, items in (("waiting", waiting), ("owed", owed)):
+            for x in items:
+                db.execute("INSERT OR REPLACE INTO inbox_zero_open(thread_id, kind, name, email, subject, account, ts) "
+                           "VALUES (?,?,?,?,?,?,?)", (x["thread_id"], kind, x["name"], x["email"], x["subject"],
+                                                     x["account"], x["ts"]))
+        if closed:
+            self.closed = (closed + self.closed)[:10]
+        return closed
+
+    def _replied(self, r: dict, last: dict, now: float) -> dict:
+        who, subject = first_name(r["name"]) or r["name"], clean_subject(r["subject"])
+        reminders = self._resolve_reminders(r["name"], r["email"])
+        text = f"{who} replied about “{subject}”."
+        why = {"rule": "Follow-up closed itself: a reply came in",
+               "evidence": [f"Gmail: you wrote {r['name']} “{subject}”, {ago_words(now - r['ts'])}",
+                            f"Gmail: {display_name(last.get('from', ''), last.get('from_email', ''))} answered "
+                            f"{ago_words(now - last['ts'])}"] + [f"Reminder: “{t}” (when {who} emails)" for t in reminders]}
+        key = f"inbox_zero:replied:{r['thread_id']}:{int(last['ts'])}"
+        if reminders:  # J asked to be reminded of something when this person wrote: that's worth saying
+            self.nudge(text + " Your reminder: " + "; ".join(reminders) + ".", priority="normal", key=key, why=why)
+        else:
+            self.notify(text, level="quiet", key=key, why=why)
+        return {"kind": "replied", "thread_id": r["thread_id"], "name": r["name"], "subject": r["subject"],
+                "account": r["account"], "ts": last["ts"], "text": text, "reminders": reminders}
+
+    def _resolve_reminders(self, name: str, email: str) -> list[str]:
+        """Reminders set with "when <name> emails me" for this person: done now (Automations removes them)."""
+        sk = getattr(self.svc, "skills", None)
+        auto = sk.get("automations") if sk is not None else None
+        if auto is None:
+            return []
+        who = f"{name} {email}".lower()
+        hits = [i for i in list(getattr(auto, "items", [])) if i.get("enabled") and (i.get("trigger") or "").startswith(
+            "email_from:") and i["trigger"].split(":", 1)[1].lower().strip() in who]
+        for i in hits:
+            try:
+                auto.cancel(id=i["id"])
+            except Exception:
+                pass
+        return [i["text"] for i in hits]
+
+    def _check_kept(self, thread_id: str, msgs: list[dict], now: float) -> None:
+        """J's later message in a promise's conversation looks like he did it: ask (never tick it off alone)."""
+        db = self.svc.storage
+        rows = db.query("SELECT * FROM inbox_zero_promises WHERE thread_id=? AND state IN ('open', 'added') AND "
+                        "confirm_msg IS NULL AND ts > ?", (thread_id, now - 21 * 86400))
+        for p in rows:
+            if p["task_id"]:
+                t = db.query("SELECT status FROM tasks WHERE id=?", (p["task_id"],))
+                if not t or t[0]["status"] == "done":  # J already ticked the task off (or deleted it)
+                    db.execute("UPDATE inbox_zero_promises SET state='done' WHERE id=?", (p["id"],))
+                    continue
+            src = p["id"].rsplit(":", 1)[0]
+            skipped = set(filter(None, (p["skipped"] or "").split(",")))
+            words = task_words(p["task"], p["person"] or "")
+            for m in msgs:
+                if not m.get("from_me") or m["ts"] <= p["ts"] or m["id"] == src or m["id"] in skipped:
+                    continue
+                quote = did_it(m.get("body", ""), words, (p["task"] or "").split(" ", 1)[0])
+                if not quote:
+                    continue
+                db.execute("UPDATE inbox_zero_promises SET confirm_msg=?, confirm_quote=? WHERE id=?",
+                           (m["id"], quote, p["id"]))
+                if self._once(f"kept:{p['id']}:{m['id']}"):
+                    self.nudge(f"{done_question(p['task'])} Your email to {first_name(p['person']) or 'them'} looks like "
+                               "it. Tick it on Replies → Promised.", priority="low", key=f"inbox_zero:kept:{p['id']}",
+                               expires_in=12 * 3600,
+                               why={"rule": "A promise looks kept", "evidence": [
+                                   f"Promise: “{p['task']}” ({ago_words(now - p['ts'])})",
+                                   f"Gmail: you wrote “{quote[:90]}”, {ago_words(now - m['ts'])}"]})
+                break
+
+    def confirm_kept(self, pid: str, yes: bool) -> dict:
+        db = self.svc.storage
+        rows = db.query("SELECT * FROM inbox_zero_promises WHERE id=?", (pid,))
+        if not rows:
+            return {"ok": False, "error": "That promise is gone."}
+        p = rows[0]
+        if yes:
+            db.execute("UPDATE inbox_zero_promises SET state='done' WHERE id=?", (pid,))
+            task = self.svc.storage.update_task(int(p["task_id"]), status="done") if p["task_id"] else None
+            return {"ok": True, "done": True, "task": task}
+        skipped = ",".join(filter(None, [p["skipped"] or "", p["confirm_msg"] or ""]))
+        db.execute("UPDATE inbox_zero_promises SET confirm_msg=NULL, confirm_quote=NULL, skipped=? WHERE id=?", (skipped, pid))
+        return {"ok": True, "done": False}
+
     # ---- nudges -----------------------------------------------------------------------------------------------
     def _once(self, key: str) -> bool:
         return self.svc.storage.execute("INSERT OR IGNORE INTO inbox_zero_nudged(key, ts) VALUES (?, ?)",
@@ -232,12 +397,17 @@ class InboxZero(Skill):
         for p in pending:
             if p["important"] and p["known"] and now - p["ts"] < 86400 and self._once(f"urgent:{p['msg_id']}"):
                 self.nudge(f"Important email from {p['name']}: “{p['subject']}”.", priority="urgent",
-                           key=f"inbox_zero:urgent:{p['msg_id']}", expires_in=4 * 3600)
+                           key=f"inbox_zero:urgent:{p['msg_id']}", expires_in=4 * 3600,
+                           why={"rule": "Important email from someone you write to", "evidence": [
+                               f"Gmail: {p['name']}, “{p['subject'][:80]}”, {ago_words(now - p['ts'])}",
+                               "Gmail marked it important", f"You emailed {p['name']} in the last 30 days"]})
         dt = datetime.fromtimestamp(now, tz)
         h, mi = (int(x) for x in str(self.setting("daily_at", "10:00")).split(":"))
         start = dt.replace(hour=h, minute=mi, second=0, microsecond=0)
         if owed and start <= dt < start + timedelta(hours=3) and self._once(f"daily:{dt.date()}"):
-            self.nudge(owed_line(owed, now), priority="normal", key=f"inbox_zero:daily:{dt.date()}", expires_in=3 * 3600)
+            self.nudge(owed_line(owed, now), priority="normal", key=f"inbox_zero:daily:{dt.date()}", expires_in=3 * 3600,
+                       why={"rule": f"Replies owed: the daily count ({h:02d}:{mi:02d})", "evidence": [
+                           f"Gmail: {x['name']}, “{x['subject'][:60]}”, {ago_words(now - x['ts'])}" for x in owed[:4]]})
 
     # ---- what the tools and the HUD read ---------------------------------------------------------------------
     def data(self, max_age: float = 300) -> dict:
@@ -249,9 +419,17 @@ class InboxZero(Skill):
         return self._data
 
     def promise_list(self) -> list[dict]:
-        rows = self.svc.storage.query("SELECT * FROM inbox_zero_promises WHERE state='open' AND ts>? ORDER BY "
+        """Open promises, plus ones made into tasks that now look kept (they ask "Did you …?")."""
+        rows = self.svc.storage.query("SELECT * FROM inbox_zero_promises WHERE (state='open' OR (state='added' AND "
+                                      "confirm_msg IS NOT NULL)) AND ts>? ORDER BY confirm_msg IS NULL, "
                                       "COALESCE(due, '9999'), ts DESC LIMIT 20", (self.clock() - 21 * 86400,))
-        return [{k: r[k] for k in ("id", "account", "person", "subject", "quote", "task", "due", "ts", "link")} for r in rows]
+        out = []
+        for r in rows:
+            p = {k: r[k] for k in ("id", "account", "person", "subject", "quote", "task", "due", "ts", "link", "state")}
+            if r["confirm_msg"]:
+                p.update(confirm=True, question=done_question(r["task"]), confirm_quote=r["confirm_quote"] or "")
+            out.append(p)
+        return out
 
     def _tool(self, key: str, account: str = "") -> dict:
         d = self.data()
@@ -289,6 +467,7 @@ class InboxZero(Skill):
         if state == "added":
             p = rows[0]
             task = self.svc.storage.add_task(p["task"], "work" if p["account"] == "work" else "personal", 2, p["due"])
+            self.svc.storage.execute("UPDATE inbox_zero_promises SET task_id=? WHERE id=?", (task["id"], pid))
         self.svc.storage.execute("UPDATE inbox_zero_promises SET state=? WHERE id=?", (state, pid))
         return {"ok": True, "task": task}
 
@@ -353,11 +532,13 @@ class InboxZero(Skill):
         if not self._data.get("ok"):
             return self._data
         d = {k: v for k, v in self._data.items() if k != "pending"}
-        return {**d, "promises": self.promise_list()}
+        return {**d, "promises": self.promise_list(), "closed": self.closed[:6]}
 
     def actions(self):
         return {"add_task": lambda b: self.set_promise(str(b.get("id")), "added"),
                 "dismiss": lambda b: self.set_promise(str(b.get("id")), "dismissed"),
+                "kept_yes": lambda b: self.confirm_kept(str(b.get("id")), True),
+                "kept_no": lambda b: self.confirm_kept(str(b.get("id")), False),
                 "refresh": lambda b: self.data(max_age=0)}
 
     def briefing(self):

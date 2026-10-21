@@ -42,7 +42,9 @@ What a skill can use (`self.svc`): `cfg` (+ `self.setting(key, default)` for `sk
 `sent(days)`, `accounts()`), `google`, `library` (`search(q)`), `activity.segments(start, end)`, `obs`, `twitch`,
 `system`, `jobs`, `live()` (streaming now), `speak(text)`, `think(prompt, schema=None)` (ask the model; returns a dict
 for a schema, text otherwise, None with no model: always have a no-model fallback), and `self.nudge(text,
-priority="urgent"|"normal"|"low", key=..., expires_in=...)` to speak up at the right moment (never on air).
+priority="urgent"|"normal"|"low", key=..., expires_in=..., why={"rule": "Meeting starting soon", "evidence":
+["Calendar: Client sync at 2:00 PM"]})` to speak up at the right moment (never on air); `why` is what the HUD shows
+under "why" and what "why did you say that" reads out (`self.notify(..., why=...)` takes it too).
 Save files under `svc.cfg.data_dir`. Network calls go through `httpx` with a timeout, and the client is injectable
 (`__init__(self, svc, http=None)`) so tests can use `httpx.MockTransport`.
 

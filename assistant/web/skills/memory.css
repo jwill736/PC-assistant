@@ -11,3 +11,38 @@
 .mem-list { max-height: 360px; overflow: auto; }
 @keyframes mem-in { from { opacity: 0; transform: translateX(-6px); } }
 @media (prefers-reduced-motion: reduce) { .mem-new { animation: none; } }
+
+/* Confirm: two facts that can't both be true; J picks (amber: needs J) */
+.mem-confirm { margin-bottom: 14px; padding: 8px 12px 10px; border-radius: var(--radius); background: var(--amber-soft, var(--inset));
+  box-shadow: inset 2px 0 0 var(--amber); }
+.mem-confirm .sub-h { margin-top: 2px; color: var(--amber); }
+.mem-q { padding: 7px 0; border-bottom: 1px solid var(--grid); transition: opacity .2s ease, transform .2s ease; }
+.mem-q:last-child { border-bottom: 0; }
+.mem-q.mem-q-out { opacity: 0; transform: translateX(10px); pointer-events: none; }
+.mem-q-text { font-size: 13.5px; color: var(--ink); display: flex; gap: 8px; align-items: baseline; }
+.mem-q-by { font: 500 9.5px/1.5 var(--mono); padding: 0 5px; border-radius: 2px; color: var(--iris); background: var(--iris-soft); letter-spacing: .08em; }
+.mem-q-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.mem-q-opts .btn:not(.ghost) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Your rhythm: a 5 AM -> 5 AM strip, the readouts, and "Use these" */
+.mem-rhythm { margin: 4px 0 14px; }
+.mem-rhythm .rh-relearn { order: 1; text-transform: none; letter-spacing: 0; font-family: inherit; }
+.rh-strip { margin: 4px 0 10px; }
+.rh-track { position: relative; height: 14px; border-radius: 2px; background: var(--inset); border: 1px solid var(--line); overflow: hidden; }
+.rh-band { position: absolute; top: 0; bottom: 0; transform-origin: left; animation: rh-in .5s cubic-bezier(.23,1,.32,1) both; }
+.rh-work { background: var(--series-1); }
+.rh-lunch { background: var(--series-3); top: 3px; bottom: 3px; }
+.rh-stream { background: var(--series-2); }
+.rh-sleep { background: repeating-linear-gradient(135deg, color-mix(in oklch, var(--series-4) 40%, transparent) 0 4px, transparent 4px 8px); }
+.rh-ticks { position: relative; height: 14px; font: 450 9.5px/14px var(--mono); color: var(--muted); }
+.rh-tick { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.rh-tick:first-child { transform: none; }
+.rh-rows { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; margin: 0 0 6px; font-size: 12.5px; }
+.rh-rows dt { font: 500 10px/1.9 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.rh-rows dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+.rh-use { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--grid); }
+.rh-use .t2 { flex: 1 1 260px; }
+@keyframes rh-in { from { transform: scaleX(0); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .rh-band { animation: none; } .mem-q { transition: none; } }
+:root[data-motion="reduced"] .rh-band, :root[data-motion="off"] .rh-band { animation: none; }
+@media (max-width: 600px) { .rh-tick:nth-child(even) { display: none; } }

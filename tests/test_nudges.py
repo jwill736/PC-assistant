@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta
 
+import types
+
 import pytest
 
 from assistant.brain.router import RouterContext, route
@@ -130,3 +132,15 @@ def test_routes(svc, said, tool, args):
     sk = Skills(svc, ["nudges"])
     intent = route(said, RouterContext(skill_route=sk.route))
     assert (intent.tool, intent.args) == (tool, args)
+
+
+def test_a_conversation_holds_nudges_until_it_ends(env):
+    n, clock, state, said, events = env
+    n.svc.conversation = types.SimpleNamespace(active=True)
+    n.add("Stretch break.")
+    n.deliver(at_break=True)
+    assert said == [] and n.gate()["why"] == "in a conversation"
+    n.svc.conversation.active = False
+    clock.t += 5
+    n.deliver(at_break=True)
+    assert any("Stretch break." in s for s in said)

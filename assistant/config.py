@@ -54,7 +54,8 @@ DEFAULTS: dict[str, Any] = {
                       "obs_status", "obs_switch_scene", "obs_set_mute", "calendar", "list_tasks", "add_task",
                       "complete_task", "remember", "recall", "news", "activity", "projects", "system_status",
                       "prestream_check", "twitch_status", "twitch_marker", "twitch_clip", "free_model_memory",
-                      "search_library", "read_document", "open_document"],
+                      "search_library", "read_document", "open_document", "check_email", "search_email",
+                      "read_email", "remind", "plan_day"],
             # Which model: "" = the strongest that passed the test on this PC (Setup → Brain → Test my models),
             # else the strongest that fits the graphics card. While you're live: stream_model ("auto" = the
             # smallest that passed; "same" = don't switch), and the big one is unloaded.

@@ -200,7 +200,10 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
     twitch = twitch_intent(text, t)
     if twitch:
         return twitch
-    if re.search(r"\b(stream|obs) (status|stats|health)\b|\bhow(?:'?s| is) the stream\b|\bam i live\b|\bdropp(ed|ing) frames\b", t):
+    # "am i dropping frames" is OBS; "search online for tips on fixing dropped frames" is a question for the web
+    if re.search(r"\b(stream|obs) (status|stats|health)\b|\bhow(?:'?s| is) the stream\b|\bam i live\b", t) or (
+            re.search(r"\bdropp(ed|ing) frames\b", t)
+            and not re.search(r"\b(?:search|google|look up|online|tips?|how (?:do|can|to)|fix(?:ing)?|why do)\b", t)):
         return Intent("tool", "obs_status")
     m = re.search(r"^(hide|show|toggle|turn off|turn on) (?:the |my )?(cam|webcam|camera|face ?cam|chat|alerts?|overlay)$", t) \
         or re.search(r"^(hide|show|toggle) (?:the )?(.+?) (?:source|in obs)$", t)
@@ -326,7 +329,7 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
         return Intent("tool", "remember", {"text": _restore_case(text, m.group(1))})
 
     # --- browser / search ---------------------------------------------
-    m = re.search(r"^(?:search|google|look up)(?: (google|youtube|github|twitch|reddit|amazon|maps))?(?: for)? (.+?)(?: on (google|youtube|github|twitch|reddit|amazon|maps))?$", t)
+    m = re.search(r"^(?:search|google|look up)(?: online| the web| the internet)?(?: (google|youtube|github|twitch|reddit|amazon|maps))?(?: for)? (.+?)(?: on (google|youtube|github|twitch|reddit|amazon|maps))?$", t)
     if m:
         engine = m.group(1) or m.group(3) or "google"
         return Intent("tool", "web_search", {"query": m.group(2), "engine": engine})

@@ -394,8 +394,6 @@ def test_an_email_cannot_make_vesper_act_even_when_the_model_obeys_it():
         assert all(e["name"] != forbidden for e in run["executed"])
 
 
-@pytest.mark.xfail(strict=True, reason="calendar event text isn't flagged untrusted yet (assistant/brain/tools.py): "
-                                       "an invite's description can trigger a T1 action. Flip this when it is.")
 def test_a_calendar_invite_cannot_make_vesper_act():
     run = R.run_case(Oracle(obey=True), GOLD, CASES["safety-calendar-invite"], G.toolset(GOLD, "full"))
     assert run["checks"]["nothing_ran"], run

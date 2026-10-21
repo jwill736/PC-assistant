@@ -159,6 +159,8 @@ class Nudges(Skill):
             why = f"muted until {datetime.fromtimestamp(self._muted_until, self.svc.tz).strftime('%I:%M %p').lstrip('0')}"
         elif live:
             why = "live on stream"
+        elif getattr(getattr(self.svc, "conversation", None), "active", False):
+            why = "in a conversation"  # held until it ends; urgent ones still show on the HUD
         elif fs:
             why = {"game": "in a game", "presentation": "presenting"}.get(fs, "fullscreen")
         elif idle > 300:

@@ -139,6 +139,8 @@ BOOK = [
     ("stream health", "obs_status", {}),
     ("am i live", "obs_status", {}),
     ("am i dropping frames", "obs_status", {}),
+    ("search online for tips on fixing dropped frames", "web_search",  # a web question, not the OBS check
+     {"query": "tips on fixing dropped frames", "engine": "google"}),
     ("how is the stream going", "stream_stats_now", {}),
     ("how's the stream doing", "stream_stats_now", {}),
     ("stream stats", "stream_stats_now", {}),

@@ -124,6 +124,7 @@ def test_the_profile_grows_is_capped_and_never_raises_the_bar(tmp_path):
         p = adapt_profile(p, t, cap=20)
         assert p.threshold <= enrolled and p.enrolled_threshold == enrolled
         assert speaker_id.MIN_THRESHOLD <= p.threshold
+        assert p.threshold >= round(enrolled - speaker_id.MAX_LEARNED_DROP, 3)  # one odd take can't open the door
     assert len(p.adaptive) == 20 and p.adaptive[-1] == takes[-1] and p.adaptive[0] == takes[5]  # the newest 20
     assert len(p.embeddings) == 8  # calibration takes stay
     assert p.summary()["learned"] == 20 and p.summary()["clips"] == 8

@@ -30,6 +30,9 @@ MODEL_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/"
 PROFILE_FILE = "voice_profile.json"
 # Cosine thresholds for this model live around 0.4-0.6; never auto-tune outside this band.
 MIN_THRESHOLD, MAX_THRESHOLD = 0.35, 0.72
+# "That was me" may lower the bar this much at most below calibration: the learned take itself already lifts J's
+# scores (it's matched as a take of its own), so one odd sample must not open the door to other voices.
+MAX_LEARNED_DROP = 0.06
 SHORTEST_CLIP_S = 0.8  # below this the fingerprint is too noisy to judge
 # "That was me" (a click on the HUD after a false rejection) adds that take to the profile; the newest this many are
 # kept beyond the calibration takes, so a new mic or room is learned without the old ones being forgotten.
@@ -159,7 +162,8 @@ def adapt_profile(profile: VoiceProfile, embedding, cap: int = ADAPTIVE_CAP) -> 
     enrolled = profile.enrolled_threshold if profile.enrolled_threshold is not None else profile.threshold
     adaptive = (profile.adaptive + [[float(x) for x in embedding]])[-cap:] if cap > 0 else []
     tuned, _ = _tune(profile.embeddings + adaptive, profile.model)
-    return VoiceProfile(profile.embeddings, min(enrolled, tuned), profile.model, profile.created,
+    threshold = round(max(enrolled - MAX_LEARNED_DROP, min(enrolled, tuned)), 3)
+    return VoiceProfile(profile.embeddings, threshold, profile.model, profile.created,
                         list(profile.owner_scores), adaptive=adaptive, enrolled_threshold=enrolled)
 
 

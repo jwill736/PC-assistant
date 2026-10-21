@@ -967,13 +967,13 @@ render.brain = function brain() {
       ['claude', 'Claude', 'Always Claude (needs ANTHROPIC_API_KEY)'], ['local', 'Local only', 'Never send anything to the cloud']]
       .map(([id, label, note]) => h('button', { 'aria-pressed': String(br.provider === id), title: note, onclick: () => set({ provider: id }) }, label)));
     const choices = local.choices || [];
-    const tag = c => c.result === 'pass' ? ` · passed, first word ${c.first_word_s} s`
+    const tag = c => c.result === 'pass' ? ` · passed${c.jobs ? `, ${c.jobs} jobs right` : ''}, first word ${c.first_word_s} s`
       : c.result === 'fail' ? ' · failed the test' : c.result === 'error' ? ' · error in the test'
       : c.result === 'no_actions' || c.tools === false ? " · can't take actions"
       : c.result === 'too_big' || c.fits === false ? ' · too big for your GPU' : '';
     const best = (local.bench || {}).best;
     const picker = choices.length ? h('select', { class: 'field', 'aria-label': 'Local model', onchange: e => set({ model: e.target.value }) },
-      [h('option', { value: '', selected: !local.pinned }, best ? `Auto: strongest that passed (${best})` : 'Auto: strongest that fits your GPU'),
+      [h('option', { value: '', selected: !local.pinned }, best ? `Auto: best in the test (${best})` : 'Auto: strongest that fits your GPU'),
         ...choices.map(c => h('option', { value: c.name, selected: local.pinned === c.name }, `${c.name}${c.size_gb ? ` (${c.size_gb} GB)` : ''}${tag(c)}`))]) : null;
     const answering = br.active === 'claude' ? status('good', `Claude ${claude.model}`)
       : br.active === 'local' ? (local.can_act === false ? status('warning', `${local.model} on ${local.server} · can't take actions`)
@@ -983,7 +983,7 @@ render.brain = function brain() {
     const benchLine = bench && bench.running
       ? (bench.testing ? `Testing ${bench.testing} (${bench.done + 1} of ${bench.total})… each one loads, so this takes a minute or two.` : 'Testing your models…')
       : (bench && bench.summary) || ((local.bench || {}).at ? `Models last tested ${new Date(local.bench.at).toLocaleString()}.`
-        : 'Test my models loads each one and checks it takes the right actions and answers quickly; the strongest that passes is used.');
+        : 'Test my models loads each one and checks it takes the right actions and answers quickly; of those that pass, the one that gets the most everyday jobs right is used.');
     const light = (local.bench || {}).light;
     const onStream = local.streaming ? status('good', `Live: answering with ${local.model}`)
       : local.stream_model === 'same' ? h('span', { class: 'muted' }, 'Same model')

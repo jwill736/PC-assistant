@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -30,6 +31,9 @@ PROFILE_FILE = "voice_profile.json"
 # Cosine thresholds for this model live around 0.4-0.6; never auto-tune outside this band.
 MIN_THRESHOLD, MAX_THRESHOLD = 0.35, 0.72
 SHORTEST_CLIP_S = 0.8  # below this the fingerprint is too noisy to judge
+# "That was me" (a click on the HUD after a false rejection) adds that take to the profile; the newest this many are
+# kept beyond the calibration takes, so a new mic or room is learned without the old ones being forgotten.
+ADAPTIVE_CAP = 20
 SAMPLE_RATE = 16000
 
 
@@ -104,27 +108,31 @@ class VoiceProfile:
     model: str = MODEL_NAME
     created: float = field(default_factory=time.time)
     owner_scores: list[float] = field(default_factory=list)
+    adaptive: list[list[float]] = field(default_factory=list)  # takes added by "That was me", newest last
+    enrolled_threshold: float | None = None  # what calibration set; learning never raises the bar above it
+
+    def all_embeddings(self) -> list[list[float]]:
+        return self.embeddings + self.adaptive
 
     def centroid(self) -> list[float]:
         np = _np()
-        c = np.mean(np.asarray(self.embeddings, dtype=np.float32), axis=0)
+        c = np.mean(np.asarray(self.all_embeddings(), dtype=np.float32), axis=0)
         return (c / (np.linalg.norm(c) or 1.0)).tolist()
 
     def score(self, embedding) -> float:
         """Blend of similarity to the average voice and to the closest single take."""
-        best = max(cosine(embedding, e) for e in self.embeddings)
+        best = max(cosine(embedding, e) for e in self.all_embeddings())
         return round(0.5 * cosine(embedding, self.centroid()) + 0.5 * best, 4)
 
     def summary(self) -> dict:
-        return {"enrolled": True, "clips": len(self.embeddings), "threshold": self.threshold, "model": self.model,
-                "created": self.created,
+        return {"enrolled": True, "clips": len(self.embeddings), "learned": len(self.adaptive),
+                "threshold": self.threshold, "enrolled_threshold": self.enrolled_threshold or self.threshold,
+                "model": self.model, "created": self.created,
                 "owner_score_min": min(self.owner_scores) if self.owner_scores else None}
 
 
-def build_profile(embeddings: list[list[float]], model: str = MODEL_NAME) -> VoiceProfile:
-    """Tune the threshold to this user: score each take against the others (leave-one-out)."""
-    if len(embeddings) < 3:
-        raise ValueError("need at least 3 voice samples to enroll")
+def _tune(embeddings: list[list[float]], model: str = MODEL_NAME) -> tuple[float, list[float]]:
+    """Score each take against the others (leave-one-out) and sit the threshold just under the weaker ones."""
     scores = []
     for i, emb in enumerate(embeddings):
         others = VoiceProfile(embeddings[:i] + embeddings[i + 1:], 0.0, model)
@@ -132,8 +140,27 @@ def build_profile(embeddings: list[list[float]], model: str = MODEL_NAME) -> Voi
     scores.sort()
     # Sit just under the owner's weaker takes (10th percentile), inside the model's sane band.
     floor = scores[max(0, int(len(scores) * 0.1) - 1)] if len(scores) >= 10 else scores[0]
-    threshold = round(min(MAX_THRESHOLD, max(MIN_THRESHOLD, floor - 0.08)), 3)
-    return VoiceProfile(embeddings, threshold, model, owner_scores=[round(s, 4) for s in scores])
+    return round(min(MAX_THRESHOLD, max(MIN_THRESHOLD, floor - 0.08)), 3), scores
+
+
+def build_profile(embeddings: list[list[float]], model: str = MODEL_NAME) -> VoiceProfile:
+    """Tune the threshold to this user: score each take against the others (leave-one-out)."""
+    if len(embeddings) < 3:
+        raise ValueError("need at least 3 voice samples to enroll")
+    threshold, scores = _tune(embeddings, model)
+    return VoiceProfile(embeddings, threshold, model, owner_scores=[round(s, 4) for s in scores],
+                        enrolled_threshold=threshold)
+
+
+def adapt_profile(profile: VoiceProfile, embedding, cap: int = ADAPTIVE_CAP) -> VoiceProfile:
+    """Add one take the owner vouched for ("That was me"): keep the newest ``cap`` of them beyond the calibration
+    takes, and re-tune the threshold over all of them the way calibration does, but never above the calibrated one
+    (learning may only make J easier to recognise, never harder)."""
+    enrolled = profile.enrolled_threshold if profile.enrolled_threshold is not None else profile.threshold
+    adaptive = (profile.adaptive + [[float(x) for x in embedding]])[-cap:] if cap > 0 else []
+    tuned, _ = _tune(profile.embeddings + adaptive, profile.model)
+    return VoiceProfile(profile.embeddings, min(enrolled, tuned), profile.model, profile.created,
+                        list(profile.owner_scores), adaptive=adaptive, enrolled_threshold=enrolled)
 
 
 def _protect(data: bytes) -> tuple[bytes, bool]:
@@ -198,6 +225,8 @@ class SpeakerVerifier:
         self._embedder = embedder
         self._embedder_error = ""
         self.last_score: float | None = None
+        self.last_embedding: list[float] | None = None  # of the last clip checked: "That was me" learns from it
+        self._lock = threading.Lock()
 
     @property
     def active(self) -> bool:
@@ -216,15 +245,30 @@ class SpeakerVerifier:
         self.profile = load_profile(self.data_dir)
 
     def check(self, samples) -> tuple[bool, float | None]:
-        """(accepted, score). Unknown/short/unavailable → accepted, so it never locks the owner out."""
+        """(accepted, score). Unknown/short/unavailable → accepted, so it never locks the owner out.
+        The fingerprint stays in ``last_embedding`` so a rejection can be learned from without computing it again."""
+        self.last_embedding = None
         if not self.active or len(samples) < SHORTEST_CLIP_S * SAMPLE_RATE:
             return True, None
         emb = self.embedder()
         if emb is None:
             return True, None
-        score = self.profile.score(emb.embed(samples))
-        self.last_score = score
+        vec = emb.embed(samples)
+        score = self.profile.score(vec)
+        self.last_score, self.last_embedding = score, vec
         return (score >= self.profile.threshold or self.mode == "log"), score
+
+    def learn(self, embedding) -> dict | None:
+        """Add a take the owner vouched for to the profile and save it. None: nothing to learn into."""
+        with self._lock:
+            profile = self.profile
+            if profile is None or not embedding or (profile.embeddings and len(embedding) != len(profile.embeddings[0])):
+                return None
+            before = profile.threshold
+            self.profile = adapt_profile(profile, embedding)
+            save_profile(self.profile, self.data_dir)
+            return {"threshold_before": before, "threshold": self.profile.threshold,
+                    "enrolled_threshold": self.profile.enrolled_threshold, "learned": len(self.profile.adaptive)}
 
     def status(self) -> dict:
         base = self.profile.summary() if self.profile else {"enrolled": False}

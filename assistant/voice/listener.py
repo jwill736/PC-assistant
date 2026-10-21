@@ -19,7 +19,8 @@ import queue
 import re
 import threading
 import time
-from collections import deque
+import uuid
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Callable
 
@@ -42,6 +43,10 @@ STOP_PHRASES = {"stop", "stop it", "stop talking", "ok stop", "okay stop", "canc
 # The kill switch by voice: distinctive enough to accept without the name (a false hit only pauses
 # PC control; a missed one is the dangerous case).
 KILL_PHRASES = {"stop everything", "kill switch", "emergency stop", "stop all actions"}
+# A sentence the speaker check turned away is kept this long, so J can say "That was me" with a click on the HUD
+# (server.py /api/voice/that_was_me); two turned away this close together suggest re-calibrating.
+REJECT_KEEP_S = 120
+REJECT_STREAK_S = 600
 WAKE_ANCHOR_S = 2.0  # an acoustic wake-word hit counts only this soon after the utterance starts
 # Said over a reply in conversation mode: stop it and end the conversation (the others just stop the reply).
 CONVERSATION_STOP = {"stop talking"}
@@ -212,6 +217,9 @@ class VoiceListener:
         self.last_voice_end = 0.0  # when the last utterance (anyone's) ended: silence closes the follow-up early
         self._window = ""  # what the HUD was last told about the open window
         self._window_check = 0.0
+        self._rejected: OrderedDict = OrderedDict()  # id -> the last few sentences the speaker check turned away
+        self._rejected_at: deque = deque(maxlen=20)  # when, for "I keep not recognising your voice"
+        self._rejected_lock = threading.Lock()
 
     # ---- control ----------------------------------------------------------
     def start(self) -> None:
@@ -643,7 +651,9 @@ class VoiceListener:
         if self.verifier is not None and source not in ("hotkey", "button"):
             accepted, score = self.verifier.check(samples)
             if not accepted:
-                self.bus.publish("heard", {"text": text, "ignored": "voice not recognised", "score": score, "stt_ms": stt_ms})
+                rid, streak = self._remember_rejection(command if matched else text, matched, score)
+                self.bus.publish("heard", {"text": text, "ignored": "voice not recognised", "score": score, "stt_ms": stt_ms,
+                                           "rejection": rid, "rejections_recent": streak})
                 return
             profile = getattr(self.verifier, "profile", None)
             if score is not None and profile is not None:  # LOG mode lets a non-match through: remember it did
@@ -659,6 +669,35 @@ class VoiceListener:
         self.last_command = time.time()
         self.last_owner = owner  # read by the runtime: a T3 "yes" in someone else's voice doesn't count
         self.on_command(command if matched else text)
+
+    # ---- "That was me" ------------------------------------------------------
+    # Only the HUD button (a deliberate click on J's own screen) can vouch for a rejected sentence. A spoken
+    # "that was me" must never do it: whoever was just turned away (a friend on Discord, the TV) could simply say it
+    # next, and their voice would be learned as J's and their command run. So nothing here listens for that phrase.
+    def _remember_rejection(self, command: str, matched: bool, score: float | None) -> tuple[str, int]:
+        """Keep a sentence the speaker check turned away (its command and voice fingerprint) for REJECT_KEEP_S.
+        Returns its id and how many were turned away in the last REJECT_STREAK_S."""
+        now = time.time()
+        rid = uuid.uuid4().hex[:12]
+        with self._rejected_lock:
+            self._prune_rejections(now)
+            self._rejected[rid] = {"id": rid, "command": command, "wake": matched, "score": score, "at": now,
+                                   "embedding": getattr(self.verifier, "last_embedding", None)}
+            while len(self._rejected) > 5:
+                self._rejected.popitem(last=False)
+            self._rejected_at.append(now)
+            streak = sum(now - t <= REJECT_STREAK_S for t in self._rejected_at)
+        return rid, streak
+
+    def _prune_rejections(self, now: float) -> None:
+        for rid in [r for r, item in self._rejected.items() if now - item["at"] > REJECT_KEEP_S]:
+            del self._rejected[rid]
+
+    def take_rejection(self, rid: str) -> dict | None:
+        """The remembered rejection with this id, once: None when it's unknown, already used or too old."""
+        with self._rejected_lock:
+            self._prune_rejections(time.time())
+            return self._rejected.pop(rid, None) if rid else None
 
     @staticmethod
     def _not_a_turn(text: str, source: str) -> bool:

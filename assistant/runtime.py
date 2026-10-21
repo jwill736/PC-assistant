@@ -28,7 +28,7 @@ from .services import Services, build_services
 from .voice.hotkey import register_hotkey
 from .voice import calibrate as calib
 from .voice import neural
-from .voice.confirm_window import ConfirmWindow
+from .voice.confirm_window import ConfirmWindow, answer
 from .voice.latency import Prewarm, TurnLatency
 from .voice.listener import VoiceListener
 from .voice.speaker_id import SpeakerVerifier, delete_profile
@@ -136,13 +136,14 @@ class Runtime:
         words += list(self.cfg["apps"].keys()) + list(self.cfg["sites"].keys())
         return words
 
-    def voice_command(self, text: str) -> None:
+    def voice_command(self, text: str, owner: str | None = None) -> None:
         """A new turn: whatever's left of the previous reply is dropped, not spoken late."""
         turn = self.speaker.new_turn()
         if KILL.match(clean(text)):  # never queue the kill switch behind the command it has to stop
             self.kill_switch("voice")
             return
-        owner = getattr(self.listener, "last_owner", "unknown") if self.listener else "unknown"
+        if owner is None:
+            owner = getattr(self.listener, "last_owner", "unknown") if self.listener else "unknown"
         for tap in list(self.voice_taps):  # a yes/no window, dictation
             try:
                 out = tap(text, owner)
@@ -636,6 +637,34 @@ class Runtime:
             self.verifier.mode = new["voice"]["speaker_check"]
             self.verifier.reload()
         self.bus.publish("voice_profile", self.voice_status(), sticky=True)
+
+    def that_was_me(self, rejection_id: str) -> dict:
+        """The HUD's "That was me" on a sentence the speaker check turned away: learn that take into the voice
+        profile and run the sentence as if it had passed. Only from the button (see VoiceListener._remember_rejection
+        for why saying it doesn't work), only within 2 minutes, once, and never while the kill switch is on."""
+        if self.listener is None or self.verifier is None:
+            return {"ok": False, "error": "Voice is off."}
+        if self.assistant.tools.guard.hands_off:
+            return {"ok": False, "error": "PC control is paused (kill switch). Resume control first, then say it again."}
+        item = self.listener.take_rejection(str(rejection_id or ""))
+        if item is None:
+            return {"ok": False, "error": "That was more than 2 minutes ago (or it's done already). Just say it again."}
+        learned = self.verifier.learn(item.get("embedding"))
+        command = (item.get("command") or "").strip()
+        if learned:
+            self.assistant.tools.audit.write(
+                tool="voice_profile_learned", tier=1, source="hud", utterance=command, outcome="ok",
+                args={"score": item.get("score"), "threshold": f"{learned['threshold_before']} → {learned['threshold']}",
+                      "learned": learned["learned"]})
+            self.bus.publish("voice_profile", self.voice_status(), sticky=True)
+        # A bare "yes"/"no" isn't replayed: by now it could answer a different question than the one J heard.
+        if not command or answer(command) is not None:
+            return {"ok": True, "learned": learned, "ran": None,
+                    "message": "Got it, I'll know your voice better. Click Confirm or Cancel on the card, or say it again."}
+        wake = bool(item.get("wake"))  # it reached the speaker check, so it had the name or came in an open window
+        self.bus.publish("heard", {"text": command, "wake": wake, "armed": not wake, "that_was_me": True})
+        self.voice_command(command, owner="pressed")  # a click on the HUD is as deliberate as the talk hotkey
+        return {"ok": True, "learned": learned, "ran": command}
 
     def set_speaker_check(self, mode: str) -> dict:
         if self.verifier is None or mode not in self.verifier.MODES:

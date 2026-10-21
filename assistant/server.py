@@ -354,6 +354,12 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def voice_calibrate_cancel():
         return runtime.cancel_calibration()
 
+    @app.post("/api/voice/that_was_me")
+    async def voice_that_was_me(request: Request):
+        """{"id": "<rejection id from a 'heard' event>"}: the speaker check got J wrong; learn the take and run it."""
+        body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+        return await run_in_threadpool(runtime.that_was_me, str(body.get("id") or ""))
+
     @app.post("/api/voice/speaker_check")
     async def voice_speaker_check(request: Request):
         body = await request.json()

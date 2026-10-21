@@ -427,20 +427,16 @@ class ConversationSkill(Skill):
             return {"ok": False, "error": "Look into what? Say look into, then the thing."}
         prompt = f"Look into this for J (from a conversation with Vesper): {what}"
         title = f"Look into: {first_sentence(what, 50)}"
-        tasks = getattr(self.svc, "tasks", None)
-        if tasks is not None:
-            for fn in ("start", "submit", "add"):
-                start = getattr(tasks, fn, None)
-                if callable(start):
-                    try:
-                        out = start(prompt, title=title, source="conversation")
-                    except TypeError:
-                        out = start(prompt)
-                    except Exception as exc:
-                        return {"ok": False, "error": f"The task engine failed ({type(exc).__name__})."}
-                    out = out if isinstance(out, dict) else {"ok": True}
-                    return {"ok": out.get("ok", True), "what": what, "via": "tasks", **(
-                        {"error": out["error"]} if out.get("error") else {})}
+        tasks = getattr(self.svc, "tasks", None)  # skills/tasks_agent.py: create(goal, ..., source=)
+        create = getattr(tasks, "create", None)
+        if callable(create):
+            try:
+                out = create(prompt, source="conversation")
+            except Exception as exc:
+                return {"ok": False, "error": f"The task engine failed ({type(exc).__name__})."}
+            out = out if isinstance(out, dict) else {"ok": True}
+            return {"ok": out.get("ok", True), "what": what, "via": "tasks",
+                    **({"error": out["error"]} if out.get("error") else {})}
         jobs = getattr(self.svc, "jobs", None)
         if jobs is None:
             return {"ok": False, "error": "Background jobs aren't running, so I can't look into it while we talk."}

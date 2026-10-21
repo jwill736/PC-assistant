@@ -112,6 +112,7 @@ class Assistant:
         svc.think = self.think  # skills ask the model through this
         svc.off_record = self.set_off_record
         self.convo = convo_mod.Conversation(svc)  # conversation mode (brain/conversation.py)
+        self.wait = time.sleep  # a macro's "wait" step (a test swaps this, not the process-wide time.sleep)
         self.convo.brain = self.brain
         self.convo.off_record_check = lambda: time.time() < self.off_record_until
         svc.conversation = self.convo
@@ -245,6 +246,7 @@ class Assistant:
             out += convo_mod.ON_STREAM.format(user=user)
         if self.convo.summary:
             out += f"\nEarlier in this conversation (summary): {self.convo.summary}"
+        out += self.convo.asides()  # background jobs that just finished (skills/tasks_agent.py)
         return out + self.convo.prompt_extra()  # style, mode, the thread it continues (Vesper 2.2)
 
     def _fold(self, msgs: list, is_turn) -> list:
@@ -476,7 +478,7 @@ class Assistant:
             if kind == "say":
                 spoken.append(str(value))
             elif kind == "wait":
-                time.sleep(max(0.0, min(float(value or 0), 30.0)))
+                self.wait(max(0.0, min(float(value or 0), 30.0)))
             elif kind == "command":
                 intent = route(str(value), self.router_context())
                 out = self._run_intent(intent) if intent and intent.kind not in ("macro",) else {

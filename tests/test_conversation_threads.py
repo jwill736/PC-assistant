@@ -3,6 +3,7 @@ with it), follow-ups over days, modes, a style profile, smarter turn-taking (bra
 skills/conversation.py)."""
 
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -695,16 +696,31 @@ def test_a_hmm_in_a_conversation_keeps_it_open(svc):
 def test_look_into_that_uses_the_tasks_engine_when_there_is_one(svc):
     a = chat(svc, answers("The 9800X3D is the gaming pick."))
     started = []
-    svc.tasks = type("Tasks", (), {"start": lambda self, prompt, **kw: started.append((prompt, kw)) or {"ok": True}})()
+    svc.tasks = type("Tasks", (), {"create": lambda self, prompt, **kw: started.append((prompt, kw)) or {"ok": True}})()
     a.handle("let's talk about the 9800X3D")
     out = a.handle("look into that while we talk")
     assert out["reply"].startswith("On it") and a.convo.active
     assert "9800X3D" in started[0][0] and started[0][1]["source"] == "conversation"
 
 
+def test_look_into_that_starts_a_real_job_in_the_tasks_engine(svc):
+    a = chat(svc, answers("The 9800X3D is the gaming pick."))
+    ta = svc.skills["tasks_agent"]
+    assert svc.tasks is ta
+    ta.autorun = False  # queue it; the engine's own tests run jobs
+    ta.start(SimpleNamespace(assistant=a))  # the skill's own startup, called once by the runtime
+    before = set(ta.jobs)
+    a.handle("let's talk about the 9800X3D")
+    out = a.handle("look into that while we talk")
+    assert out["reply"].startswith("On it") and a.convo.active
+    new = [ta.jobs[k] for k in set(ta.jobs) - before]
+    assert len(new) == 1 and "9800X3D" in new[0]["goal"] and new[0]["source"] == "conversation"
+
+
 def test_look_into_that_falls_back_to_a_research_job(svc):
     a = chat(svc, answers("Hm."))
     jobs = []
+    svc.tasks = None  # no job engine (skills.tasks_agent switched off)
     svc.jobs = type("Jobs", (), {"submit": lambda self, kind, prompt, project, title: jobs.append((kind, prompt)) or {"ok": True}})()
     a.handle("let's talk")
     out = a.handle("research AM5 motherboards while we talk")

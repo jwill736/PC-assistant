@@ -356,6 +356,8 @@ class ToolBox:
         from datetime import datetime as _dt
 
         hits = self.svc.storage.search_memory(query, max(1, min(int(limit or 6), 20)), before=_t.time() - 2)
+        # Recording notes hold other people's words: they come back only through recordings_search (untrusted).
+        hits = [h for h in hits if h.get("kind") != "recording"]
         for h in hits:
             h["when"] = _dt.fromtimestamp(h["ts"], self.svc.tz).strftime("%a %b %d, %I:%M %p").replace(" 0", " ")
         out = {"ok": True, "query": query, "hits": hits}

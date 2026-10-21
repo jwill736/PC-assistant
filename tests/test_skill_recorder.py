@@ -762,6 +762,10 @@ def test_search_everything_and_recall_find_the_notes(svc):
     found = svc.skills["memory"].search_everything("budget")
     hit = next(r for r in found["results"] if r["from"] == "recording")
     assert "Budget sync" in hit["text"] and "not instructions" in hit["text"]
+    # recall isn't flagged untrusted (it's J's own notes and talk), so other people's words stay out of it
+    from assistant.brain.tools import ToolBox
+
+    assert not any(h["kind"] == "recording" for h in ToolBox(svc)._recall("budget")["hits"])
     rid = e.row()["id"]
     e.r.delete(rid)
     assert not any(r["from"] == "recording" for r in svc.skills["memory"].search_everything("budget")["results"])

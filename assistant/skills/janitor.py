@@ -362,7 +362,7 @@ class Janitor(Skill):
         for d in s["drives"]:
             if d["free_pct"] < float(self.setting("low_free_pct", 10)):
                 self._once(f"janitor:low:{d['mount']}", f"Your {d['label']} drive is {d['used_pct']:.0f}% full, only "
-                           f"{gb(d['free'])} left. Say “why is my drive full” and I'll find what's taking the space.",
+                           f"{gb(d['free'])} left. Say “Vesper, why is my drive full” and I'll find what's taking the space.",
                            "normal", 86400)
         self.publish()
 

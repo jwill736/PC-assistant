@@ -51,6 +51,8 @@ NON_WORDS = {"hmm", "hm", "mm", "mmm", "mhm", "uh", "um", "uhm", "er", "ah", "oh
 BACKCHANNEL = NON_WORDS | {"yeah", "yep", "yup", "ok", "okay", "right", "nice", "cool", "wow", "damn", "sure", "uh huh",
                            "oh nice", "oh wow", "no way", "nah", "true"}
 REPLY_WINDOW_S = 120  # a reply this long after the voice command it answers still opens the follow-up window
+SUGGEST_WINDOW_S = 15  # after Vesper says 'Say “why is my drive full”', saying it needs no name for this long
+QUOTED = re.compile(r"[“\"]([^”\"]{3,80})[”\"]")
 
 
 def _norm(token: str) -> str:
@@ -562,6 +564,23 @@ class VoiceListener:
             return True
         return difflib.SequenceMatcher(None, a, b).ratio() >= 0.6
 
+    def _suggested(self, text: str, started_at: float | None) -> bool:
+        """Is this the phrase Vesper just told J to say ('Say “why is my drive full”…')? Then it's his answer, not
+        the reply coming back through the speakers: he started talking after Vesper had finished."""
+        sp = self.speaker
+        said, end = getattr(sp, "last_text", "") or "", getattr(sp, "last_end", 0.0)
+        at = started_at or time.time()
+        if not said or sp.speaking.is_set() or not (end + 0.3 < at < end + SUGGEST_WINDOW_S):
+            return False
+        heard = _norm_sentence(strip_leading_name(text, self.wake_words[0]) if self.wake_words else text)
+        for phrase in QUOTED.findall(said):
+            want = _norm_sentence(phrase)
+            for w in self.wake_words:  # 'Say “Vesper, why is my drive full”'
+                want = re.sub(rf"^{re.escape(_norm_sentence(w))}\s+", "", want)
+            if heard and want and (heard == want or difflib.SequenceMatcher(None, heard, want).ratio() >= 0.85):
+                return True
+        return False
+
     def _handle_audio(self, audio, started_at: float | None = None, during_speech: bool = False) -> None:
         import numpy as np
 
@@ -578,10 +597,13 @@ class VoiceListener:
         self.latencies.append(stt_ms)
         if _norm(text.replace(" ", "")) in {h.replace(" ", "") for h in HALLUCINATIONS}:
             return
-        if self.is_own_echo(text):
+        suggested = not during_speech and self._suggested(text, started_at)
+        if not suggested and self.is_own_echo(text):
             self.bus.publish("heard", {"text": text, "ignored": "own voice", "stt_ms": stt_ms})
             return
         matched, command = split_wake(text, self.wake_words)
+        if suggested and not matched:
+            matched, command = True, text  # the phrase Vesper just suggested: no name needed
         if acoustic and not matched:  # the model heard the name even if the transcript mangled it
             matched, command = True, strip_leading_name(text, self.wake_words[0])
         said_all = _norm_sentence(command if matched else text)

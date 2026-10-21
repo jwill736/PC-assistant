@@ -191,3 +191,43 @@ def test_corrections_latency_and_hints():
     assert lst.stt.hints[:3] == ["Friday", "Gameplay", "BRB"]
     status = lst.status()
     assert status["engine"] == "Parakeet 110M" and status["latency_ms"] is not None
+
+
+def nudge_speaker(ago=2.0):
+    sp = FakeSpeaker("Your D: drive is 99% full. Say “Friday, why is my drive full” and I'll find what's taking the space.",
+                     ago=ago)
+    sp.expects_reply = False  # a statement Vesper made on its own, not a question
+    return sp
+
+
+def test_saying_the_phrase_vesper_just_suggested_needs_no_name():
+    sp = nudge_speaker()
+    lst, commands = listener("Why is my drive full?", speaker=sp, cfg={"follow_up_any_seconds": 0})
+    lst._handle_audio(AUDIO, started_at=sp.last_end + 1.0)  # J started after it had finished: not an echo
+    assert commands == ["Why is my drive full?"]
+
+
+def test_the_suggestion_coming_back_through_the_speakers_is_still_an_echo():
+    sp = nudge_speaker()
+    lst, commands = listener("why is my drive full", speaker=sp, cfg={"follow_up_any_seconds": 0})
+    lst._handle_audio(AUDIO, started_at=sp.last_end - 1.5)  # began while Vesper was still talking
+    assert commands == [] and lst.bus.heard()[-1]["ignored"] == "own voice"
+
+
+def test_a_suggestion_window_closes_and_other_talk_still_needs_the_name():
+    sp = nudge_speaker(ago=40)
+    lst, commands = listener("why is my drive full", speaker=sp, cfg={"follow_up_any_seconds": 0})
+    lst._handle_audio(AUDIO, started_at=time.time())
+    assert commands == [] and lst.bus.heard()[-1]["wake"] is False
+    sp = nudge_speaker()
+    lst, commands = listener("what's for dinner", speaker=sp, cfg={"follow_up_any_seconds": 0})
+    lst._handle_audio(AUDIO, started_at=sp.last_end + 1.0)
+    assert commands == []
+
+
+def test_the_suggested_phrase_still_needs_your_voice():
+    sp = nudge_speaker()
+    lst, commands = listener("why is my drive full", speaker=sp, verifier=FakeVerifier(accept=False),
+                             cfg={"follow_up_any_seconds": 0})
+    lst._handle_audio(AUDIO, started_at=sp.last_end + 1.0)
+    assert commands == [] and lst.bus.heard()[-1]["ignored"] == "voice not recognised"

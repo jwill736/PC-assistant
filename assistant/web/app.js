@@ -2287,6 +2287,14 @@ function paintPrivacy() {  // skills/stream_privacy: the Stream tab's "Privacy w
 
 // ---------------------------------------------------------------- live updates
 const sticky = new Set(['system', 'obs', 'twitch', 'activity', 'projects', 'calendar', 'news', 'briefing', 'discovery', 'doctor', 'health', 'voice_profile']);
+// Why a sentence the mic caught didn't run (listener.py publishes the reason; none = the name wasn't heard)
+const IGNORED_WHY = {
+  'own voice': 'sounded like my own reply',
+  'voice not recognised': "didn't sound like your voice",
+  'while speaking': 'say “Vesper” to talk over me',
+  'not a turn': 'just a sound',
+};
+
 function onEvent(ev) {
   const { type, data } = ev;
   if (type === 'level') { FX.orb.setLevel(data?.rms); return; }  // up to 20/s while listening or speaking: nothing else
@@ -2309,7 +2317,7 @@ function onEvent(ev) {
       strip.reply(data.text || '');
       if ('pending' in data) paintPending(data.pending);
       break;
-    case 'heard': if (!data.wake && !data.armed) strip.you(`(ignored) “${data.text}”`, { ignored: true }); break;
+    case 'heard': if (!data.wake && !data.armed) strip.you(`(ignored: ${IGNORED_WHY[data.ignored] || 'start with “Vesper”'}) “${data.text}”`, { ignored: true }); break;
     case 'thinking': orbState.thinking = data.active; paintOrb(); chips.think(data.active); break;
     case 'speaking': orbState.speaking = data.active; paintOrb(); break;
     case 'voice_state': orbState.voice = data.state; S.data.voice = data; paintOrb(); queueSystems(); break;

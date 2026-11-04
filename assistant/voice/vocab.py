@@ -3,22 +3,25 @@
 ``voice.corrections`` ({"belatro": "Balatro"}) rewrites a word every time it's heard (listener.correct). It learns
 from J, never by itself: "you misheard Balatro as Belatro" (said or typed) or retyping in the HUD what he just said
 with a word fixed only *proposes* a correction; it's saved on his yes (or a click) to data/settings.yaml, and the
-HUD lists them with Remove. A correction applies to every sentence, so the words that steer Vesper (yes, no, stop,
-cancel, the name) and little words ("to", "the") can never be rewritten.
+HUD lists them with Remove. A correction applies to every sentence, so no word of the phrases that steer Vesper (every
+yes and no it takes as an answer, the kill switch and its resume, the stop words, the name) can be written or
+rewritten by one, on either side, and neither can little words ("to", "the").
 
-``NameHints`` gathers the names worth expecting (the game you're playing, the Twitch category, chatters, people you
-email) for speech recognition's hint words (stt.py: Whisper's prompt, Parakeet's hotwords).
+The names speech recognition expects (stt.py: Whisper's prompt, Parakeet's hotwords) are only ones J chose: words he
+taught, the game, the category, his scenes, apps and sites (runtime._hint_words). Never a chatter's, a YouTube viewer's
+or an email sender's: anyone can pick those, and a hotword pulls what J said toward it. Measured with Kokoro voices
+into Parakeet 110M (4 voices, hotwords_score 2.0): 34 hostile names moved 20 of 136 transcripts, 6 of them onto the
+name ("start recording" -> "stop recording" with a chatter called stop_recording). Keeping only one-word names far from
+any command or answer word, at a quarter or half the boost, still turned "pause the music" into "paws the music" in 4
+of 4 voices with a chatter called Paws. Leaving them out costs 6 of 48 names said in commands coming out spelled right
+(8 instead of 14); a shoutout still finds the chatter by sound (integrations/eventsub.py resolve).
 """
 
 from __future__ import annotations
 
 import difflib
-import logging
+import functools
 import re
-import time
-from typing import Callable
-
-log = logging.getLogger(__name__)
 
 MAX_WORDS = 4  # a correction is a word or a name, not a sentence
 # Words a correction must never produce or replace: a "no" that became "yes" would answer a question J refused.
@@ -31,9 +34,11 @@ LITTLE = {"a", "an", "the", "to", "too", "two", "of", "in", "on", "at", "it", "i
 _SIDE = r"[“\"']?(.+?)[”\"']?"
 FORMS = [  # (pattern on the cleaned sentence, which group is what J meant, needs a sound-alike check)
     (re.compile(rf"^(?:you )?mis-? ?heard (?:the word |me say )?{_SIDE} as {_SIDE}$"), 1, False),
-    (re.compile(rf"^(?:you )?(?:heard|wrote|got) {_SIDE} (?:but|when) i said {_SIDE}$"), 2, False),
-    (re.compile(rf"^i said {_SIDE} not {_SIDE}$"), 1, False),
-    # "it's Tuesday, not Monday" is usually J changing what he wants: only a near-spelling counts as a mishearing
+    (re.compile(rf"^(?:you )?(?:heard|wrote) {_SIDE} (?:but|when) i said {_SIDE}$"), 2, False),
+    # "I said Tuesday, not Monday", "you got Monday but I said Tuesday", "it's Tuesday, not Monday" are usually J
+    # changing what he wants (or the booking going wrong): only a near-spelling just heard counts as a mishearing
+    (re.compile(rf"^(?:you )?got {_SIDE} (?:but|when) i said {_SIDE}$"), 2, True),
+    (re.compile(rf"^i said {_SIDE} not {_SIDE}$"), 1, True),
     (re.compile(rf"^(?:it'?s|it is|that'?s|that is) {_SIDE} not {_SIDE}$"), 1, True),
 ]
 
@@ -62,6 +67,62 @@ def parse_correction(t: str) -> tuple[str, str, bool] | None:
     return None
 
 
+def _expand(pattern: str) -> list[str]:
+    """Every phrase a small regex (words, ``|``, ``(?:…)``, ``?`` after a character or a group) matches:
+    "let'?s go|confirm(?:ed)?" -> let's go, lets go, confirmed, confirm."""
+    def alternatives(i: int) -> tuple[list[str], int]:
+        out, cur = [], [""]
+        while i < len(pattern) and pattern[i] != ")":
+            if pattern[i] == "|":
+                out, cur, i = out + cur, [""], i + 1
+                continue
+            if pattern[i] in "^$":
+                i += 1
+                continue
+            if pattern.startswith("(?:", i):
+                part, i = alternatives(i + 3)
+                i += 1  # the ")"
+            else:
+                part, i = [pattern[i]], i + 1
+            if i < len(pattern) and pattern[i] == "?":
+                part, i = [*part, ""], i + 1
+            cur = [a + b for a in cur for b in part]
+        return out + cur, i
+
+    return alternatives(0)[0]
+
+
+@functools.lru_cache(maxsize=1)
+def steering_words() -> frozenset[str]:
+    """Each word of every phrase that steers Vesper: the yes and no it takes as an answer (confirm_window, the typed
+    confirm), the kill switch and its resume (router), the stop words (listener) and PROTECTED. Read from the
+    patterns themselves, so a word added there is protected here too."""
+    from ..brain import router
+    from . import confirm_window as cw, listener
+
+    phrases = set(PROTECTED) | listener.STOP_PHRASES | listener.KILL_PHRASES | listener.CONVERSATION_STOP
+    for pattern in (cw._YES, cw._NO, cw._YES_AFTER, cw._NO_AFTER, router.CONFIRM.pattern, router.CANCEL.pattern,
+                    router.KILL.pattern, router.RESUME.pattern):
+        phrases |= set(_expand(pattern))
+    return frozenset(w for p in phrases for w in norm(p).split())
+
+
+def steers(heard: str, meant: str, wake_words=()) -> str | None:
+    """The word of this correction (either side) that steers Vesper, or None. A fix that touched one would rewrite it
+    in every sentence: "Kyle" for "kill" switches off the voice kill switch, "yes yes" for "no no" turns a refusal
+    into a yes."""
+    from .confirm_window import answer
+
+    names = {w for name in wake_words for w in norm(name).split()}
+    for side in (norm(heard), norm(meant)):
+        if side in PROTECTED or answer(side) is not None:
+            return side
+        for word in side.split():
+            if word in names or word in steering_words() or word.replace("'", "") in steering_words():
+                return word
+    return None
+
+
 def refuse(heard: str, meant: str, wake_words=()) -> str | None:
     """Why this correction can't be learned (None: it can)."""
     h, m = norm(heard), norm(meant)
@@ -72,10 +133,10 @@ def refuse(heard: str, meant: str, wake_words=()) -> str | None:
                 "word I keep writing.")
     if len(h.split()) > MAX_WORDS or len(m.split()) > MAX_WORDS:
         return "That's more than a word or a name: I only learn single words and names."
-    names = {norm(w) for w in wake_words}
-    for side in (h, m):
-        if side in PROTECTED or side in names:
-            return f"I can't rewrite “{side}”: it steers me (yes, no, stop, my name), so it has to stay as heard."
+    word = steers(h, m, wake_words)
+    if word:
+        return (f"I can't rewrite “{word}”: it steers me (yes, no, stop, the kill switch, my name), so it has to stay "
+                "as heard.")
     if h in LITTLE:
         return f"“{h}” is too common to rewrite every time I hear it."
     return None
@@ -147,31 +208,12 @@ class Corrections:
         return {"ok": True}
 
 
-# ---- names to expect ------------------------------------------------------------------------------------------------
-class NameHints:
-    """The names speech recognition should expect, gathered from what Vesper already knows (no network calls),
-    at most once a minute: it's asked on every sentence."""
-
-    def __init__(self, sources: dict[str, Callable[[], list[str]]], every_s: float = 60, clock=time.monotonic):
-        self.sources, self.every_s, self.clock = sources, every_s, clock
-        self._at, self._words = -1e9, []
-
-    def __call__(self) -> list[str]:
-        now = self.clock()
-        if now - self._at >= self.every_s:
-            words: list[str] = []
-            for name, fn in self.sources.items():
-                try:
-                    words += [str(w).strip() for w in fn() or [] if w and str(w).strip()]
-                except Exception:  # one missing source (no Twitch, no contacts table) never stops the rest
-                    log.debug("name hints: %s unavailable", name, exc_info=True)
-            self._at, self._words = now, list(dict.fromkeys(words))
-        return list(self._words)
-
-
+# ---- names to expect (runtime._hint_words) ------------------------------------------------------------------
 def learned_words(cfg) -> list[str]:
-    """What the fixes write ("Balatro"): names J cared enough to teach."""
-    return [str(v) for v in ((cfg.get("voice") or {}).get("corrections") or {}).values()]
+    """What the fixes write ("Balatro"): names J cared enough to teach (not one the listener skips: see steers)."""
+    wake = (cfg.get("assistant") or {}).get("wake_words") or ()
+    fixes = ((cfg.get("voice") or {}).get("corrections") or {}).items()
+    return [str(v) for k, v in fixes if not steers(str(k), str(v), wake)]
 
 
 def playing(svc, bus, in_game: bool = False) -> list[str]:
@@ -181,17 +223,3 @@ def playing(svc, bus, in_game: bool = False) -> list[str]:
     tw = ((bus.latest.get("twitch") or {}).get("data") or {}) if bus is not None else {}
     return [w for w in (cur.get("title"), tw.get("game")) if w]
 
-
-def runtime_sources(svc, feed) -> dict[str, Callable[[], list[str]]]:
-    """The slower-changing names, for NameHints: recent chatters and the people J emails most."""
-    def chatters():
-        if feed is None:
-            return []
-        users = [m["user"] for m in reversed(feed.recent_chat(80))] + [e.get("user") for e in feed.recent_events(20)]
-        return list(dict.fromkeys(u for u in users if u))[:15]
-
-    def people():
-        rows = svc.storage.query("SELECT name FROM people_contacts WHERE name != '' ORDER BY count DESC LIMIT 20")
-        return [r["name"] for r in rows]
-
-    return {"chatters": chatters, "people": people}

@@ -168,8 +168,9 @@ def test_split_point_with_overlap_lets_fewer_strangers_in():
 def test_apply_saves_only_what_was_ticked(cfg):
     recs = [{"key": "voice.end_of_turn", "current": "silence", "value": "smart"},
             {"key": "voice.endpoint_ms", "current": 400, "value": 600},
-            {"key": "speaker_threshold", "current": 0.6, "value": 0.66}]
-    verifier = SimpleNamespace(set=[], set_threshold=lambda t: verifier.set.append(t) or {"threshold": t})
+            {"key": "speaker_threshold", "current": 0.6, "value": 0.66, "profile": 7.0}]
+    verifier = SimpleNamespace(set=[], set_threshold=lambda t: verifier.set.append(t) or {"threshold": t},
+                               profile=SimpleNamespace(created=7.0))  # the profile the test measured
     done = bench.apply(cfg, recs, ["voice.end_of_turn", "speaker_threshold"], verifier)
     assert done == ["voice.end_of_turn", "speaker_threshold"] and verifier.set == [0.66]
     layer = yaml.safe_load((cfg.data_dir / "settings.yaml").read_text(encoding="utf-8"))

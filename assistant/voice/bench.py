@@ -292,6 +292,7 @@ class Chain:
     threshold: float | None = None                # the profile's threshold now
     turn_model: Callable | None = None            # Smart Turn, to compare end-of-turn modes
     shortest_s: float = 0.8                       # speaker_id.SHORTEST_CLIP_S
+    profile: float | None = None                  # that profile's ``created``: a voice match applies only to it
 
     def name_threshold(self) -> float:
         if self.wake is None or not self.wake_name:
@@ -550,6 +551,7 @@ def recommend(report: dict, cfg: dict, chain: Chain) -> list[dict]:
         if t is not None and abs(t - chain.threshold) >= 0.02:
             now = chain.threshold
             out.append({"key": "speaker_threshold", "label": "Voice match", "current": now, "value": t,
+                        "profile": chain.profile,
                         "why": f"At {now}: {sum(s < now for s in owner)} of your {len(owner)} commands turned away, "
                                f"{sum(s >= now for s in others)} of {len(others)} other voices let in. At {t}: "
                                f"{sum(s < t for s in owner)} and {sum(s >= t for s in others)}."})
@@ -568,14 +570,21 @@ def recommend(report: dict, cfg: dict, chain: Chain) -> list[dict]:
     return out
 
 
+def stale(rec: dict, verifier) -> bool:
+    """A voice match measured against another voice profile than the one in use (J calibrated again since)."""
+    profile = getattr(verifier, "profile", None)
+    return rec["key"] == "speaker_threshold" and (profile is None or rec.get("profile") != profile.created)
+
+
 def apply(cfg, recommendations: list[dict], keys: list[str], verifier=None) -> list[str]:
-    """Save the chosen recommendations: data/settings.yaml, and the voice match into the voice profile."""
+    """Save the chosen recommendations: data/settings.yaml, and the voice match into the voice profile (only the
+    profile it was measured on: a new calibration's own threshold is never overwritten by an older test's)."""
     done = []
     for rec in recommendations:
         if rec["key"] not in keys:
             continue
         if rec["key"] == "speaker_threshold":
-            if verifier is not None and verifier.set_threshold(rec["value"]):
+            if verifier is not None and not stale(rec, verifier) and verifier.set_threshold(rec["value"]):
                 done.append(rec["key"])
             continue
         save_setting(cfg, rec["key"], rec["value"])

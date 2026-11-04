@@ -58,6 +58,7 @@ BACKCHANNEL = NON_WORDS | {"yeah", "yep", "yup", "ok", "okay", "right", "nice", 
 REPLY_WINDOW_S = 120  # a reply this long after the voice command it answers still opens the follow-up window
 SUGGEST_WINDOW_S = 15  # after Vesper says 'Say “why is my drive full”', saying it needs no name for this long
 QUOTED = re.compile(r"[“\"]([^”\"]{3,80})[”\"]")
+SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
 # In acoustic mode an utterance the name model didn't fire on is still heard out when it's this short (seconds of
 # speech): the kill switch and other no-name phrases live here, and speech-to-text on a clip this size is cheap.
 NO_NAME_MAX_S = 2.5
@@ -66,6 +67,10 @@ TAIL_S = 0.3
 # The acoustic models score a phrase after it ends: a hard trigger this soon after Vesper spoke may be its own tail.
 TRIGGER_GAP_S = 0.8
 ECHO_KEEP_S = 10.0  # what Vesper said before its newest line still counts as an echo for this long
+# A mic sends a frame every 30 ms, muted or not. None for this long: the device went (unplugged, Bluetooth dropped,
+# sleep and resume) and PortAudio just stops calling back, so the loop ends and the watchdog reopens it, backing off.
+MIC_SILENT_S = 3.0
+MIC_SILENT = "The microphone stopped sending audio (unplugged, or asleep?): trying it again"
 
 
 def _norm(token: str) -> str:
@@ -85,6 +90,12 @@ def _closest_stretch(a: str, b: str) -> float:
         for i in range(max(1, len(bw) - size + 1)):
             best = max(best, difflib.SequenceMatcher(None, a, " ".join(bw[i:i + size])).ratio())
     return best
+
+
+def _tail_match(a: str, b: str) -> float:
+    """How closely ``a`` matches the last words of ``b`` (about as many as it has): the end of a reply, misheard."""
+    n, bw = len(a.split()), b.split()
+    return max(difflib.SequenceMatcher(None, a, " ".join(bw[-k:])).ratio() for k in {max(1, n - 1), n, n + 1})
 
 
 def strip_leading_name(transcript: str, name: str) -> str:
@@ -230,12 +241,14 @@ class VoiceListener:
         self.stt = None                  # speech-to-text engine (stt.py), loaded by the loop
         self.vad_kind = ""
         self.turn_error = ""             # why natural end of turn (voice.end_of_turn: smart) isn't running
+        self.segmenter = None            # the loop's voice detector: Smart Turn can fail mid-run (its ``error``)
         self.latencies: deque = deque(maxlen=50)   # ms from end of speech to transcript
         self._stt_lock = threading.Lock()
         self.wake = None                 # acoustic wake words / hard triggers (wakeword.py), if trained
         self._name_hit_at = 0.0
         self._speech_started_at = 0.0
         self.heartbeat: Callable[[], None] = lambda: None  # set by the watchdog
+        self.mic_silent_s = MIC_SILENT_S  # no frame for this long: the mic is gone (reopened by the watchdog)
         self.level = LevelMeter(bus, "mic")  # the HUD orb's mic level, only while you're talking to it
         # Conversation mode and "on air", wired by skills/conversation.py (no wake word between turns while talking).
         self.in_conversation: Callable[[], bool] = lambda: False
@@ -356,9 +369,11 @@ class VoiceListener:
 
     def status(self) -> dict:
         lat = sorted(self.latencies)
+        failed = getattr(self.segmenter, "error", "") or ""  # the model broke mid-run: turns end on silence now
+        vad = self.vad_kind.removesuffix("+turn") if failed else self.vad_kind
         return {"state": self.state, "error": self.error, "muted": self.muted, "wake_words": self.wake_words,
-                "engine": stt_mod.LABELS.get(getattr(self.stt, "name", ""), ""), "vad": self.vad_kind,
-                "end_of_turn": self.cfg.get("end_of_turn", "silence"), "turn_error": self.turn_error,
+                "engine": stt_mod.LABELS.get(getattr(self.stt, "name", ""), ""), "vad": vad,
+                "end_of_turn": self.cfg.get("end_of_turn", "silence"), "turn_error": self.turn_error or failed,
                 "hotwords": getattr(self.stt, "hotwords_status", lambda: None)(),
                 "latency_ms": lat[len(lat) // 2] if lat else None, "wake_mode": self.wake_mode(),
                 "wake": self.wake.status() if self.wake else None,
@@ -446,6 +461,19 @@ class VoiceListener:
         accepted, score = self.verifier.check(trim(samples, self._floor(), pad=0))
         return self._owner(score, "") if accepted else None
 
+    def _caption_owner(self, voice) -> dict:
+        """{"owner": …} for a sentence not for Vesper, while live captions want every one (``hear_all``) and there is
+        a voice profile: captions show only J's voice, never a friend's on Discord or the TV's (one fingerprint a
+        sentence, only while captions show). {} otherwise."""
+        try:
+            wanted = bool(self.hear_all())
+        except Exception:
+            wanted = False
+        if not wanted or self.verifier is None or not getattr(self.verifier, "active", False):
+            return {}
+        accepted, score = self.verifier.check(voice)
+        return {"owner": self._owner(score, "") if accepted else "mismatch"}
+
     def _floor(self) -> float:
         """The noise floor calibration measured (it sets ``min_rms`` at 1.5x this), on the int16 scale."""
         return max(150.0, float(self.cfg.get("min_rms", 350)) * 2 / 3)
@@ -501,10 +529,16 @@ class VoiceListener:
 
     def correct(self, text: str) -> str:
         """Apply ``voice.corrections`` ({"vrb": "BRB"}) as whole-word, case-insensitive replacements, longest first
-        (taught in the HUD or by "you misheard X as Y": vocab.py)."""
+        (taught in the HUD or by "you misheard X as Y": vocab.py). Never one that writes or rewrites a word that steers
+        Vesper (learned before that was refused, or typed into config.yaml): the kill switch and a yes stay as heard."""
+        from .vocab import steers
+
         fixes = sorted((self.cfg.get("corrections") or {}).items(), key=lambda kv: -len(str(kv[0])))
         for wrong, right in fixes:
-            text = re.sub(rf"(?<![\w']){re.escape(str(wrong))}(?![\w'])", str(right), text, flags=re.IGNORECASE)
+            if steers(str(wrong), str(right), getattr(self, "wake_words", ())):
+                continue
+            text = re.sub(rf"(?<![\w']){re.escape(str(wrong))}(?![\w'])", lambda _m, r=str(right): r, text,
+                          flags=re.IGNORECASE)  # the words as written: "AC\DC" is not a regex template
         return text
 
     # ---- main loop --------------------------------------------------------
@@ -518,7 +552,9 @@ class VoiceListener:
             return
         from .vad import make_segmenter
 
-        self._set_state("loading")
+        dropout = self.error == MIC_SILENT  # reopening a mic that went quiet: the HUD keeps saying so until audio comes
+        if not dropout:
+            self._set_state("loading")
         try:
             with self._keepalive():  # first run downloads the models
                 self.ensure_stt()
@@ -530,6 +566,7 @@ class VoiceListener:
             return
         self.vad_kind = getattr(segmenter, "kind", "energy")
         self.turn_error = getattr(segmenter, "turn_error", "")
+        self.segmenter = segmenter
         self.load_wake_words()
         log.info("voice: %s speech-to-text, %s voice detection", stt_mod.LABELS.get(self.stt.name, self.stt.name), self.vad_kind)
 
@@ -546,9 +583,11 @@ class VoiceListener:
             self._set_state("error")
             return
         with stream:
-            self.error = ""
-            self._set_state("muted" if self.muted else "listening")
+            if not dropout:
+                self.error = ""
+                self._set_state("muted" if self.muted else "listening")
             last_beat = 0.0
+            last_frame = time.time()
             blocked = False
             while not self._stop.is_set() and self._gen == gen:
                 now = time.time()
@@ -558,7 +597,16 @@ class VoiceListener:
                 try:
                     frame = self._audio.get(timeout=0.5)
                 except queue.Empty:
+                    if time.time() - last_frame >= self.mic_silent_s:
+                        log.warning("no audio from the microphone for %.0f s; reopening it", self.mic_silent_s)
+                        self.error = MIC_SILENT
+                        self._set_state("error")
+                        return  # the watchdog sees the loop gone and reopens the mic, with its backoff
                     continue
+                last_frame = time.time()
+                if self.error == MIC_SILENT:
+                    self.error = ""
+                    self._set_state("muted" if self.muted else "listening")
                 self._feed_taps(frame)
                 speaking = self.speaker.speaking.is_set()
                 barge_in = self.cfg.get("barge_in", True)
@@ -589,17 +637,21 @@ class VoiceListener:
                         self._set_state("hearing")
                     continue
                 during = speaking or time.time() - self.speaker.last_end < 0.3
+                started, cut = self._speech_started_at, time.time()
                 if not during:
                     self._set_state("transcribing")
                 try:
                     span = getattr(segmenter, "last_span", None)  # where the speech sits in the clip, and how long ago
                     with self._keepalive():
-                        self._handle_audio(np.concatenate(frames), self._speech_started_at, during_speech=during,
+                        self._handle_audio(np.concatenate(frames), started, during_speech=during,
                                            span=span[:2] if span else None,
                                            ended_at=time.time() - (span[2] if span else 0) / SAMPLE_RATE)
                 except Exception:
                     log.exception("voice pipeline error")
                 self._drain()
+                last_frame = time.time()  # the time spent on that sentence isn't the mic going quiet
+                if segmenter.in_speech:  # the turn ended (held too long) while someone kept talking: theirs is next
+                    self._speech_started_at = cut
                 if not self.muted:
                     self._set_state("armed" if self._armed() else "listening")
 
@@ -679,7 +731,11 @@ class VoiceListener:
             if not b:
                 continue
             if len(a) < 10:  # "yes", "stop", "cancel": too short to judge, and exactly what you'd say back
-                if a == b:
+                # ... unless it began while Vesper was still audible and is one of its sentences, or (a few words) how
+                # the reply ended: natural end of turn hands "Got it." (or a misheard "cord. Done.") over on its own.
+                # Not one word against the reply's last: J's quick "no" to "Say yes or no." is his.
+                if a == b or (overlapped and (a in {_norm_sentence(x) for x in SENTENCE_END.split(said)}
+                                              or (" " in a and _tail_match(a, b) >= 0.8))):
                     return True
                 continue
             if a in b or difflib.SequenceMatcher(None, a, b).ratio() >= 0.6:
@@ -795,7 +851,7 @@ class VoiceListener:
                 self.conversation_noise()  # "hmm…": not a turn, but J is still there (the quiet minute starts over)
             return
         if not (matched or source):
-            self._heard({"text": text, "wake": False, "armed": False, "stt_ms": stt_ms})
+            self._heard({"text": text, "wake": False, "armed": False, "stt_ms": stt_ms, **self._caption_owner(voice)})
             self.unaddressed.append(time.time())
             return
         # Only the owner may command it — unless they physically pressed push-to-talk.

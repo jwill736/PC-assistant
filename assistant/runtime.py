@@ -137,11 +137,11 @@ class Runtime:
 
     def _hint_words(self) -> list[str]:
         """Vocabulary that biases speech recognition toward your words and names (the first 60 count): fixes you
-        taught it, the game and category, scenes, chatters and people you email (voice/vocab.py), apps and sites."""
-        if getattr(self, "_name_hints", None) is None:
-            self._name_hints = vocab.NameHints(vocab.runtime_sources(self.svc, self.twitch_feed))
+        taught it, the game and category, scenes, apps and sites. Only names J chose: never a chatter's, a YouTube
+        viewer's or an email sender's, which anyone can set to "stop recording" or "paws" and so steer what he
+        said into another command (voice/vocab.py has the numbers)."""
         words = vocab.learned_words(self.cfg) + vocab.playing(self.svc, self.bus, self._low_power() == "game")
-        words += list(self.svc.obs.scenes) + self._name_hints()
+        words += list(self.svc.obs.scenes)
         words += list(self.cfg["apps"].keys()) + list(self.cfg["sites"].keys())
         return words
 
@@ -611,6 +611,9 @@ class Runtime:
             return {"ok": False, "error": "Voice is turned off (voice.enabled: false)."}
         if self.calibrator is not None:
             return {"ok": False, "error": "Calibration is already running."}
+        hearing = self.svc.skills.get("hearing") if self.svc.skills is not None else None
+        if hearing is not None and hearing.testing():  # both own the mic: each would record the other's prompts
+            return {"ok": False, "error": "The voice test is running: finish or cancel it first."}
         listener = self.listener
         cal = calibrator or calib.Calibrator(
             self.cfg, self.bus, record=calib.mic_recorder(self.cfg["voice"].get("input_device")),

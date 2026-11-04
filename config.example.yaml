@@ -48,9 +48,10 @@ voice:
                                 # Setup → Voice test measures both on your voice and suggests one
   # turn_pause_ms: 200          # smart: the pause it checks at...
   # turn_max_silence_ms: 1500   # ...and the silence that always ends your turn
+  # turn_max_hold_ms: 3500      # ...and, from your first pause, the longest it waits for the rest
   corrections: {}               # words it keeps mishearing, e.g. {vrb: BRB}; "you misheard X as Y" adds one
                                 # (after your yes) to data/settings.yaml, listed under Setup → Voice test
-  hotwords_score: 2.0           # Parakeet: expect the names it knows (game, chatters, people, scenes); 0 = off
+  hotwords_score: 2.0           # Parakeet: expect your names (game, scenes, apps, words taught; never chatters'); 0 = off
   push_to_talk_hotkey: ctrl+alt+j
   wake_mode: auto               # auto = acoustic once a trained vesper.onnx is added (Setup tab), else transcript
   # wake_threshold: 0.5         # trained models; per-model thresholds come from the Colab notebook

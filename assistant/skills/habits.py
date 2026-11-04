@@ -3,7 +3,8 @@
 "track a habit: drink water 8 times a day", "workout 3 times a week", "read daily", then "I drank water", "drank 2
 glasses of water", "did my workout", "I read", "how are my habits", "stop tracking reading". A day (or week) counts once
 the target is met; the streak is how many in a row. At 8:30 PM, unfinished daily habits go to the HUD feed (spoken
-only if ``skills.habits.nudge_priority`` is "normal"). Kept in SQLite (habits, habit_log).
+only if ``skills.habits.nudge_priority`` is "normal"). Kept in SQLite (habits, habit_log). "gym 3 times a week" sets
+the weekly gym habit the week plan fits around work, streams and sleep (skills/planner.py).
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ STOP = {"i", "i've", "ive", "just", "already", "my", "a", "an", "the", "some", "
         "of", "to", "for", "it", "get", "and", "so", "all", "mark", "check", "tick", "off", "as", "a", "on", "in", "with",
         "daily", "every", "day", "week", "habit", "x", "now", "too", "also", "page", "minut"}
 COUNTS = {"once": 1, "twice": 2, "thrice": 3}
+GYM = re.compile(r"\b(?:gym|work ?outs?|exercise|lift(?:ing)?|weights|run(?:ning)?|swim(?:ming)?|yoga|climb(?:ing)?|"
+                 r"crossfit|spin class)\b", re.I)  # the weekly habit (and calendar events) the week plan counts as gym
 PREFIX = re.compile(r"^(?:(?:can you |please )?(?:track|add|start tracking|new|create)(?: a| my)?(?: new)? habit(?: to)?|"
                     r"(?:start )?track(?:ing)?|habit|i want to)\s*(?:of\s+)?")
 
@@ -241,6 +244,15 @@ class Habits(Skill):
         ]
 
     def route(self, t: str):
+        m = re.fullmatch(r"(?:(?:set )?my )?gym(?: target| goal)?(?: to| is)? (\w+)(?: times| x| days)? (?:a|per|each) week|"
+                         r"(?:i want to |i'?ll |i will )?(?:go to the gym|hit the gym|work ?out|lift) (\w+) (?:times|days) "
+                         r"(?:a|per|each) week", t)
+        if m:  # the planner's weekly gym target: one habit, the one already tracked if there is one
+            raw = re.sub(r"^(\d+)x$", r"\1", m.group(1) or m.group(2))
+            n = COUNTS.get(raw) or (int(raw) if raw.isdigit() else number(raw))
+            if n and 1 <= n <= 14:
+                old = next((h for h in self._habits() if h["period"] == "week" and GYM.search(h["name"])), None)
+                return Intent("tool", "habit_add", {"name": old["name"] if old else "gym", "target": int(n), "period": "week"})
         if re.match(r"(?:(?:can you |please )?(?:track|add|start tracking|new|create)(?: a| my)?(?: new)? habit\b)", t):
             parsed = parse_habit(t)
             if parsed:

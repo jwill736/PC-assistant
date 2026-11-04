@@ -114,7 +114,8 @@ def make_segmenter(cfg: dict, models_dir: Path, on_progress=None, turn_model=Non
     endpoint = int(cfg.get("silence_ms", 800) if energy else cfg.get("endpoint_ms", 400))
     return turn.TurnSegmenter(seg, model, pause_ms=pause, max_silence_ms=int(cfg.get("turn_max_silence_ms", 1500)),
                               fallback_ms=endpoint, threshold=float(cfg.get("turn_threshold", 0.5)),
-                              max_turn_s=float(cfg.get("max_utterance_s", 15)))
+                              max_turn_s=float(cfg.get("max_utterance_s", 15)),
+                              max_hold_ms=int(cfg.get("turn_max_hold_ms", 3500)))
 
 
 def _segmenter(cfg: dict, models_dir: Path, on_progress=None):

@@ -10,9 +10,9 @@ measures them, and adds two fixes you can see working.
 | | |
 |---|---|
 | Voice test | **Setup → Voice test · words I hear**. You read about 36 of your own recent commands (taken from what you've said to Vesper), then leave a few minutes of only background: the game, Discord, music, and Vesper talking. It replays all of it through the same chain the live mic uses (voice detector, end of sentence, speech-to-text with your word fixes and names, the name model, the name check on the text, the voice check) and shows: word errors, missed wakes, commands cut off, false wakes per hour of background, your voice scores against every other voice, and how long from when you stop talking to the text. Then it suggests settings from those numbers. **Nothing changes until you tick and click Apply.** Run it again on the same recordings after a change, or record again |
-| Natural end of turn (opt-in) | Instead of "400 ms of silence ends the sentence", a small model (Smart Turn v3) listens at every short pause and decides whether you sounded finished. A thinking pause ("remind me to … call the dentist") doesn't end your turn; a finished "open Discord" is answered about 200 ms sooner. 1.5 s of silence always ends it. Off until the voice test shows it helps on your voice (Apply), or you click **Natural** under **End of a sentence** on the same panel |
+| Natural end of turn (opt-in) | Instead of "400 ms of silence ends the sentence", a small model (Smart Turn v3) listens at every short pause and decides whether you sounded finished. A thinking pause ("remind me to … call the dentist") doesn't end your turn; a finished "open Discord" is answered about 200 ms sooner. 1.5 s of silence always ends it, and so does 3.5 s after your first pause, whatever it hears meanwhile (a friend on Discord talking straight after you doesn't hold your command open). Off until the voice test shows it helps on your voice (Apply), or you click **Natural** under **End of a sentence** on the same panel |
 | Words it learns | Say or type "you misheard Balatro as Belatro" (or "I said Niamh, not Niam"), and Vesper asks first: "Always write “Balatro” when I hear “belatro”? Say yes or no." Or retype on the HUD what you just said, with the word fixed: a card offers **Remember**. Saved only on your yes or click; listed on the panel with **Remove** |
-| Names it expects | The game on screen, the Twitch category, recent chatters, the people you email most, your scenes, apps and words you taught it are passed to speech-to-text as names to listen for. Nothing to do; the **Your voice** panel says "names expected (N)" |
+| Names it expects | The game on screen, the Twitch category, your scenes, apps and words you taught it are passed to speech-to-text as names to listen for. Not chatters' names or the people who email you: anyone can pick those, and a chatter called "stop_recording" turned "start recording" into "stop recording" (a shoutout still finds a chatter by how the name sounds). Nothing to do; the **Your voice** panel says "names expected (N)" |
 
 **Phrases**
 
@@ -20,11 +20,12 @@ measures them, and adds two fixes you can see working.
 |---|---|
 | "Vesper, you misheard Balatro as Belatro" | asks, then on "yes" always writes Balatro for belatro |
 | "Vesper, you heard Shivon but I said Siobhan" | the same, the other way round |
-| "Vesper, I said Kaelthas, not chaos" | the same |
-| "it's Niamh, not Niam" | the same, but only right after it heard "Niam" and only for a near-spelling (so "it's Tuesday, not Monday" still changes your meeting) |
+| "I said Niamh, not Niam", "it's Niamh, not Niam" | the same, but only right after it heard "Niam" and only for a near-spelling (so "I said Tuesday, not Monday" still changes your meeting) |
 
-It never learns a fix for words that steer it (yes, no, stop, cancel, its name) or tiny words (to, the, it): a fix
-applies to every sentence, and a "no" turned into "yes" would answer a question you refused.
+It never learns a fix that writes or rewrites any word of what steers it (every yes and no it takes as an answer,
+"kill switch", "hands off", "freeze" and the other kill and resume phrases, stop, cancel, its name) or tiny words
+(to, the, it): a fix applies to every sentence, "Kyle" for "kill" would switch off the voice kill switch, and a "no"
+turned into "yes" would answer a question you refused.
 
 **Settings** (`config.yaml` → `voice:`; the Apply button writes the same keys to `data/settings.yaml`, which wins)
 
@@ -33,6 +34,7 @@ applies to every sentence, and a "no" turned into "yes" would answer a question 
 | `end_of_turn` | `silence` | `smart` = natural end of turn (downloads a 9 MB model once) |
 | `turn_pause_ms` | `200` | smart: the pause it checks at |
 | `turn_max_silence_ms` | `1500` | smart: the silence that always ends your turn |
+| `turn_max_hold_ms` | `3500` | smart: from your first pause, the longest it waits for the rest, speech or not |
 | `endpoint_ms` | `400` | silence: the silence that ends a sentence (and smart's fallback when the model is missing) |
 | `vad_threshold` | `0.6` | how sure the voice detector must be that a sound is speech |
 | `wake_thresholds` | from the model | per trained name model, e.g. `{vesper: 0.6}` |

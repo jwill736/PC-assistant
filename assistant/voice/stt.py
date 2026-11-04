@@ -16,7 +16,8 @@ whisper base.en        16.5 %       36.3 %         8/20 ·  9/20     273 ms
 So ``auto`` picks Parakeet 110M. ``whisper`` (faster-whisper) stays for people
 who already run it on CUDA.
 
-Names: the hint words (scenes, apps, the game, chatters, people, words you taught it) bias recognition. Whisper
+Names: the hint words (scenes, apps, the game, words you taught it: never names other people chose, vocab.py) bias
+recognition. Whisper
 takes them as a prompt; Parakeet as hotwords (beam search, ``voice.hotwords_score``, 0 turns it off). On 34
 synthetic commands full of names (Balatro, Zentreya, Siobhan…) that cut word errors from 22.9% to 14.9% and
 exact transcripts from 9 to 16, with no change on 36 everyday commands and ~12 ms more per sentence.
@@ -69,16 +70,27 @@ def recase(text: str, hints) -> str:
 def _bpe_vocab(model_dir: Path) -> Path:
     """sherpa-onnx encodes hotwords with a sentencepiece vocab, which the Parakeet download doesn't ship: build one
     from tokens.txt. Every piece scores -1, so a word splits into the fewest pieces (all-equal scores split names
-    into stray letters and made things worse)."""
+    into stray letters and made things worse). Rebuilt unless it's exactly that: sherpa-onnx exits the whole process
+    (no exception to catch) on one bad line, as a power cut can leave it (NULs, a half-written last line)."""
+    import os
+
     path = Path(model_dir) / "bpe.vocab"
-    if not path.exists():
-        lines = []
-        for line in (Path(model_dir) / "tokens.txt").read_text(encoding="utf-8").splitlines():
-            token = line.rsplit(" ", 1)[0]
-            if token and not token.startswith("<"):
-                lines.append(f"{token}\t-1")
+    lines = []
+    for line in (Path(model_dir) / "tokens.txt").read_text(encoding="utf-8").splitlines():
+        token = line.rsplit(" ", 1)[0]
+        if token and not token.startswith("<"):
+            lines.append(f"{token}\t-1")
+    want = "\n".join(lines) + "\n"
+    try:
+        ok = path.read_text(encoding="utf-8") == want  # read as text: a copy written on Windows (CRLF) still matches
+    except (OSError, UnicodeDecodeError):
+        ok = False
+    if not ok:
         tmp = path.with_suffix(".tmp")
-        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(want)
+            f.flush()
+            os.fsync(f.fileno())  # on disk before the rename, so a crash leaves the old file or the whole new one
         tmp.replace(path)
     return path
 

@@ -56,6 +56,8 @@ def caption_text(heard: dict, wake_words: list[str], hide: list[str] | None = No
     text = re.sub(r"\s+", " ", str(heard.get("text") or "")).strip()
     if not text or heard.get("ignored") or heard.get("wake") or heard.get("armed") or heard.get("interrupted"):
         return None
+    if heard.get("owner", "match") not in ("match", "unknown"):  # the voice profile says not J's (or too short to tell)
+        return None
     if wake_words and split_wake(text, wake_words)[0]:
         return None  # "Vesper, …" is a command, even when acoustic mode didn't take it as one
     if re.sub(r"[^a-z ]", "", text.lower()).strip() in NOISE:

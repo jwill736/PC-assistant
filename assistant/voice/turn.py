@@ -5,7 +5,9 @@ call Dana" is cut at the pause, and a finished "open Discord" still waits the fu
 ``voice.end_of_turn: smart`` the detector reports every short pause (``turn_pause_ms``, 200 ms) and Smart Turn v3
 (pipecat-ai/smart-turn, BSD-2-Clause: an 8 MB int8 ONNX model on Whisper Tiny, ~45 ms on one CPU core) listens to
 the whole turn so far and says whether it sounds finished. Finished: the turn ends now. Not finished: keep listening,
-up to ``turn_max_silence_ms`` (1500 ms) of silence, which always ends it. Without the model (not downloaded, no
+up to ``turn_max_silence_ms`` (1500 ms) of silence, which always ends it. A held turn also ends ``turn_max_hold_ms``
+(3500 ms) after you first paused, whatever is heard meanwhile: a friend on Discord or a video talking straight after
+you is not your sentence going on (their speech becomes the next utterance). Without the model (not downloaded, no
 onnxruntime, or it fails) the turn ends after ``endpoint_ms`` of silence, as before.
 
 Measured on 70 synthetic commands (Kokoro, 11 voices): finished commands were called finished 97–99% of the time;
@@ -95,13 +97,15 @@ class TurnSegmenter:
     behaves the same in a test, a replayed recording and the live mic."""
 
     def __init__(self, inner, model: Callable | None, pause_ms: int = 200, max_silence_ms: int = 1500,
-                 fallback_ms: int = 400, threshold: float = 0.5, max_turn_s: float = 15):
+                 fallback_ms: int = 400, threshold: float = 0.5, max_turn_s: float = 15, max_hold_ms: int = 3500):
         import numpy as np
 
         self._np = np
         self.inner, self.model = inner, model
         self.kind = f"{getattr(inner, 'kind', 'energy')}+turn"
         self.max_silence = int(max_silence_ms * SAMPLE_RATE / 1000)
+        # Wall clock (samples fed) from the first pause, speech or not: someone else talking on can't hold it open.
+        self.max_hold = int(max(max_hold_ms, max_silence_ms) * SAMPLE_RATE / 1000)
         self.fallback = int(max(fallback_ms, pause_ms) * SAMPLE_RATE / 1000)
         self.threshold = threshold
         self.max_turn = int(max_turn_s * SAMPLE_RATE)
@@ -118,6 +122,7 @@ class TurnSegmenter:
         self._fed = 0
         self._turn: list[int] | None = None  # [clip start, speech start, speech end] (absolute samples)
         self._wait = 0       # silence that ends the held turn (samples)
+        self._held = 0       # where the turn's first pause began (absolute samples): the hold is timed from here
 
     @property
     def in_speech(self) -> bool:
@@ -138,7 +143,7 @@ class TurnSegmenter:
             clip_at = self._fed - ago - clip  # where the inner clip began (it ends ``ago`` samples back)
             seg = [clip_at, clip_at + start, clip_at + end]
             if self._turn is None:
-                self._turn = seg
+                self._turn, self._held = seg, seg[2]
             else:
                 self._turn[2] = max(self._turn[2], seg[2])
             return self._pause()
@@ -146,6 +151,8 @@ class TurnSegmenter:
             silence = self._fed - self._turn[2]
             if silence >= self._wait:
                 return self._emit("silence" if self._wait == self.max_silence else "no model")
+        if self._turn is not None and self._fed - self._held >= self.max_hold:
+            return self._emit("held")  # still talking: someone else (what they say comes next, on its own)
         return None
 
     def _pause(self) -> list | None:

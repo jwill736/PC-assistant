@@ -8,7 +8,7 @@ the fix; retype in the HUD what you just said with a word fixed, and it offers t
 go to data/settings.yaml (voice.corrections) and are listed on the panel with Remove (voice/vocab.py).
 
 Settings (config.yaml, voice): corrections, hotwords_score (2.0; 0 = don't expect names), end_of_turn
-(silence | smart), turn_pause_ms, turn_max_silence_ms.
+(silence | smart), turn_pause_ms, turn_max_silence_ms, turn_max_hold_ms.
 """
 
 from __future__ import annotations
@@ -156,11 +156,15 @@ class Hearing(Skill):
         rows = [r for r in self.svc.storage.recent_log(600) if r.get("role") == "user" and r.get("source") == "voice"]
         return bench.phrases(str(self.svc.cfg["assistant"]["name"]), [r["text"] for r in rows])
 
+    def testing(self) -> bool:
+        """The voice test owns the mic (recording, or replaying it through the speech engine): calibration waits."""
+        return self.bench.get("state") in ("recording", "analysing")
+
     def _blocked(self) -> str | None:
         rt = self.runtime
         if rt is None or getattr(rt, "listener", None) is None:
             return "Voice is off (voice.enabled: false)."
-        if self.bench["state"] in ("recording", "analysing"):
+        if self.testing():
             return "The voice test is already running."
         if getattr(rt, "calibrator", None) is not None:
             return "Calibration is running: finish it first."
@@ -270,7 +274,8 @@ class Hearing(Skill):
                                                    models_dir, turn_model=turn_model),
             correct=lst.correct, wake=wake, wake_name=name, wake_mode=lst.wake_mode(),
             score=(lambda v: profile.score(emb.embed(v))) if profile is not None else None,
-            threshold=profile.threshold if profile is not None else None, turn_model=turn_model)
+            threshold=profile.threshold if profile is not None else None, turn_model=turn_model,
+            profile=profile.created if profile is not None else None)
 
     def _analyse(self, commands: list, background) -> None:
         lst = self.runtime.listener
@@ -300,8 +305,11 @@ class Hearing(Skill):
         if not self.report or not self.report.get("recommendations"):
             return {"ok": False, "error": "Nothing to apply: run the voice test first."}
         rt = self.runtime
-        done = bench.apply(self.svc.cfg, self.report["recommendations"], [str(k) for k in keys or []],
-                           getattr(rt, "verifier", None))
+        keys, ver = [str(k) for k in keys or []], getattr(rt, "verifier", None)
+        if any(r["key"] in keys and bench.stale(r, ver) for r in self.report["recommendations"]):
+            return {"ok": False, "error": "Your voice profile changed since this test (you calibrated again), so its "
+                                          "voice match doesn't fit it: run the voice test again, or untick Voice match."}
+        done = bench.apply(self.svc.cfg, self.report["recommendations"], keys, ver)
         if not done:
             return {"ok": False, "error": "Tick at least one suggestion."}
         self.report["applied"] = sorted(set(self.report.get("applied") or []) | set(done))

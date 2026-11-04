@@ -211,39 +211,9 @@ def test_hud_lists_and_removes_learned_words(svc):
 
 # ---- names to expect -----------------------------------------------------------------------------------------------
 
-def test_name_hints_gather_known_names_once_a_minute():
-    now = [0.0]
-    calls = []
-
-    def people():
-        calls.append(1)
-        return ["Dana Ortiz", "Siobhan"]
-
-    def broken():
-        raise RuntimeError("no such table: people_contacts")
-
-    hints = vocab.NameHints({"people": people, "broken": broken, "chatters": lambda: ["Zentreya", "Siobhan"]},
-                            clock=lambda: now[0])
-    assert hints() == ["Dana Ortiz", "Siobhan", "Zentreya"]
-    now[0] = 30
-    hints()
-    assert len(calls) == 1
-    now[0] = 61
-    hints()
-    assert len(calls) == 2
-
-
-def test_runtime_sources_read_chat_people_and_the_game(svc):
-    from assistant.integrations.eventsub import TwitchFeed
-
-    feed = TwitchFeed(clock=lambda: 1.0)
-    feed.add({"kind": "chat", "user": "Kaelthas", "text": "hi"})
-    svc.storage.execute("CREATE TABLE IF NOT EXISTS people_contacts (email TEXT PRIMARY KEY, name TEXT, count INTEGER)")
-    svc.storage.execute("INSERT INTO people_contacts(email, name, count) VALUES ('n@x.ie', 'Niamh Byrne', 9)")
-    src = vocab.runtime_sources(svc, feed)
-    assert src["chatters"]() == ["Kaelthas"] and "Niamh Byrne" in src["people"]()
+def test_the_game_and_the_category_are_names_to_expect(svc):
+    # Chatters' and email senders' names are not (anyone picks those): test_voice_sweep2.py
     svc.bus.publish("twitch", {"game": "Balatro"}, sticky=True)
     svc.activity = SimpleNamespace(current={"title": "Hollow Knight Silksong", "category": "other"})
     assert vocab.playing(svc, svc.bus, in_game=True) == ["Hollow Knight Silksong", "Balatro"]
     assert vocab.playing(svc, svc.bus, in_game=False) == ["Balatro"]
-    assert vocab.runtime_sources(svc, None)["chatters"]() == []

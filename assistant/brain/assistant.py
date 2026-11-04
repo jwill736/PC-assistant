@@ -8,6 +8,7 @@ say "yes" (or click Confirm on the dashboard).
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -114,6 +115,7 @@ class Assistant:
         svc.think = self.think  # skills ask the model through this
         svc.off_record = self.set_off_record
         self.convo = convo_mod.Conversation(svc)  # conversation mode (brain/conversation.py)
+        self._macro_pins: dict[str, list[dict]] = {}  # a macro's step args as its question described them
         self.wait = time.sleep  # a macro's "wait" step (a test swaps this, not the process-wide time.sleep)
         self.convo.brain = self.brain
         self.convo.off_record_check = lambda: time.time() < self.off_record_until
@@ -450,11 +452,14 @@ class Assistant:
     # ---- macros (trigger phrases) --------------------------------------
     def macro_risks(self, name: str) -> list[str]:
         macro = self.macros.get(name.lower())
-        risks = []
+        risks, pinned = [], []
         for tool_name, args in macro.tool_steps() if macro else []:
             tool = self.tools.tools.get(tool_name)
             if tool and tool.needs_confirmation(args):
-                risks.append(tool.describe(args))
+                risks.append(tool.describe(args))  # may pin the exact target into this copy (a slot, a login)
+            pinned.append(args)
+        if macro:
+            self._macro_pins[macro.name.lower()] = pinned  # the yes runs exactly what this question described
         return risks
 
     def _tier_of(self, name: str, args: dict) -> int:
@@ -477,13 +482,15 @@ class Assistant:
         macro = self.macros.get(name.lower())
         if macro is None:
             return {"reply": f"I don't have a macro called {name}.", "kind": "error"}
-        risks = self.macro_risks(name)
+        # at the yes, run what the question pinned; working the args out again could pick a different slot
+        risks = [] if via and macro.name.lower() in self._macro_pins else self.macro_risks(name)
         if risks and not via:
             if not self._set_pending([("run_macro", {"name": macro.name})], f"run {macro.name} ({'; '.join(risks)})"):
                 return {"reply": f"I'll ask you about running {macro.name} once you've answered me.", "kind": "pending"}
             return {"reply": f"{macro.name} will {', '.join(risks)}. Say yes to run it.{self._replaced_note()}",
                     "kind": "pending"}
         spoken, results = [], []
+        pinned = iter(self._macro_pins.pop(macro.name.lower(), None) or [a for _t, a in macro.tool_steps()])
         for step in macro.steps:
             if self.tools.guard.hands_off:
                 spoken.append(f"{macro.name} stopped: PC control is paused.")
@@ -499,8 +506,9 @@ class Assistant:
                     "reply": self._ask(str(value)) if self.brain() else ""}
                 results.append({"command": value, "reply": out.get("reply")})
             else:
-                result = self.tools.run(kind, value or {}, confirmed_by=f"macro via {via}" if via else None)
-                self.svc.bus.publish("tool", {"name": kind, "args": value, "result": result, "macro": macro.name})
+                args = next(pinned, None) or copy.deepcopy(value or {})
+                result = self.tools.run(kind, args, confirmed_by=f"macro via {via}" if via else None)
+                self.svc.bus.publish("tool", {"name": kind, "args": args, "result": result, "macro": macro.name})
                 results.append({"tool": kind, "ok": result.get("ok", True), "error": result.get("error")})
                 if result.get("ok") is False and result.get("error"):
                     spoken.append(result["error"])

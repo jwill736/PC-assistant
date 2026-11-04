@@ -18,6 +18,7 @@ command). A macro containing a risky tool asks for one "yes" up front.
 
 from __future__ import annotations
 
+import copy
 import difflib
 from dataclasses import dataclass, field
 
@@ -34,11 +35,13 @@ class Macro:
     reply: str = ""
 
     def tool_steps(self) -> list[tuple[str, dict]]:
+        """(tool, a fresh copy of its args) per tool step: a tool's tier or describe() may pin what it worked out (a
+        focus block's slot) into the args, and that must never be written back into the macro's own config."""
         out = []
         for step in self.steps:
             (kind, value), = step.items()
             if kind not in STEP_KINDS:
-                out.append((kind, value or {}))
+                out.append((kind, copy.deepcopy(value or {})))
         return out
 
 

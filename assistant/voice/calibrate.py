@@ -101,6 +101,7 @@ class CalibrationCancelled(Exception):
 
 class Calibrator:
     STEPS = ("noise", "wake", "speech")
+    TOPIC = "calibration"  # the bus event its progress goes out on (the voice test records through this too)
 
     def __init__(self, cfg, bus, record: Callable, transcribe: Callable, embedder=None,
                  takes: int = 5, noise_seconds: float = 5.0, read_seconds: float = 10.0, prompt_pause: float = 0.8):
@@ -117,7 +118,7 @@ class Calibrator:
     # ---- plumbing -------------------------------------------------------
     def emit(self, **data) -> None:
         if self.bus is not None:
-            self.bus.publish("calibration", data, sticky=data.get("step") in ("done", "error", "cancelled"))
+            self.bus.publish(self.TOPIC, data, sticky=data.get("step") in ("done", "error", "cancelled"))
 
     def _rec(self, step: str, prompt: str, seconds: float, index: int = 0, total: int = 1):
         if self.cancelled.is_set():

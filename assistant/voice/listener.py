@@ -229,6 +229,7 @@ class VoiceListener:
         self.models_dir = Path(models_dir) if models_dir else Path("data/models")
         self.stt = None                  # speech-to-text engine (stt.py), loaded by the loop
         self.vad_kind = ""
+        self.turn_error = ""             # why natural end of turn (voice.end_of_turn: smart) isn't running
         self.latencies: deque = deque(maxlen=50)   # ms from end of speech to transcript
         self._stt_lock = threading.Lock()
         self.wake = None                 # acoustic wake words / hard triggers (wakeword.py), if trained
@@ -357,6 +358,8 @@ class VoiceListener:
         lat = sorted(self.latencies)
         return {"state": self.state, "error": self.error, "muted": self.muted, "wake_words": self.wake_words,
                 "engine": stt_mod.LABELS.get(getattr(self.stt, "name", ""), ""), "vad": self.vad_kind,
+                "end_of_turn": self.cfg.get("end_of_turn", "silence"), "turn_error": self.turn_error,
+                "hotwords": getattr(self.stt, "hotwords_status", lambda: None)(),
                 "latency_ms": lat[len(lat) // 2] if lat else None, "wake_mode": self.wake_mode(),
                 "wake": self.wake.status() if self.wake else None,
                 "triggers": {n: self.trigger_kind(n) for n in (self.wake.names if self.wake else [])}}
@@ -493,11 +496,14 @@ class VoiceListener:
         return self.ensure_stt().transcribe(samples, self._hints())
 
     def _hints(self) -> list[str]:
-        return [self.wake_words[0].title(), *self.hint_words()][:40] if self.wake_words else list(self.hint_words())[:40]
+        words = [self.wake_words[0].title(), *self.hint_words()] if self.wake_words else list(self.hint_words())
+        return list(dict.fromkeys(words))[:60]  # Whisper's prompt takes the first 40, Parakeet's hotwords 60
 
     def correct(self, text: str) -> str:
-        """Apply ``voice.corrections`` ({"vrb": "BRB"}) as whole-word, case-insensitive replacements."""
-        for wrong, right in (self.cfg.get("corrections") or {}).items():
+        """Apply ``voice.corrections`` ({"vrb": "BRB"}) as whole-word, case-insensitive replacements, longest first
+        (taught in the HUD or by "you misheard X as Y": vocab.py)."""
+        fixes = sorted((self.cfg.get("corrections") or {}).items(), key=lambda kv: -len(str(kv[0])))
+        for wrong, right in fixes:
             text = re.sub(rf"(?<![\w']){re.escape(str(wrong))}(?![\w'])", str(right), text, flags=re.IGNORECASE)
         return text
 
@@ -523,6 +529,7 @@ class VoiceListener:
             self._set_state("error")
             return
         self.vad_kind = getattr(segmenter, "kind", "energy")
+        self.turn_error = getattr(segmenter, "turn_error", "")
         self.load_wake_words()
         log.info("voice: %s speech-to-text, %s voice detection", stt_mod.LABELS.get(self.stt.name, self.stt.name), self.vad_kind)
 

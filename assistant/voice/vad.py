@@ -90,8 +90,34 @@ class SileroSegmenter:
         return [self._buf[a:b].copy()]
 
 
-def make_segmenter(cfg: dict, models_dir: Path, on_progress=None):
-    """Silero when possible (``voice.vad: auto|silero``), else the energy gate."""
+def make_segmenter(cfg: dict, models_dir: Path, on_progress=None, turn_model=None):
+    """Silero when possible (``voice.vad: auto|silero``), else the energy gate. With ``voice.end_of_turn: smart`` it
+    reports short pauses to Smart Turn (turn.py), which decides whether the turn is over; ``turn_model`` reuses a
+    loaded one (the voice test compares settings on the same recordings)."""
+    from . import turn
+
+    smart = cfg.get("end_of_turn", "silence") == "smart"
+    model, error = (turn_model if smart else None), ""
+    if smart and model is None:
+        try:
+            model = turn.load(models_dir, on_progress)
+        except Exception as exc:  # not downloaded, offline, no onnxruntime: end turns on silence, as before
+            error = f"{type(exc).__name__}: {exc}"
+            log.warning("natural end of turn unavailable (%s); ending turns on silence", error)
+    pause = int(cfg.get("turn_pause_ms", 200))
+    seg = _segmenter({**cfg, "endpoint_ms": pause, "silence_ms": pause} if model is not None else cfg, models_dir,
+                     on_progress)
+    if model is None:
+        seg.turn_error = error
+        return seg
+    energy = getattr(seg, "kind", "energy") == "energy"
+    endpoint = int(cfg.get("silence_ms", 800) if energy else cfg.get("endpoint_ms", 400))
+    return turn.TurnSegmenter(seg, model, pause_ms=pause, max_silence_ms=int(cfg.get("turn_max_silence_ms", 1500)),
+                              fallback_ms=endpoint, threshold=float(cfg.get("turn_threshold", 0.5)),
+                              max_turn_s=float(cfg.get("max_utterance_s", 15)))
+
+
+def _segmenter(cfg: dict, models_dir: Path, on_progress=None):
     from . import models
     from .listener import EnergySegmenter
 

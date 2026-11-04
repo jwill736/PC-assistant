@@ -609,6 +609,14 @@ def to_markdown(r: dict) -> str:
                   f"Voice check: {prof.get('mode') or 'off'}, threshold {prof.get('threshold', '—')}"
                   f" (calibrated {prof.get('enrolled_threshold', '—')}), last score {prof.get('last_score', '—')}, "
                   f"learned {prof.get('learned', 0)}. Wake words: {', '.join(v.get('wake_words') or []) or '—'}.", ""]
+        pipe = v.get("pipeline") or {}
+        if pipe:
+            hot = pipe.get("hotwords") or {}
+            turn_note = f" (unavailable: {pipe['turn_error']})" if pipe.get("turn_error") else ""
+            names = (f"expected ({hot.get('words')})" if hot.get("on") else
+                     "not expected" + (f" ({hot['error']})" if hot.get("error") else ""))
+            lines += [f"Hearing: {pipe.get('engine') or '—'}, {pipe.get('vad') or '—'} voice detection, end of turn "
+                      f"{pipe.get('end_of_turn') or 'silence'}{turn_note}, names {names}.", ""]
         rows = [[datetime.fromtimestamp(h["ts"]).strftime("%H:%M:%S"), h.get("text") or "",
                  "ran" if (h.get("wake") or h.get("armed")) and not h.get("ignored") else
                  h.get("ignored") or ("no name" if h.get("wake") is False else "—"),
@@ -641,7 +649,16 @@ def voice_report(runtime) -> dict | None:
     return {"heard": list(getattr(lst, "recent_heard", []) or []), "wake_words": list(getattr(lst, "wake_words", []) or []),
             "speaker": {k: tts.get(k) for k in ("engine", "first_audio_ms", "underruns")},
             "output_latency": getattr(out, "latency", None),
-            "profile": {k: prof.get(k) for k in ("mode", "threshold", "enrolled_threshold", "last_score", "learned")}}
+            "profile": {k: prof.get(k) for k in ("mode", "threshold", "enrolled_threshold", "last_score", "learned")},
+            "pipeline": _pipeline(lst)}
+
+
+def _pipeline(lst) -> dict:
+    try:
+        st = lst.status()
+    except Exception:
+        return {}
+    return {k: st.get(k) for k in ("engine", "vad", "end_of_turn", "turn_error", "hotwords")}
 
 
 # ---- python -m assistant --diagnose ---------------------------------------------------------------------------------

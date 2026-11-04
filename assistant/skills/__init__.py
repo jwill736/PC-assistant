@@ -34,7 +34,7 @@ MODULES = ["conversation", "nudges", "ambient", "memory", "weather", "automation
            "journal", "bills", "travel", "review", "pulse", "screen", "selection", "dictation", "clipboard",
            "rewind", "janitor", "undo", "click", "mcp", "phone", "spotify", "home", "youtube", "discord",
            "stream_copilot", "stream_moments", "stream_raid", "stream_privacy", "stream_youtube", "stream_captions",
-           "gtasks", "diagnostics"]
+           "gtasks", "hearing", "diagnostics"]
 
 CRASH_LIMIT = 5  # this many failures in a row (of one kind: tick, route, say…) switches a skill off for the run
 ON, OFF, CRASHED, FAILED = "on", "off", "crashed", "failed"

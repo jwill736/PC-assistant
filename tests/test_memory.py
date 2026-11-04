@@ -187,3 +187,64 @@ def test_a_core_block_never_keeps_a_secret(mem):
     assert out["ok"] is False and "password" in out["error"]
     assert "hunter22" not in mem.core_text()
     assert mem.set_block("profile", "J keeps his passwords in a password manager.")["ok"]
+
+
+def test_forget_takes_it_out_of_the_index_the_vectors_and_the_profile(mem):
+    f = mem.add("J likes pineapple on pizza", context="pineapple pizza food")
+    keep = mem.add("J drinks a double coffee every morning", context="coffee drink morning")
+    mem.set_block("preferences", "J likes pineapple on pizza. Short answers, please.", by="vesper")
+    mem.set_block("profile", "J streams on Fridays; J loves pineapple pizza.", by="J")  # J's own words go too
+    assert mem.storage.query("SELECT vector FROM facts WHERE id = ?", (f["id"],))[0]["vector"]
+    assert mem.forget(f["id"])
+    assert mem.storage.query("SELECT rowid FROM facts_fts WHERE facts_fts MATCH 'pineapple'") == []
+    assert mem.storage.query("SELECT COUNT(*) AS n FROM facts WHERE vector IS NOT NULL")[0]["n"] == 1
+    assert mem.recall("pineapple pizza") == [] and mem.recall("espresso")[0]["id"] == keep["id"]
+    core = mem.core()
+    assert core["preferences"]["text"] == "Short answers, please." and core["profile"]["text"] == "J streams on Fridays;"
+    assert "pineapple" not in mem.core_text() and not mem.forget(f["id"])
+
+
+def test_questions_about_nothing_kept_recall_nothing():
+    mem = Memory(Storage(":memory:"), user="J", embedder=None, clock=Clock())  # words only: meaning is the eval's job
+    mem.add("J has a cat called Mochi", subject="Mochi", context="pet")
+    mem.add("J moved his stream to Friday nights at 8pm", context="twitch schedule")
+    # a word that only says when, or a verb that stems to "called", used to bring these back
+    assert mem.recall("who won the football last night") == []
+    assert mem.recall("remind me to call the bank at 5") == []
+    assert mem.recall("what day is it") == []
+    assert mem.recall("what's my cat called")[0]["statement"] == "J has a cat called Mochi"
+    assert mem.recall("which night do i stream")[0]["statement"].startswith("J moved")
+    assert [f["statement"] for f in mem.facts("night")] == ["J moved his stream to Friday nights at 8pm"]  # HUD search
+
+
+def test_the_newer_fact_comes_first_even_when_the_old_one_was_used_a_lot(mem):
+    clock = mem.clock
+    old = mem.add("J's manager is Priya Shah", context="work")
+    for _ in range(5):  # asked about every day for a week
+        clock.t += 86400
+        assert mem.recall("who is my manager")[0]["id"] == old["id"]
+    new = mem.add("J's manager is Tom Becker", context="work")  # the change wasn't linked: both live
+    clock.t += 3600
+    assert [f["id"] for f in mem.recall("who is my manager")] == [new["id"], old["id"]]
+    assert "the later date is the one that's true now" in mem.context_for("who is my manager")
+
+
+def test_only_js_own_words_are_learned(svc):
+    from types import SimpleNamespace
+
+    from assistant.brain.assistant import Assistant
+
+    seen = {}
+    sk = Skills(svc, ["memory"])["memory"]
+    a = Assistant(svc)
+    svc.think = lambda prompt, schema=None, **kw: seen.setdefault("prompt", prompt) and {"facts": []}
+    sk.start(SimpleNamespace(assistant=a))
+    a.handle("my sister is getting married in Leeds next June", "voice", owner="mismatch")  # the speaker check: not J
+    a.handle("I moved my stream to Friday nights now", "voice", owner="match")
+    a.handle("I bought a new standing desk for the office", "phone")  # his paired phone
+    svc.storage.log("user", "start stream mode and say hello to the Wednesday crew", "planner")  # Vesper's own
+    svc.storage.log("user", "post the giveaway winner in discord", "automation")
+    sk.learn_conversations(time.time() + 300)
+    p = seen["prompt"].split("NEW CONVERSATION:")[1]
+    assert "Friday nights" in p and "standing desk" in p
+    assert "Leeds" not in p and "Wednesday crew" not in p and "giveaway" not in p

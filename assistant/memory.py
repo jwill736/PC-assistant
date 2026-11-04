@@ -197,8 +197,21 @@ def near_duplicate(a: str, b: str, va: list[float] | None = None, vb: list[float
     return bool(va and vb and sum(x * y for x, y in zip(va, vb)) >= 0.93 and na == nb)
 
 
-def _fts_query(text: str) -> str:
-    words = [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in STOP and len(w) > 1]
+# Words in a question that say when, how much or what to do, not what about. On their own they matched facts that
+# merely share them ("who won the football last night" -> J's Friday-night stream; "call the bank" -> "a cat called
+# Mochi"); evals/memory_recall.py measures it. A question of only these ("what day is it") is about nothing kept.
+GENERIC = frozenset("""am im which whats can could would should will might must please now today tonight tomorrow
+yesterday last next day days night nights week weeks month year time times morning evening soon later ago until long
+much many lot lots more most less few some any anything something everything nothing thing things stuff way call
+called calling name named make made take get got go going goes went have had need want say said tell told show give
+put keep let come""".split())
+
+
+def _fts_query(text: str, keep_generic: bool = False) -> str:
+    """``keep_generic``: a search J typed (the HUD's box), where "night" is what he's looking for."""
+    words = [re.sub(r"'(?:s|re|ve|ll|d|m)$", "", w) for w in re.findall(r"[a-z0-9']+", text.lower())]
+    words = [w.strip("'") for w in words if w not in STOP and len(w) > 1]
+    words = words if keep_generic else [w for w in words if w not in GENERIC]
     return " OR ".join(f'"{w}"' for w in words[:12])
 
 
@@ -322,10 +335,27 @@ class Memory:
             return fact
 
     def forget(self, fact_id: int) -> bool:
-        """J asked: gone for real (the one exception to never deleting)."""
+        """J asked: gone for real (the one exception to never deleting): the fact, its words in the search index and
+        its vector (both go with the row), and any sentence of the core profile that says it."""
+        rows = self.storage.query("SELECT statement FROM facts WHERE id = ?", (int(fact_id),))
         cur = self.storage.execute("DELETE FROM facts WHERE id = ?", (int(fact_id),))
         self.learned = [f for f in self.learned if f["id"] != fact_id]
+        if rows:
+            self._scrub_core(rows[0]["statement"])
         return cur.rowcount > 0
+
+    def _scrub_core(self, statement: str) -> None:
+        """The profile is rewritten from the facts each night, but it keeps what the facts don't contradict, so a
+        forgotten fact would live on there: its sentences go now (J's own edits too: he asked to forget it)."""
+        words = _words(statement)
+        if not words:
+            return
+        for label, block in self.core().items():
+            sentences = re.split(r"(?<=[.!?;])\s+", block["text"])
+            keep = [x for x in sentences if len(words & _words(x)) < max(2, math.ceil(len(words) * 0.6))]
+            if len(keep) < len(sentences):
+                self.storage.execute("UPDATE core_blocks SET text = ?, updated = ? WHERE label = ?",
+                                     (" ".join(keep).strip(), self.clock(), label))
 
     def forget_matching(self, text: str) -> list[dict]:
         hits = self.recall(text, k=3, mark=False)
@@ -392,10 +422,11 @@ class Memory:
         return learned
 
     # ---- finding -----------------------------------------------------------------------------------------
-    def recall(self, query: str, k: int = 6, *, mark: bool = True, include_private: bool = True) -> list[dict]:
+    def recall(self, query: str, k: int = 6, *, mark: bool = True, include_private: bool = True,
+               keep_generic: bool = False) -> list[dict]:
         """The live facts most relevant to ``query``: words + meaning, fused by rank, nudged by importance/recency."""
         scores: dict[int, float] = defaultdict(float)
-        q = _fts_query(query)
+        q = _fts_query(query, keep_generic)
         if q:
             try:
                 for rank, r in enumerate(self.storage.query(
@@ -429,7 +460,7 @@ class Memory:
         now = self.clock()
         out = []
         for f in rows:
-            hours = (now - (f["last_used"] or f["learned_at"])) / 3600
+            hours = (now - f["learned_at"]) / 3600  # learned, not shown: a much-shown fact isn't newer than its successor
             s = scores[f["id"]] * (1 + 0.15 * f["importance"] / 5 + 0.10 * 0.995 ** max(0, hours) + 0.2 * f["pinned"])
             out.append({"id": f["id"], "statement": f["statement"], "kind": f["kind"], "importance": f["importance"],
                         "learned_at": f["learned_at"], "source": f["source"], "pinned": bool(f["pinned"]),
@@ -449,13 +480,14 @@ class Memory:
             parts.append(f"What you know about {self.user}:\n{core}")
         facts = self.recall(text, k=k, include_private=include_private)
         if facts:
-            parts.append("Facts that may help (use only if relevant; never mention this list):\n" + "\n".join(
+            parts.append("Facts that may help (use only if relevant; when two disagree, the later date is the one "
+                         "that's true now; never mention this list):\n" + "\n".join(
                 f"- [{datetime.fromtimestamp(f['learned_at'], self.tz):%Y-%m-%d}] {f['statement']}" for f in facts))
         return "\n\n".join(parts)
 
     def facts(self, query: str = "", limit: int = 50, include_replaced: bool = False) -> list[dict]:
         if query.strip():
-            return self.recall(query, k=limit, mark=False)
+            return self.recall(query, k=limit, mark=False, keep_generic=True)
         where = "" if include_replaced else f"WHERE {LIVE}"
         return [dict(r, vector=None) for r in self.storage.query(
             f"SELECT id, statement, kind, importance, source, learned_at, pinned, private, superseded_by, stale FROM facts "

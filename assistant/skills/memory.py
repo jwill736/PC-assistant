@@ -1,8 +1,9 @@
 """Memory: Vesper learns from what J says, and every answer knows it.
 
 - After a conversation goes quiet for two minutes, the model picks out what's worth keeping (people, preferences,
-  plans, promises) from J's own words. Nothing said while live on stream is learned (guests and chat can't write
-  J's memory). "Remember that …" notes become facts straight away.
+  plans, promises) from J's own words: what he said, typed or sent from his paired phone. Not from routines, the
+  planner or jobs (Vesper's words), nor a voice the speaker check marked as someone else's, nor anything said while
+  live on stream (guests and chat can't write J's memory). "Remember that …" notes become facts straight away.
 - Each night it rewrites the short core profile (who J is, how J likes things, what's going on now).
 - "What do you know about me", "what have you learned lately", "forget that I like pineapple".
 - HUD (Setup → Memory): the profile (edit it and Vesper leaves it alone), what it learned, search, forget, pin.
@@ -22,9 +23,11 @@ from .. import rhythm
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
 from ..memory import BLOCKS, Embedder, Memory
+from ..privacy import redact
 from . import Skill, check, lazy_client
 
 QUIET_S = 120
+OWN_SOURCES = ("voice", "text", "phone")  # J speaking, typing in the HUD, or his paired phone
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
@@ -48,6 +51,23 @@ class MemorySkill(Skill):
         svc.memory = self.memory
         self._live_spans: list[list[float]] = []
         self._last_rebuild_day = self.memory.meta("core_rebuilt") or ""
+        self._others: list[int] = []  # log ids of commands in a voice the speaker check said wasn't J's
+        self._ctx = lambda: {}
+        svc.bus.on(self._on_event)
+
+    def start(self, runtime) -> None:
+        assistant = getattr(runtime, "assistant", None)
+        self._ctx = lambda: getattr(assistant, "_ctx", None) or {}
+
+    def _on_event(self, ev: dict) -> None:
+        """The speaker check in "log" mode lets another voice's command through (and marks it): it runs, but what it
+        said is never learned as J's. The line was logged just before this event, on the same thread."""
+        d = ev.get("data") or {}
+        if ev.get("type") != "user_said" or d.get("source") != "voice" or self._ctx().get("owner") != "mismatch":
+            return
+        rows = self.svc.storage.query("SELECT id, text FROM log WHERE role = 'user' ORDER BY id DESC LIMIT 1")
+        if rows and rows[0]["text"] == redact(str(d.get("text") or "")):
+            self._others = (self._others + [rows[0]["id"]])[-200:]
 
     # ---- the learning loop -----------------------------------------------------------------------------
     def tick(self) -> None:
@@ -205,7 +225,7 @@ class MemorySkill(Skill):
             return 0  # still talking (or nothing new)
         owns = getattr(getattr(getattr(self.svc, "conversation", None), "threads", None), "owns", None)
         turns = [{"role": r["role"], "text": r["text"]} for r in rows
-                 if r["source"] not in ("automation",) and not self._while_live(r["ts"])
+                 if r["source"] in OWN_SOURCES and r["id"] not in self._others and not self._while_live(r["ts"])
                  and not (owns and owns(r["ts"]))  # a kept conversation learns through its thread (brain/threads.py)
                  and not re.match(r"^(?:remember|note|make a note)\b", r["text"].lower())]  # notes are learned above
         learned = self.memory.extract(turns, source_ref=f"log:{rows[0]['id']}-{rows[-1]['id']}") if turns else []

@@ -55,3 +55,9 @@ Ollama or a model, so it was set low, from the cases' difficulty, not from a run
 
 Do the same after changing the CI model, the CI cases or Vesper's prompts, so the floor keeps its 15-point
 margin. A pass rate that keeps landing just above the floor means it's too tight: lower it rather than retrying.
+
+## Memory recall (no model)
+
+`python -m evals.memory_recall` scores long-term memory's recall alone: 41 facts, 32 questions in J's words and 15
+that nothing answers, words only and with a stand-in embedding model (`-v` lists every miss). Add
+`--ollama embeddinggemma` to run it with the real one. `tests/test_memory_recall_eval.py` holds its floors.

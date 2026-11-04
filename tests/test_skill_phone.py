@@ -20,7 +20,7 @@ ME, STRANGER = 111, 222
 class FakeTelegram:
     def __init__(self):
         self.updates, self.sent, self.ntfy, self.calls, self.uid = [], [], [], [], 0
-        self.down = False
+        self.down, self.files, self.claimed = False, {}, {}
 
     def queue(self, **u):
         self.uid += 1
@@ -33,9 +33,21 @@ class FakeTelegram:
     def button(self, data, chat=ME):
         self.queue(callback_query={"id": f"cb{self.uid}", "data": data, "message": {"chat": {"id": chat}}})
 
+    def voice(self, file_id, data=b"OggS-fake", duration=3, chat=ME, date=None, size=None):
+        self.files[file_id], self.claimed[file_id] = data, len(data) if size is None else size
+        self.queue(message={"message_id": self.uid, "date": int(time.time() if date is None else date),
+                            "voice": {"file_id": file_id, "duration": duration, "mime_type": "audio/ogg",
+                                      "file_size": self.claimed[file_id]},
+                            "chat": {"id": chat, "type": "private", "first_name": "J"}})
+
     def __call__(self, req: httpx.Request):
         if self.down:
             raise httpx.ConnectError("no route", request=req)
+        if req.url.path.startswith("/file/"):  # a voice message's audio
+            self.calls.append("download")
+            if req.url.path.split("/")[2][3:] != TOKEN:
+                return httpx.Response(404)
+            return httpx.Response(200, content=self.files.get(req.url.path.rsplit("/", 1)[-1].split(".")[0], b""))
         if req.url.host == "ntfy.sh":
             self.ntfy.append((req.url.path, req.content.decode(), req.headers.get("Priority")))
             return httpx.Response(200, json={"id": "x"})
@@ -51,6 +63,13 @@ class FakeTelegram:
             return httpx.Response(200, json={"ok": True, "result": out})
         if method == "sendMessage":
             self.sent.append(body)
+        if method == "getFile":
+            data = self.files.get(body.get("file_id"))
+            if data is None:
+                return httpx.Response(400, json={"ok": False, "description": "Bad Request: invalid file_id"})
+            size = self.claimed.get(body["file_id"], len(data))  # what Telegram says, not always what it sends
+            return httpx.Response(200, json={"ok": True, "result": {"file_id": body["file_id"], "file_size": size,
+                                                                    "file_path": f"voice/{body['file_id']}.oga"}})
         return httpx.Response(200, json={"ok": True, "result": True})
 
     def texts(self, chat=ME):
@@ -262,3 +281,223 @@ def test_send_to_phone_tool(tg):
     assert tool.name == "send_to_phone" and tool.tier_for({}) == 1
     assert tool.handler(text="123 Main St")["sent"] == ["telegram"] and tg.texts()[-1] == "Vesper: 123 Main St"
     assert tg.p.say("send_to_phone", {}, {}) == "Sent to your phone."
+
+
+# ---- voice messages ---------------------------------------------------------------------------------------------
+
+@pytest.fixture
+def heard(tg):
+    """The phone with a fake decoder (no ffmpeg run) and a fake speech-to-text that says what the test wants."""
+    import numpy as np
+
+    said = {"text": "what's on my calendar", "decoded": []}
+
+    def decode(path, ff, runner=None):
+        said["decoded"].append((path.suffix, path.read_bytes(), ff, runner))
+        yield np.zeros(480, dtype=np.int16)
+
+    def stt(samples):
+        if isinstance(said["text"], Exception):
+            raise said["text"]
+        return said["text"]
+    tg.p.ffmpeg, tg.p.decode, tg.p._transcribe_fn = "ffmpeg", decode, stt
+    return said
+
+
+def test_voice_messages_run_like_typed_ones_and_say_what_was_heard(tg, heard, cfg):
+    pair(tg)
+    tg.voice("v1", b"OggS-hello")
+    tg.p.poll_once(timeout=0)
+    assert tg.ran == ["what's on my calendar"]
+    assert tg.texts()[-1] == "Heard: “what's on my calendar”\n\nDid: what's on my calendar."
+    assert heard["decoded"] == [(".ogg", b"OggS-hello", "ffmpeg", ph._popen)]
+    assert not list((cfg.data_dir / "phone_voice").iterdir())  # the audio is gone once it's read
+    heard["text"] = "  Take a   screenshot. "  # by voice it's the same rule as typed
+    tg.voice("v2")
+    tg.p.poll_once(timeout=0)
+    assert tg.texts()[-1] == "Heard: “Take a screenshot.”\n\nScreenshots and what's on the screen don't go to the phone."
+    assert tg.ran == ["what's on my calendar"]
+
+
+def test_voice_from_strangers_or_while_off_is_never_fetched(tg, heard):
+    tg.voice("v0", chat=STRANGER)  # not paired yet: a voice message pairs nothing
+    tg.p.poll_once(timeout=0)
+    pair(tg)
+    n = len(tg.sent)
+    tg.voice("v1", chat=STRANGER)
+    tg.voice("v2", date=time.time() - 3600)  # sent while Vesper was off
+    tg.p.poll_once(timeout=0)
+    assert "getFile" not in tg.calls and "download" not in tg.calls and tg.ran == [] and len(tg.sent) == n
+    assert tg.p.chat_id == ME
+
+
+def test_voice_without_ffmpeg_says_how_to_fix_it(tg, heard, svc):
+    pair(tg)
+    tg.p.ffmpeg = ""
+    tg.voice("v1")
+    tg.p.poll_once(timeout=0)
+    assert tg.texts()[-1] == ph.NO_FFMPEG and "winget install Gyan.FFmpeg" in ph.NO_FFMPEG
+    assert "getFile" not in tg.calls and tg.ran == []
+    checks = {c["name"]: c for c in tg.p.selftest()}
+    assert checks["Phone voice messages"]["status"] == "skip" and "winget" in checks["Phone voice messages"]["fix"]
+
+
+def test_voice_size_and_rate_limits(tg, heard, cfg, monkeypatch):
+    now = {"t": 5_000_000.0}
+    tg.p.clock = lambda: now["t"]
+    pair_at = now["t"]
+    tg.msg(f"/start {tg.p.state['code']}")
+    tg.updates[-1]["message"]["date"] = int(pair_at)
+    tg.p.poll_once(timeout=0)
+    tg.voice("long", duration=600, date=now["t"])  # too long: not even fetched
+    tg.voice("fat", size=5_000_000, date=now["t"])  # too big by what Telegram says
+    tg.p.poll_once(timeout=0)
+    assert "getFile" not in tg.calls and all("too long" in t for t in tg.texts()[-2:])
+    monkeypatch.setattr(ph, "VOICE_MAX_BYTES", 100)
+    tg.voice("liar", data=b"x" * 50, date=now["t"])
+    tg.files["liar"] = b"x" * 500  # bigger than it said: the download stops at the limit
+    tg.p.poll_once(timeout=0)
+    assert "too big" in tg.texts()[-1] and not list((cfg.data_dir / "phone_voice").iterdir())
+    monkeypatch.setattr(ph, "VOICE_MAX_BYTES", 2_000_000)
+    for i in range(ph.VOICE_RATE[0]):  # the "liar" download counted too
+        tg.voice(f"r{i}", date=now["t"])
+    tg.p.poll_once(timeout=0)
+    assert "a lot of voice messages" in tg.texts()[-1] and len(tg.ran) == ph.VOICE_RATE[0] - 1
+    now["t"] += ph.VOICE_RATE[1] + 1
+    tg.voice("later", date=now["t"])
+    tg.p.poll_once(timeout=0)
+    assert len(tg.ran) == ph.VOICE_RATE[0] and tg.texts()[-1].startswith("Heard:")
+
+
+def test_voice_silence_no_engine_and_telegram_errors(tg, heard):
+    pair(tg)
+    heard["text"] = "Thank you."  # what speech models "hear" in a pocket
+    tg.voice("v1")
+    tg.p.poll_once(timeout=0)
+    assert "couldn't make out any words" in tg.texts()[-1]
+    heard["text"] = RuntimeError("No speech-to-text engine installed")
+    tg.voice("v2")
+    tg.p.poll_once(timeout=0)
+    assert "Speech-to-text isn't working" in tg.texts()[-1] and "Update Vesper" in tg.texts()[-1]
+    tg.queue(message={"message_id": 99, "date": int(time.time()), "chat": {"id": ME, "type": "private"},
+                      "voice": {"file_id": "gone", "duration": 2}})  # Telegram no longer has it
+    tg.p.poll_once(timeout=0)
+    assert tg.texts()[-1].startswith("I couldn't fetch that voice message") and TOKEN not in tg.texts()[-1]
+    assert tg.ran == []
+
+
+def test_voice_yes_and_no_go_through_the_same_confirmation(tg, heard, svc, monkeypatch):
+    from assistant.brain.assistant import Assistant
+
+    mod = types.ModuleType("assistant.skills.rocketfake")
+    Rocket.__module__ = mod.__name__
+    mod.Rocket = Rocket
+    monkeypatch.setitem(__import__("sys").modules, mod.__name__, mod)
+    svc.skills = Skills(svc, ["rocketfake", "nudges"])
+    a = Assistant(svc)
+    tg.p.run_command = lambda text: a.handle(text, "phone")
+    tg.p.pending = a.pending_view
+    rocket = svc.skills["rocket"]
+    pair(tg)
+    heard["text"] = "Launch the rocket."
+    tg.voice("v1")
+    tg.p.poll_once(timeout=0)
+    ask = tg.sent[-1]
+    assert ask["text"] == "Heard: “Launch the rocket.”\n\nConfirm: launch the rocket? Reply yes or no."
+    assert [b["callback_data"] for b in ask["reply_markup"]["inline_keyboard"][0]] == ["yes", "no"]
+    assert not getattr(rocket, "launched", 0)  # a tier-2 action waits for a yes, by voice too
+    heard["text"] = "No."
+    tg.voice("v2")
+    tg.p.poll_once(timeout=0)
+    assert not getattr(rocket, "launched", 0) and tg.texts()[-1].endswith("Cancelled.")
+    heard["text"] = "Launch the rocket."
+    tg.voice("v3")
+    tg.p.poll_once(timeout=0)
+    heard["text"] = "Yes."
+    tg.voice("v4")
+    tg.p.poll_once(timeout=0)
+    assert rocket.launched == 1 and tg.texts()[-1] == "Heard: “Yes.”\n\nRocket away."
+
+
+# ---- long work started from the phone answers there --------------------------------------------------------------
+
+def _job(state, **kw):
+    return {"id": "ab12cd", "title": "Research: capture cards", "state": state, "source": "phone", "deliver": [],
+            "result": None, "error": "", "batch": "", **kw}
+
+
+def test_a_job_started_from_the_phone_answers_there_when_done(tg, svc):
+    pair(tg)
+    n = len(tg.sent)
+    tg.idle["s"] = 900
+    pub = lambda *jobs: svc.bus.publish("tasks_agent", {"ok": True, "jobs": list(jobs)}, sticky=True)  # noqa: E731
+    pub(_job("done", result={"summary": "Old news."}))  # finished before Vesper started: never seen running
+    pub(_job("running", id="vv", source="voice"), _job("running"))
+    pub(_job("done", id="vv", source="voice", result={"summary": "Said at the PC."}),
+        _job("done", result={"summary": "The Elgato 4K X is the pick.", "note": "x.md"}))
+    pub(_job("done", result={"summary": "The Elgato 4K X is the pick."}))  # published again: told once
+    assert tg.texts()[n:] == ["Research: capture cards is done. The Elgato 4K X is the pick. The full write-up is in "
+                              "Jobs on the PC."]
+    pub(_job("running", id="w1", title="Inbox triage"))
+    pub(_job("waiting", id="w1", title="Inbox triage", batch="save 3 reply drafts in Gmail (never sent)"))
+    assert tg.texts()[-1] == ("Inbox triage is ready. It waits on your OK to save 3 reply drafts in Gmail (never sent): "
+                              "reply “approve the inbox triage job”.")
+    pub(_job("running", id="f1", title="Week wrap"))
+    pub(_job("failed", id="f1", title="Week wrap", error="every step failed"))
+    assert tg.texts()[-1] == "Week wrap didn't work: every step failed"
+    m = len(tg.sent)
+    pub(_job("running", id="d1", deliver=["phone"]))
+    pub(_job("done", id="d1", deliver=["phone"], result={"summary": "x"}))  # "…and text it to me" sent it already
+    tg.idle["s"] = 0
+    pub(_job("running", id="h1"))
+    pub(_job("done", id="h1", result={"summary": "Back at the PC: the nudge has it."}))
+    assert len(tg.sent) == m
+
+
+def test_notes_from_a_recording_stopped_from_the_phone(tg, svc):
+    pair(tg)
+    tg.idle["s"] = 900
+    ctx = {"source": "voice"}
+    tg.p._ctx = lambda: ctx
+    svc.bus.publish("tool", {"name": "recording_stop", "args": {}, "result": {"ok": True, "id": "rec-pc"}})
+    ctx["source"] = "phone"
+    svc.bus.publish("tool", {"name": "recording_stop", "args": {}, "result": {"ok": True, "id": "rec-1"}})
+    svc.bus.publish("tool", {"name": "recording_mark", "args": {}, "result": {"ok": True, "id": "rec-2"}})
+    n = len(tg.sent)
+    rec = lambda rid, state, **kw: {"id": rid, "title": "Standup", "state": state, "summary": "We ship Friday.",  # noqa: E731
+                                     "tasks": 2, "tasks_state": "ask", "error": "", **kw}
+    svc.bus.publish("recorder", {"state": "idle", "recent": [rec("rec-1", "notes"), rec("rec-pc", "done")]}, sticky=True)
+    assert len(tg.sent) == n  # still writing; the PC one isn't the phone's
+    svc.bus.publish("recorder", {"state": "idle", "recent": [rec("rec-1", "done"), rec("rec-2", "done")]}, sticky=True)
+    svc.bus.publish("recorder", {"state": "idle", "recent": [rec("rec-1", "done")]}, sticky=True)
+    assert tg.texts()[n:] == ["Notes ready: Standup. We ship Friday. 2 action items: reply “add the recording tasks” "
+                              "to add them."]
+    svc.bus.publish("tool", {"name": "notes_from_file", "args": {}, "result": {"ok": True, "id": "file-1"}})
+    svc.bus.publish("recorder", {"recent": [rec("file-1", "error", error="ffmpeg couldn't read call.m4a")]}, sticky=True)
+    assert tg.texts()[-1] == "The notes from Standup didn't work: ffmpeg couldn't read call.m4a"
+
+
+def test_a_model_test_that_ends_while_away_is_pushed(tg, svc):
+    pair(tg)
+    n = len(tg.sent)
+    svc.bus.publish("brain_bench", {"running": False, "summary": "qwen3.6:35b-a3b is the best."}, sticky=True)
+    tg.idle["s"] = 900
+    svc.bus.publish("brain_bench", {"running": True, "done": 3, "total": 9})
+    svc.bus.publish("brain_bench", {"running": False, "summary": "qwen3.6:35b-a3b is the best."}, sticky=True)
+    assert tg.texts()[n:] == ["Vesper: model test done. qwen3.6:35b-a3b is the best."]
+    tg.p._set_push(False)
+    svc.bus.publish("brain_bench", {"running": False, "summary": "again"}, sticky=True)
+    assert len(tg.sent) == n + 1
+
+
+def test_start_wires_the_listener_and_the_command_source(svc, monkeypatch):
+    monkeypatch.delenv(ph.TOKEN_ENV, raising=False)
+    p = ph.Phone(svc, http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))), idle=lambda: 0)
+    lst = SimpleNamespace(transcribe=lambda s: "vrb in five", correct=lambda t: t.replace("vrb", "BRB"))
+    a = SimpleNamespace(pending_view=lambda: None, _ctx={"source": "phone"})
+    p.start(SimpleNamespace(command=lambda text, source: {}, assistant=a, listener=lst))
+    try:
+        assert p._ctx() == {"source": "phone"} and p._transcribe([0.0]) == "BRB in five"
+    finally:
+        p.stop()
+        p._thread.join(10)

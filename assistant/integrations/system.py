@@ -42,7 +42,10 @@ class SystemMonitor:
         self._last_net = psutil.net_io_counters()
         self._last_disk = psutil.disk_io_counters() if hasattr(psutil, "disk_io_counters") else None
         self._last_t = time.time()
-        self._gpu_cache: tuple[float, list] = (0.0, [])
+        self.clock = time.time
+        self._gpu_cache: tuple[float, list] = (-1e9, [])
+        # Disk space changes slowly, and asking a network or removable drive can stall: once every 30 s is plenty.
+        self._disk_cache: tuple[float, list] = (-1e9, [])
         self._nvidia_smi = shutil.which("nvidia-smi")
         self.extra_findings: Callable[[], list[dict]] = lambda: []
         self._ncpu = psutil.cpu_count() or 1
@@ -53,7 +56,7 @@ class SystemMonitor:
         if not self._nvidia_smi:
             return []
         ts, cached = self._gpu_cache
-        if time.time() - ts < 4:
+        if self.clock() - ts < 4:
             return cached
         fields = "name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,utilization.encoder"
         try:
@@ -85,7 +88,7 @@ class SystemMonitor:
                 "power_w": num(parts[5]) if len(parts) > 5 else None,
                 "encoder_util": num(parts[6]) if len(parts) > 6 else None,
             })
-        self._gpu_cache = (time.time(), gpus)
+        self._gpu_cache = (self.clock(), gpus)
         return gpus
 
     def top_processes(self, limit: int = 8) -> dict:
@@ -140,23 +143,6 @@ class SystemMonitor:
                 }
                 self._last_disk = cur
 
-        disks, seen = [], set()
-        for part in psutil.disk_partitions(all=False):
-            opts = set(part.opts.split(","))
-            if not part.fstype or part.mountpoint in seen or "cdrom" in opts:
-                continue
-            if "ro" in opts or part.fstype in {"squashfs", "tmpfs", "devtmpfs", "iso9660", "udf"}:
-                continue  # read-only / virtual mounts: nothing to free, just noise
-            if part.mountpoint.startswith(("/snap", "/boot", "/var/lib", "/proc", "/sys", "/dev")):
-                continue
-            seen.add(part.mountpoint)
-            try:
-                u = psutil.disk_usage(part.mountpoint)
-            except (PermissionError, OSError):
-                continue
-            disks.append({"mount": part.mountpoint, "total_gb": round(u.total / 1e9, 1),
-                          "used_gb": round(u.used / 1e9, 1), "percent": u.percent})
-
         freq = psutil.cpu_freq()
         battery = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
         temps = {}
@@ -175,7 +161,7 @@ class SystemMonitor:
             "memory": {"percent": vm.percent, "used_gb": round(vm.used / 1e9, 1), "total_gb": round(vm.total / 1e9, 1),
                        "available_gb": round(vm.available / 1e9, 1)},
             "swap_percent": psutil.swap_memory().percent,
-            "disks": disks,
+            "disks": self.disks(),
             "disk_io": disk_io,
             "net": {"up_bps": up_rate, "down_bps": down_rate},
             "gpus": gpus,
@@ -191,6 +177,29 @@ class SystemMonitor:
             "up": up_rate, "down": down_rate,
         })
         return snap
+
+    def disks(self) -> list[dict]:
+        ts, cached = self._disk_cache
+        if self.clock() - ts < 30:
+            return cached
+        disks, seen = [], set()
+        for part in psutil.disk_partitions(all=False):
+            opts = set(part.opts.split(","))
+            if not part.fstype or part.mountpoint in seen or "cdrom" in opts:
+                continue
+            if "ro" in opts or part.fstype in {"squashfs", "tmpfs", "devtmpfs", "iso9660", "udf"}:
+                continue  # read-only / virtual mounts: nothing to free, just noise
+            if part.mountpoint.startswith(("/snap", "/boot", "/var/lib", "/proc", "/sys", "/dev")):
+                continue
+            seen.add(part.mountpoint)
+            try:
+                u = psutil.disk_usage(part.mountpoint)
+            except (PermissionError, OSError):
+                continue
+            disks.append({"mount": part.mountpoint, "total_gb": round(u.total / 1e9, 1),
+                          "used_gb": round(u.used / 1e9, 1), "percent": u.percent})
+        self._disk_cache = (self.clock(), disks)
+        return disks
 
     # ---- optimizer ------------------------------------------------------
     def temp_dir_size(self, max_files: int = 20000) -> tuple[int, int]:

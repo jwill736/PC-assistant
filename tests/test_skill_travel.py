@@ -90,6 +90,10 @@ class Clock:
         return self.t
 
 
+def offline(request):
+    raise httpx.ConnectError("offline in tests", request=request)
+
+
 @pytest.fixture
 def travel(svc, tmp_path):
     from test_gmail import FakeGmail
@@ -101,7 +105,7 @@ def travel(svc, tmp_path):
     connect(acc, fake, "code-home")
     svc.gmail = Gmail(acc)
     clock = Clock()
-    t = tv.Travel(svc, clock=clock)
+    t = tv.Travel(svc, clock=clock, http=httpx.Client(transport=httpx.MockTransport(offline)))  # no forecast, no OSRM
     t.clock_obj, t.fake, t.nudged = clock, fake, []
     t.nudge = lambda text, **kw: t.nudged.append((text, kw.get("priority")))
     return t

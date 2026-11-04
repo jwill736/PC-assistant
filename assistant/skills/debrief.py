@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
+from ..privacy import has_secret_value, redact
 from . import Skill
 from .people import display_name, first_name, on_air
 
@@ -227,6 +228,9 @@ class Debrief(Skill):
 
     def save(self, text: str, key: str = "", source: str = "voice") -> dict:
         text = re.sub(r"\s+", " ", self._original((text or "").strip())).strip()
+        # Notes are plain text in the database: a password or a key said in passing is left out, the rest is kept
+        secret = has_secret_value(text)
+        text = redact(text) if secret else text
         if len(text) < 3:
             return {"ok": False, "error": "Say what to note, e.g. “I'll send Dana the deck by Friday”."}
         e = self._meeting(key)
@@ -255,7 +259,8 @@ class Debrief(Skill):
             self.svc.bus.publish("tasks", self.svc.storage.list_tasks())
         self.publish()
         return {"ok": True, "title": e["title"], "note": note["text"], "by": by,
-                "tasks": [{"id": t["id"], "title": t["title"], "due": t["due"]} for t in made], "people": noted}
+                "tasks": [{"id": t["id"], "title": t["title"], "due": t["due"]} for t in made], "people": noted,
+                **({"left_out_secret": True} if secret else {})}
 
     def skip(self, key: str = "") -> dict:
         e = self._meeting(key)
@@ -371,7 +376,8 @@ class Debrief(Skill):
                         + (f", and {len(tasks) - 1} more)" if len(tasks) > 1 else ")"))
         if ppl:
             bits.append("a note on " + " and ".join(first_name(n) for n in ppl[:3]))
-        return f"Noted for {result['title']}" + (": " + " and ".join(bits) if bits else "") + "."
+        left_out = " I left the password out of the note." if result.get("left_out_secret") else ""
+        return f"Noted for {result['title']}" + (": " + " and ".join(bits) if bits else "") + "." + left_out
 
     # ---- HUD -------------------------------------------------------------------------------------------------
     def recent(self, limit: int = 5) -> list[dict]:

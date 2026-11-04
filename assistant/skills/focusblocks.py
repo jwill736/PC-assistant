@@ -223,6 +223,9 @@ class FocusBlocks(Skill):
              "calendar": calendar, "account": account}
         if not self._resolve(a):
             return {"ok": False, "error": a["_error"]}
+        if datetime.fromisoformat(a["end"]) <= self.now():  # pinned when J was asked, approved (a job's card) too late
+            return {"ok": False, "error": f"That time has passed ({span_text(a['start'], a['end'], self.now().date())}). "
+                                          "Ask again and I'll find another."}
         return self._create(a["account"], a["calendar"], a.get("title") or "Focus time", a["start"], a["end"])
 
     def _create(self, account: str, calendar: str, title: str, start: str, end: str) -> dict:

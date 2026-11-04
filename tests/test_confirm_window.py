@@ -116,6 +116,22 @@ def test_someone_elses_voice_and_other_chatter_are_ignored_in_the_window(env):
     assert env.w.tap("what time is it", "match") is None  # said with the name: a normal command
 
 
+def test_a_yes_too_short_to_judge_confirms_a_tier2_action_but_not_an_irreversible_one(env):
+    ask(env)
+    env.bus.publish("heard", {"text": "yes", "wake": False, "armed": True})
+    assert env.w.tap("yes", "unsure") == "yes"  # tier 2: a bare "yes" is fine
+    env.w.on_pending(env.a.set("delete the clip", tier=3))
+    env.sp.speaking.set()
+    env.w.tick()
+    env.clock.t += 2.5
+    env.sp.speaking.clear()
+    assert env.w.tick() == "listening"
+    env.bus.publish("heard", {"text": "yes", "wake": False, "armed": True})
+    assert env.w.tap("yes", "unsure") is True  # dropped: too short to know it was J
+    assert env.w.tap("no", "unsure") == "no"  # cancelling is always fine
+    assert env.w.current["phase"] == "waiting"
+
+
 def test_no_answer_means_silence_then_the_card_and_toast_wait_two_minutes(env):
     ask(env)
     env.clock.t += 9.9

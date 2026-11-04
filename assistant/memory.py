@@ -34,7 +34,7 @@ from typing import Callable
 
 import httpx
 
-from .privacy import mentions_secret
+from .privacy import has_secret_value, mentions_secret
 
 log = logging.getLogger(__name__)
 
@@ -477,6 +477,9 @@ class Memory:
     def set_block(self, label: str, text: str, by: str = "J") -> dict:
         if label not in BLOCKS:
             return {"ok": False, "error": f"No block called {label}."}
+        if has_secret_value(text):  # the blocks go into every prompt: a password or a key never goes there
+            return {"ok": False, "error": "That has a password, a code or a key in it, and I don't keep those. "
+                                          "Your password manager is the place for it."}
         self.storage.execute("INSERT INTO core_blocks(label, text, updated, edited_by) VALUES (?,?,?,?) "
                              "ON CONFLICT(label) DO UPDATE SET text=excluded.text, updated=excluded.updated, "
                              "edited_by=excluded.edited_by", (label, text.strip()[: BLOCK_CHARS * 2], self.clock(), by))

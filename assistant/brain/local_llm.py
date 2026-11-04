@@ -443,6 +443,7 @@ class LocalBrain:
         self.bench_path = bench_path
         self.found: dict | None = None
         self.llm: LocalLLM | None = None
+        self._game_llm: LocalLLM | None = None  # the light model for skills' questions mid-game (in_game)
         self.streaming = False
         self._probed = -1e9
         self._lock = threading.Lock()
@@ -468,7 +469,7 @@ class LocalBrain:
             return {}
         passed = [r for r in data.get("results") or [] if isinstance(r, dict) and r.get("result") == "pass"
                   and "strength" in r]
-        if passed:  # re-rank a test saved under an older rule (model_bench.pick_best)
+        if passed and not data.get("kept"):  # re-rank a test saved under an older rule (model_bench.pick_best)
             from .model_bench import pick_best
 
             data["best"] = pick_best(passed)["name"]
@@ -522,6 +523,25 @@ class LocalBrain:
             if self.llm and not self.quiet:
                 log.info("local model: %s", self.llm.label)
             return self.llm
+
+    def in_game(self) -> LocalLLM | None:
+        """The model for a skill's question while a fullscreen game runs, without loading the big one onto the
+        graphics card mid-game: the one already loaded, else the light model (as on stream nights). None when the
+        only choice would load the big one: the question waits until the game is over."""
+        main = self.refresh()
+        if main is None or main.kind != "ollama":
+            return main  # another server (LM Studio) holds whatever model it holds
+        if any(m["name"] == main.model for m in loaded(main.http, main.url)):
+            return main
+        found = self.found or {}
+        models = found.get("models") or []
+        light = self.bench.get("light")
+        light = light if any(m["name"] == light for m in models) else pick_light_model(models)
+        if not light or light == main.model:
+            return None
+        if self._game_llm is None or self._game_llm.model != light or self._game_llm.url != main.url:
+            self._game_llm = self._make(found, light)
+        return self._game_llm
 
     @property
     def ready(self) -> bool:

@@ -1,8 +1,8 @@
 """Nudges: queued until a good moment, never spoken on air, budgeted, and quiet for kinds J keeps dismissing."""
 
-from datetime import datetime, timedelta
-
+import time
 import types
+from datetime import datetime
 
 import pytest
 
@@ -107,7 +107,7 @@ def test_mute_and_quiet_hours(env):
 
 def test_meeting_soon_rule(env, svc):
     n, clock, state, said, events = env
-    start = datetime.now(svc.tz) + timedelta(minutes=8)
+    start = datetime.fromtimestamp(time.time() + 8 * 60, svc.tz)  # on the timestamp: right across a DST change too
     svc.calendars.agenda = lambda days, **kw: [{"title": "Client sync", "start": start.isoformat(), "all_day": False,
                                                 "location": "Zoom"}]
     n._rules(clock.t)

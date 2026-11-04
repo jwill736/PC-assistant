@@ -126,3 +126,28 @@ def test_claude_risky_macro_is_parked(svc, monkeypatch):
 
 def test_no_macros_no_tool(svc):
     assert Assistant(svc).macro_definition() is None
+
+
+def test_a_pinned_slot_runs_as_asked_and_never_sticks_in_the_macro(svc):
+    """A tool that pins what it worked out (a focus block's slot) into its args: the yes runs that slot, and the next
+    run works it out afresh instead of reusing the first one from the macro's own config."""
+    from assistant.brain.tools import Tool
+
+    slots, ran = ["2-4 PM", "4-6 PM", "6-8 PM"], []
+
+    def tier(args):  # like focusblocks: the first free slot, which moves on once one is booked
+        args.setdefault("slot", slots[len(ran)])
+        return 2
+
+    spec = {"focus": {"say": "protect my afternoon", "steps": [{"fake_block": {"minutes": 120}}]}}
+    a = with_macros(svc, spec)
+    a.tools.tools["fake_block"] = Tool("fake_block", "Block time.", {"type": "object", "properties": {}},
+                                       lambda **kw: ran.append(kw) or {"ok": True}, tier=tier,
+                                       confirm_text=lambda args: f"block {args['slot']}")
+    out = a.handle("protect my afternoon")
+    assert out["kind"] == "pending" and "block 2-4 PM" in out["reply"]
+    a.handle("yes")
+    assert ran == [{"minutes": 120, "slot": "2-4 PM"}]  # exactly what the question said
+    assert svc.cfg["macros"]["focus"]["steps"] == [{"fake_block": {"minutes": 120}}]  # the config is untouched
+    out = a.handle("protect my afternoon")
+    assert "block 4-6 PM" in out["reply"]  # worked out afresh, not the first run's slot

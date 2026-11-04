@@ -90,6 +90,11 @@ class ConfirmWindow:
             if owner == "mismatch":
                 self.bus.publish("heard", {"text": text, "ignored": "not your voice (waiting for your yes or no)"})
                 return True
+            if owner == "unsure" and said == "yes" and cur["tier"] >= 3:
+                # A bare "yes" is too short to tell whose voice it is: an irreversible action needs more than that.
+                self.bus.publish("heard", {"text": text, "ignored": "too short to know it's you: "
+                                                                    "say “yes, go ahead please”, or click Confirm"})
+                return True
             if said is None:
                 self.bus.publish("heard", {"text": text, "ignored": "waiting for a yes or no"})
                 return True
@@ -106,8 +111,10 @@ class ConfirmWindow:
                 return "done"
             now = self.clock()
             if now >= cur["expires"]:
-                self.assistant.cancel(cur["id"])  # quietly: the card goes (unless it was replaced), nothing is said
                 self._publish("expired")
+                self.assistant.cancel(cur["id"])  # quietly: the card goes (unless it was replaced), nothing is said
+                if self.current is not None and self.current is not cur:
+                    return self.current["phase"]  # ...but a question that waited its turn is asked now: the window's
                 return self._done()
             if self._waiting_id() != cur["id"]:  # answered (voice, HUD, toast) or replaced
                 return self._done()

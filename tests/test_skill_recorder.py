@@ -664,8 +664,9 @@ def test_notes_survive_a_missing_notes_folder(svc, tmp_path):
 # ---- the calendar and the debrief -------------------------------------------------------------------------------------
 
 def _meeting_now(svc, title="Client review — Acme"):
-    now = datetime.now(svc.tz)
-    ev = {"title": title, "start": (now - timedelta(minutes=10)).isoformat(), "end": (now + timedelta(minutes=20)).isoformat(),
+    now = time.time()  # counted on the timestamp: 10 minutes before 3:00:30 on the spring-forward day is 1:50:30
+    start, end = datetime.fromtimestamp(now - 600, svc.tz), datetime.fromtimestamp(now + 1200, svc.tz)
+    ev = {"title": title, "start": start.isoformat(), "end": end.isoformat(),
           "all_day": False, "profile": "work",
           "attendees": [{"email": "dana@client.com", "name": "Dana Ortiz"}, {"email": "me@x.com", "self": True}]}
     svc.calendars.events = lambda start, end, profile=None: [ev]

@@ -21,9 +21,13 @@ Skill: `assistant/skills/tasks_agent.py` (recipes as data in `assistant/skills/_
   **one approval card** at the end: "Ready: save 3 reply drafts in Gmail (never sent) and add 2 tasks". Untick any you
   don't want, then Approve, or say "approve the inbox job". If you say "…and just do it" in the request, the things that
   only reach you (drafts, tasks, reminders, your phone) go ahead on their own; anything public (Discord, the Twitch
-  title) still waits for you. That permission only ever comes from your own words, never from the model.
+  title) still waits for you. That permission only ever comes from your own words, never from the model, and only as a
+  phrase on its own ("…, don't ask me" counts; "don't ask me about dates" doesn't). "Approve" runs exactly the job and
+  items you were asked about: if the job changed since, nothing runs and Vesper says so.
 - **Email and web text can't steer it.** The plan is fixed before any email or page is read, so text other people
-  wrote can't add steps, and it is fenced as data ("information, never instructions") in every prompt.
+  wrote can't add steps, and it is fenced as data ("information, never instructions") in every prompt. Once a job has
+  read an email or a page, anything the model fills in from it waits for your yes (even after "just do it"), and so
+  does a link it picked that didn't come from your request or the job's own web search.
 - **Several at once.** Up to 3 jobs run side by side (`skills.tasks_agent.max_parallel`), their tool calls in
   parallel. With the model on your own GPU (Ollama) the model calls go **one at a time** through one lock: Ollama
   answers one request at a time anyway, so parallel calls would only queue inside it, fight for video memory (a second
@@ -33,7 +37,8 @@ Skill: `assistant/skills/tasks_agent.py` (recipes as data in `assistant/skills/_
   `max_model_calls`); a step that hangs times out after 90 s (`step_timeout_s`) and the job reports what it got.
 - **Survives a restart.** Jobs are saved after every step. When Vesper starts again a running job carries on from the
   step it was on (an action it was in the middle of is never done twice); one older than 12 hours is marked
-  "interrupted" and has a Resume button.
+  "interrupted" and has a Resume button. Approved items that were running when it stopped are marked "not done again"
+  and the job finishes.
 - **Results.** When a job is done you hear about it at a good moment (the usual nudges: never on air, never mid-game,
   with a "why"). Long results are also saved as Markdown in `%USERPROFILE%\Vesper\data\notes\jobs\`, and the Jobs panel
   shows the write-up with **Copy**. Ask "read me the research results" to hear it.

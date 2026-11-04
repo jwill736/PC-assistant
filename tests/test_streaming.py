@@ -93,27 +93,27 @@ def test_fast_path_replies_are_spoken_once_with_the_turn(svc):
 
 class SlowAssistant:
     def __init__(self):
-        self.calls, self.started, self.release = [], threading.Event(), threading.Event()
+        self.calls, self.started, self.release, self.finished = [], threading.Event(), threading.Event(), []
         self.claude_ready = False
 
     def handle(self, text, source="text", turn=None, owner=None):
         self.calls.append((text, source, turn, threading.current_thread().name))
         self.started.set()
-        self.release.wait(2)
+        self.release.wait(30)
+        self.finished.append(text)
         return {"reply": ""}
 
 
 def test_voice_commands_run_off_the_mic_thread_one_at_a_time(cfg, svc):
     rt = Runtime(cfg, services=svc)
     rt.assistant = slow = SlowAssistant()
-    t0 = time.time()
     rt.voice_command("open discord")
     rt.voice_command("never mind")
-    assert time.time() - t0 < 0.5  # returned at once: the mic keeps listening while Claude works
-    assert slow.started.wait(2)
+    assert slow.finished == []  # returned with the first still held: the mic keeps listening while Claude works
+    assert slow.started.wait(10)
     assert len(slow.calls) == 1  # the second waits its turn
     slow.release.set()
-    deadline = time.time() + 2
+    deadline = time.time() + 10
     while len(slow.calls) < 2 and time.time() < deadline:
         time.sleep(0.01)
     assert [(c[0], c[1], c[2]) for c in slow.calls] == [("open discord", "voice", 1), ("never mind", "voice", 2)]

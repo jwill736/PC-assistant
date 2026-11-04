@@ -62,14 +62,35 @@ def test_long_recordings_are_cut_at_quiet_moments():
     assert dictate.chunks(np.ones(sr, np.float32)) and len(dictate.chunks(np.ones(sr, np.float32))) == 1
 
 
+def running_listener():
+    from assistant.voice.listener import VoiceListener
+
+    bus = SimpleNamespace(publish=lambda *a, **k: None)
+    speaker = SimpleNamespace(speaking=threading.Event(), last_end=0.0, last_text="")
+    lst = VoiceListener(bus, speaker, ["friday"], lambda text: None, {})
+    lst.state = "listening"
+    return lst
+
+
 def test_capture_borrows_the_running_listener_and_gives_it_back():
-    lst = SimpleNamespace(state="listening", paused=False, tap=None)
+    lst = running_listener()
     cap = dictate.Capture(lst)
     assert cap.start() == "listener" and lst.paused and lst.tap is not None
     for _ in range(10):
         lst.tap(np.full(480, 16384, np.int16))
     audio = cap.stop()
     assert len(audio) == 4800 and abs(audio[0] - 0.5) < 1e-6 and lst.tap is None and lst.paused is False
+
+
+def test_dictation_ending_mid_calibration_leaves_the_wizard_the_mic():
+    lst = running_listener()
+    cap = dictate.Capture(lst)
+    cap.start()
+    lst.pause("calibration")  # the wizard starts while J is still dictating: its read-aloud lines aren't commands
+    cap.stop()
+    assert lst.paused is True and lst.tap is None
+    lst.resume("calibration")
+    assert lst.paused is False
 
 
 def test_capture_opens_its_own_stream_without_a_listener():

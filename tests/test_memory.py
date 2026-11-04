@@ -179,3 +179,11 @@ def test_off_the_record_keeps_nothing(svc):
     a.handle("back on the record")
     a.handle("what time is it")
     assert len(svc.storage.recent_log(100)) == before + 3  # "back on the record" reply, then the question and answer
+
+
+def test_a_core_block_never_keeps_a_secret(mem):
+    # audit F17: the blocks go into every prompt; a key or a password typed into one is refused, like any note
+    out = mem.set_block("profile", "J streams Valorant. My password is hunter22.")
+    assert out["ok"] is False and "password" in out["error"]
+    assert "hunter22" not in mem.core_text()
+    assert mem.set_block("profile", "J keeps his passwords in a password manager.")["ok"]

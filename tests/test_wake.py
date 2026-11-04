@@ -135,6 +135,7 @@ def listener(text, names=("friday",), speaker=None, cfg=None):
 
 
 AUDIO = np.zeros(16000 * 2, dtype=np.int16)
+LONG = np.zeros(16000 * 4, dtype=np.int16)  # longer than any phrase that needs no name
 
 
 def test_trigger_kinds_and_mode():
@@ -149,8 +150,29 @@ def test_trigger_kinds_and_mode():
 
 def test_acoustic_mode_skips_speech_to_text_without_the_name():
     lst, commands = listener("so anyway, open discord")
-    lst._handle_audio(AUDIO, started_at=time.time())
+    lst._handle_audio(LONG, started_at=time.time())
     assert lst.stt.calls == 0 and commands == []
+
+
+def test_acoustic_mode_still_hears_the_kill_switch_without_the_name():
+    lst, commands = listener("Stop everything.")
+    lst._handle_audio(AUDIO, started_at=time.time())  # the name model didn't fire: it needs none
+    assert commands == ["stop everything"]
+
+
+def test_acoustic_mode_still_takes_the_phrase_vesper_just_suggested():
+    sp = FakeSpeaker("Your D: drive is 99% full. Say “Friday, why is my drive full” and I'll find what's taking "
+                     "the space.")
+    sp.last_end = time.time() - 2
+    lst, commands = listener("Why is my drive full?", speaker=sp, cfg={"follow_up_any_seconds": 0})
+    lst._handle_audio(LONG, started_at=sp.last_end + 1.0)  # even said slowly: the suggestion is what's open
+    assert commands == ["Why is my drive full?"]
+
+
+def test_acoustic_mode_hears_out_a_short_sentence_but_the_name_in_its_text_alone_does_not_wake():
+    lst, commands = listener("Friday, open discord")
+    lst._handle_audio(AUDIO, started_at=time.time())
+    assert lst.stt.calls == 1 and commands == [] and lst.bus.of("heard")[-1]["wake"] is False
 
 
 def test_acoustic_hit_at_the_start_wakes_even_if_the_name_is_misheard():
@@ -165,7 +187,7 @@ def test_acoustic_hit_at_the_start_wakes_even_if_the_name_is_misheard():
 def test_name_said_mid_sentence_does_not_wake():
     lst, commands = listener("so I told them Friday is great")
     lst._name_hit_at = time.time()
-    lst._handle_audio(AUDIO, started_at=time.time() - 5)  # the utterance began 5 s before the name
+    lst._handle_audio(LONG, started_at=time.time() - 5)  # the utterance began 5 s before the name
     assert commands == [] and lst.stt.calls == 0
 
 
@@ -216,11 +238,72 @@ def test_acoustic_hits_drive_stop_name_and_hard_triggers():
     assert commands == []
     lst._on_hits([("stop", 0.9)], speaking=False)           # nothing to stop
     assert sp.interrupts == 1
+    sp.last_end = time.time() - 5  # its tail has long left the speakers (right after it, it could be its own voice)
     lst._on_hits([("clip_that", 0.95)], speaking=False)
     assert commands == ["save the replay"]
     lst._on_hits([("friday", 0.9)], speaking=True)
     assert sp.interrupts == 2 and lst._name_hit_at > 0
     assert [d["name"] for d in lst.bus.of("wake_word")] == ["stop", "clip_that", "stop", "clip_that", "friday"]
+
+
+def test_its_own_name_or_stop_in_a_reply_does_not_cut_the_reply_off():
+    sp = FakeSpeaker("Say “Friday, why is my drive full” and I'll look.", speaking=True)
+    lst, _ = listener("", names=("friday", "stop"), speaker=sp)
+    lst._on_hits([("friday", 0.9)], speaking=True)
+    assert sp.interrupts == 0 and lst._name_hit_at == 0.0
+    sp = FakeSpeaker("I'll stop the recording at nine.", speaking=True)
+    lst, _ = listener("", names=("friday", "stop"), speaker=sp)
+    lst._on_hits([("stop", 0.9)], speaking=True)
+    assert sp.interrupts == 0
+    lst._on_hits([("friday", 0.9)], speaking=True)  # the name it isn't saying: J talking over it
+    assert sp.interrupts == 1
+
+
+def test_a_hard_trigger_right_after_a_reply_is_its_own_tail_not_you():
+    sp = FakeSpeaker("Want me to clip that?")
+    sp.last_end = time.time() - 0.2
+    lst, commands = listener("", names=("friday", "clip_that"), speaker=sp,
+                             cfg={"hard_triggers": {"clip_that": "save the replay"}})
+    lst._on_hits([("clip_that", 0.9)], speaking=False)
+    assert commands == []
+    sp.last_end = time.time() - 5
+    lst._on_hits([("clip_that", 0.9)], speaking=False)
+    assert commands == ["save the replay"]
+
+
+def test_hard_triggers_and_cancel_carry_their_own_owner_not_the_last_commands():
+    lst, commands = listener("", names=("friday", "clip_that"))
+    lst.last_owner = "pressed"  # the command before was push-to-talk
+    lst._on_hits([("clip_that", 0.9)], speaking=False)
+    assert commands == ["clip that"] and lst.last_owner == "unknown"
+    sp = FakeSpeaker("That will end the stream. Say yes to run it.", speaking=True)
+    lst, commands = listener("cancel", names=(), speaker=sp)
+    lst.last_owner = "pressed"
+    lst._handle_audio(AUDIO, during_speech=True)
+    assert commands == ["cancel"] and lst.last_owner == "unknown"
+
+
+def test_a_hard_trigger_in_a_stranger_voice_is_ignored():
+    class Stranger:
+        active, profile, last_short = True, SimpleNamespace(threshold=0.5), False
+
+        def __init__(self):
+            self.sizes = []
+
+        def check(self, samples):
+            self.sizes.append(len(samples))
+            return False, 0.1
+
+    v = Stranger()
+    lst, commands = listener("", names=("friday", "clip_that"))
+    lst.verifier = v
+    t = np.arange(480) / 16000
+    loud = (8000 * np.sin(2 * np.pi * 220 * t)).astype(np.int16)
+    for frame in [np.zeros(480, np.int16)] * 25 + [loud] * 25:
+        lst._recent_frames.append(frame)
+    lst._on_hits([("clip_that", 0.9)], speaking=False)
+    assert commands == [] and v.sizes == [25 * 480]  # its own voiced audio, not the silence before it
+    assert lst.bus.of("heard")[-1]["ignored"] == "voice not recognised"
 
 
 def test_strip_leading_name():

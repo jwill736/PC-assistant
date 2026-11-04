@@ -69,7 +69,7 @@ def voiced_chunks(samples, floor: float, seconds: float = 3.0, min_voiced: float
 
 
 def trim(samples, floor: float, pad: int = 4800):
-    """Cut leading/trailing silence so the fingerprint is all voice."""
+    """Cut leading/trailing silence (keeping ``pad`` samples of it, for speech-to-text)."""
     levels = frame_rms(samples)
     voiced = [i for i, lv in enumerate(levels) if lv > floor]
     if not voiced:
@@ -165,7 +165,7 @@ class Calibrator:
             voiced = trim(samples, floor)
             if len(voiced) < SAMPLE_RATE * 0.25:
                 continue
-            clips.append(voiced)
+            clips.append(trim(samples, floor, pad=0))  # the voice alone, as the live check scores it
             transcripts.append(self.transcribe(voiced))
         variants = wake_variants(transcripts, name, [w.lower() for w in self.cfg["assistant"]["wake_words"]])
         self.result.update(wake_heard=transcripts, wake_variants=variants, wake_takes=len(clips))
@@ -175,7 +175,7 @@ class Calibrator:
         chunks = []
         for i, line in enumerate(READ_ALOUD):
             samples = self._rec("speech", f"Read aloud: “{line}”", self.read_seconds, i + 1, len(READ_ALOUD))
-            chunks += voiced_chunks(samples, floor)
+            chunks += [c for c in (trim(c, floor, pad=0) for c in voiced_chunks(samples, floor)) if len(c)]
         self.result["speech_chunks"] = len(chunks)
         return chunks
 

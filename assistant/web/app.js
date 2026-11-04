@@ -2362,7 +2362,7 @@ function onEvent(ev) {
       if ('pending' in data) paintPending(data.pending);
       break;
     case 'heard':
-      if (!data.wake && !data.armed) strip.you(`(ignored: ${IGNORED_WHY[data.ignored] || 'start with “Vesper”'}) “${data.text}”`, { ignored: true });
+      if (!data.wake && !data.armed) strip.you(`(ignored: ${data.ignored ? IGNORED_WHY[data.ignored] || data.ignored : 'start with “Vesper”'}) “${data.text}”`, { ignored: true });
       if (data.rejection) notYourVoice(data);
       break;
     case 'thinking': orbState.thinking = data.active; paintOrb(); chips.think(data.active); break;

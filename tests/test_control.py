@@ -117,6 +117,14 @@ def test_an_irreversible_yes_needs_the_owners_voice_in_log_mode(svc, obs_calls):
     assert a.tools.audit.tail(1)[0]["confirmed_by"] == "voice"
 
 
+def test_an_irreversible_yes_too_short_to_judge_is_not_taken_as_the_owners(svc, obs_calls):
+    a = Assistant(svc)
+    a.handle("end the stream", "voice")
+    out = a.handle("yes", "voice", owner="unsure")  # a bare "yes": too little voice to fingerprint
+    assert "too short to know it's you" in out["reply"] and obs_calls == []
+    assert a.handle("yes", "voice", owner="pressed")["reply"] == "Stream ended."
+
+
 def test_a_t2_yes_from_log_mode_is_fine(svc, monkeypatch):
     closed = []
     monkeypatch.setattr("assistant.brain.tools.desktop.close_processes",

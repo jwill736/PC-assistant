@@ -120,7 +120,8 @@ def test_the_test_picks_the_strongest_that_passes_and_the_lightest_for_stream_ni
     # tested strongest first, each loaded then unloaded so the next has the card to itself
     tested = [r["name"] for r in result["results"] if "load_s" in r]
     assert tested == ["gemma4:31b-it-qat", "qwen3.6:35b-a3b", "gemma4:latest", "llama3.1:8b"]
-    assert fake.unloaded == tested and fake.loaded == {}
+    # the two that failed are tested once more, after the others
+    assert fake.unloaded == tested + ["gemma4:31b-it-qat", "gemma4:latest"] and fake.loaded == {}
     # thinking models were asked not to think; nothing was ever executed
     assert all(b.get("think") is False for b in fake.bodies if b["model"] in QWEN)
     assert any(p.get("testing") == "qwen3.6:35b-a3b" for p in progress)
@@ -363,3 +364,118 @@ def test_a_browser_eating_memory_gets_the_find_the_tab_tip(monkeypatch):
     monkeypatch.setattr(mon, "active_power_plan", lambda: None)
     finding = mon.analyze()["findings"][0]
     assert finding["title"] == "Memory at 96%" and "Shift+Esc" in finding["detail"] and "Memory Saver" in finding["detail"]
+
+
+# ---- one bad moment never demotes the strong model (audit F11) ------------------------------------------------
+
+class Stalls(JsPC):
+    """J's PC, where loading the named models times out the first ``times`` times (Ollama busy, a cold disk)."""
+
+    def __init__(self, stalls: dict, **kw):
+        super().__init__(**kw)
+        self.stalls = dict(stalls)
+
+    def __call__(self, req):
+        if req.url.path == "/api/generate":
+            body = json.loads(req.content)
+            if body.get("keep_alive") != 0 and self.stalls.get(body["model"], 0) > 0:
+                self.stalls[body["model"]] -= 1
+                raise httpx.ReadTimeout("timed out loading", request=req)
+        return super().__call__(req)
+
+
+def test_one_load_timeout_is_tested_again_and_the_35b_still_wins():
+    fake = Stalls({"qwen3.6:35b-a3b": 1}, acts={"qwen3.6:35b-a3b", "llama3.1:8b"})
+    result = bench(fake)
+    row = next(r for r in result["results"] if r["name"] == "qwen3.6:35b-a3b")
+    assert row["result"] == "pass" and result["best"] == "qwen3.6:35b-a3b"
+    # a model that really can't act is tested twice and still fails, and says so
+    gemma = next(r for r in result["results"] if r["name"] == "gemma4:31b-it-qat")
+    assert gemma["result"] == "fail" and "tested twice" in gemma["note"]
+
+
+def test_one_bad_test_keeps_last_times_winner_and_only_a_second_one_demotes_it(tmp_path, runtime, monkeypatch):
+    previous = {"best": "qwen3.6:35b-a3b", "light": "llama3.1:8b", "models": list(J_MODELS), "results": []}
+    first = model_bench.settle(bench(Stalls({"qwen3.6:35b-a3b": 9}, acts={"qwen3.6:35b-a3b", "llama3.1:8b"})), previous)
+    assert first["best"] == "qwen3.6:35b-a3b" and first["recheck"] == "qwen3.6:35b-a3b"
+    assert "Keeping qwen3.6:35b-a3b" in model_bench.summary(first)
+    # the brain answers with it, even though the saved rows say only the 8B passed
+    path = tmp_path / "brain_bench.json"
+    model_bench.save(first, path)
+    brain = local_llm.LocalBrain({"enabled": True}, http=http(JsPC(acts=set(J_MODELS))), vram_mb=lambda: RTX_5090_MB,
+                                 bench_path=path)
+    assert brain.bench["best"] == "qwen3.6:35b-a3b" and brain.refresh().model == "qwen3.6:35b-a3b"
+    # the hourly check tests it again although the model list hasn't changed
+    local = runtime.assistant.local
+    local.http, local.vram_mb = http(JsPC(acts=set(J_MODELS))), lambda: RTX_5090_MB
+    model_bench.save(first, local.bench_path)
+    started = []
+    monkeypatch.setattr(runtime, "bench_brain", lambda: started.append(1))
+    runtime._auto_bench()
+    assert started == [1]
+    # passes this time: stays, and the doubt is gone
+    again = model_bench.settle(bench(JsPC(acts={"qwen3.6:35b-a3b", "llama3.1:8b"})), first)
+    assert again["best"] == "qwen3.6:35b-a3b" and "recheck" not in again
+    # fails a second test in a row: now the 8B takes over
+    second = model_bench.settle(bench(Stalls({"qwen3.6:35b-a3b": 9}, acts={"qwen3.6:35b-a3b", "llama3.1:8b"})), first)
+    assert second["best"] == "llama3.1:8b" and "recheck" not in second
+    # a model that's gone, or proved it can't act, isn't kept
+    gone = {**previous, "best": "qwen3.7:14b"}
+    assert model_bench.settle(bench(JsPC(acts={"llama3.1:8b"})), gone)["best"] == "llama3.1:8b"
+    no_act = model_bench.settle(bench(JsPC(acts={"llama3.1:8b"}, no_tools={"qwen3.6:35b-a3b"})), previous)
+    assert no_act["best"] == "llama3.1:8b"
+
+
+def test_a_skills_question_mid_game_never_loads_the_big_model(svc, tmp_path):
+    # audit F12: inbox triage, bills, memory... keep asking while a fullscreen game runs
+    svc.cfg["brain"] = {"provider": "auto", "local": {**svc.cfg["brain"]["local"], "enabled": True}}
+
+    def assistant(fake):
+        a = Assistant(svc)
+        a.client = None
+        a.local = brain_on_js_pc(tmp_path, fake)
+        return a
+    fake = JsPC(acts=set(J_MODELS))
+    a = assistant(fake)
+    a.low_power = lambda: "game"
+    assert a.think("Sort these emails.").startswith("So viewers")
+    assert [b["model"] for b in fake.bodies] == ["llama3.1:8b"] and "qwen3.6:35b-a3b" not in fake.loaded
+    # the big one already on the card costs nothing more: it answers
+    fake = JsPC(acts=set(J_MODELS))
+    fake.loaded = {"qwen3.6:35b-a3b": int(23e9)}
+    a = assistant(fake)
+    a.low_power = lambda: "game"
+    a.think("Sort these emails.")
+    assert [b["model"] for b in fake.bodies] == ["qwen3.6:35b-a3b"]
+    # no lighter model to use: the question waits for the game to end (and private text doesn't go to the cloud)
+    fake = JsPC(acts=set(J_MODELS))
+    fake.models = ["qwen3.6:35b-a3b"]
+    a = assistant(fake)
+    a.local = local_llm.LocalBrain({"enabled": True}, http=http(fake), vram_mb=lambda: RTX_5090_MB)
+    a.low_power = lambda: "game"
+    assert a.think("Sort these emails.") is None and fake.bodies == [] and fake.loaded == {}
+    # no game: the strongest answers, as always
+    fake = JsPC(acts=set(J_MODELS))
+    a = assistant(fake)
+    a.low_power = lambda: ""
+    a.think("Sort these emails.")
+    assert [b["model"] for b in fake.bodies] == ["qwen3.6:35b-a3b"]
+
+
+def test_the_runtime_tells_the_brain_about_the_game(runtime, monkeypatch):
+    monkeypatch.setattr(runtime, "_low_power", lambda: "game")
+    assert runtime.assistant.low_power() == "game"
+
+
+def test_the_model_test_keeps_the_winner_it_had(svc, tmp_path):
+    # what Assistant.bench_models does with a bad test: settles it against the saved one before saving
+    fake = Stalls({"qwen3.6:35b-a3b": 9}, acts={"qwen3.6:35b-a3b", "llama3.1:8b"})
+    svc.cfg["brain"] = {"provider": "local", "local": {**svc.cfg["brain"]["local"], "enabled": True}}
+    a = Assistant(svc)
+    a.local = local_llm.LocalBrain(svc.cfg["brain"]["local"], http=http(fake), vram_mb=lambda: RTX_5090_MB,
+                                   bench_path=tmp_path / "brain_bench.json")
+    a.vram_mb = lambda: RTX_5090_MB
+    model_bench.save({"best": "qwen3.6:35b-a3b", "light": "llama3.1:8b", "models": list(J_MODELS), "results": []},
+                     a.local.bench_path)
+    a.bench_models()
+    assert a.local.bench["best"] == "qwen3.6:35b-a3b" and a.local.bench["recheck"] == "qwen3.6:35b-a3b"

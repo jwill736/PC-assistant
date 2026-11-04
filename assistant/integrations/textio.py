@@ -169,24 +169,12 @@ def wait_modifiers_released(keys, timeout: float = 1.5, sleep=time.sleep, clock=
 
 # ---- what has focus ---------------------------------------------------------------------------------------------
 
-_uia = None
-
-
 def _focused_is_password_uia() -> bool | None:  # pragma: no cover - Windows only
-    """UI Automation's IsPassword on the focused element: browsers and modern apps, where Win32 can't tell."""
-    global _uia
-    try:
-        import comtypes.client
+    """UI Automation's IsPassword on the focused element: browsers and modern apps, where Win32 can't tell. Asked
+    through uia.py's client, made per thread (a COM object made on one thread can't be used from another)."""
+    from . import uia
 
-        if _uia is None:
-            comtypes.client.GetModule("UIAutomationCore.dll")
-            from comtypes.gen.UIAutomationClient import CUIAutomation, IUIAutomation
-
-            _uia = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
-        el = _uia.GetFocusedElement()
-        return bool(el.CurrentIsPassword) if el else None
-    except Exception:
-        return None
+    return uia.focused_is_password()
 
 
 def _focused_is_password_win32() -> bool | None:  # pragma: no cover - Windows only

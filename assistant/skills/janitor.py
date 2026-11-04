@@ -29,6 +29,7 @@ import psutil
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
+from ..brain.undo import Undo
 from . import Skill, check
 
 IS_WINDOWS = sys.platform == "win32"
@@ -481,6 +482,15 @@ class Janitor(Skill):
         self._save_undo(log)
         return {"ok": True, "restored": back, "of": len(last["moves"])}
 
+    def _undo_last_tidy(self, result: dict) -> Undo | None:
+        """"Undo that" after a tidy: the same as "undo the downloads tidy", while this tidy is still the last one."""
+        if not result.get("moved"):
+            return None
+        stamp = (self._undo_log() or [{}])[-1].get("at")
+        return Undo("your Downloads files put back", self.undo_tidy, what="the Downloads tidy",
+                    now=lambda: (self._undo_log() or [{}])[-1].get("at"), left=stamp,
+                    show=lambda at: "still the last one" if at == stamp else "already undone, or there's a newer one")
+
     def _confirm(self, a: dict) -> str:
         p = self.tidy_downloads(dry_run=True)
         return f"move {p.get('count', 0)} files in Downloads into {_folders(p.get('by_folder') or {})} (nothing is deleted)"
@@ -522,7 +532,8 @@ class Janitor(Skill):
             Tool("tidy_downloads", "Sort the Downloads folder into Images/Documents/Installers/Archives/Video subfolders. "
                                    "dry_run=true (default) only returns the plan; dry_run=false moves the files (never "
                                    "deletes; can be undone).", obj({"dry_run": {"type": "boolean"}}), self.tidy_downloads,
-                 tier=lambda a: 2 if a.get("dry_run") is False else 0, confirm_text=self._confirm),
+                 tier=lambda a: 2 if a.get("dry_run") is False else 0, confirm_text=self._confirm,
+                 undo=lambda a: self._undo_last_tidy),
             Tool("undo_downloads_tidy", "Put the files from the last Downloads tidy back where they were.", obj(),
                  self.undo_tidy, tier=1),
         ]

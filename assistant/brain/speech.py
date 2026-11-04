@@ -42,6 +42,9 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
             f" {result['still_running']} process{'es' if result['still_running'] != 1 else ''} didn't exit." if result.get("still_running") else "")
     if tool == "focus_window":
         return f"Switched to {result['window']['app']}." if result.get("ok") else "I found it but Windows wouldn't give it focus."
+    if tool == "window_control":
+        done = {"minimize": "Minimised", "maximize": "Maximised"}.get(result.get("action"), "Restored")
+        return f"{done} {(result.get('window') or {}).get('app') or args.get('query')}."
     if tool == "where_am_i":
         active = result.get("active")
         apps = [a for a in result.get("apps", {}) if a != "unknown"]

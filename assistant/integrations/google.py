@@ -309,6 +309,14 @@ class GoogleAccounts:
             raise GoogleError(_reason(resp))
         return resp.json()
 
+    def delete_event(self, email: str, calendar_id: str, event_id: str) -> None:
+        """Remove one event Vesper made (undoing a focus block). Already gone counts as done."""
+        if not self.can(email, EVENTS_SCOPE):
+            raise GoogleError(self.need(EVENTS_SCOPE, "Taking time off your calendar", [email]))
+        resp = self.request("DELETE", email, f"{CALENDAR}/calendars/{_quote(calendar_id)}/events/{_quote(event_id)}")
+        if resp.status_code not in (200, 204, 404, 410):
+            raise GoogleError(_reason(resp))
+
 
 def _event(ev: dict, tz: tzinfo) -> dict | None:
     if ev.get("status") == "cancelled":

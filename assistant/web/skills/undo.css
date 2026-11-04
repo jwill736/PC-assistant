@@ -1,0 +1,7 @@
+/* Undo skill */
+.undo-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.undo-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.undo-row:last-child { border-bottom: 0; }
+.undo-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.undo-undone .undo-label { text-decoration: line-through; color: var(--muted); }
+.undo-cant { white-space: nowrap; }

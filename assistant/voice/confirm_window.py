@@ -90,6 +90,11 @@ class ConfirmWindow:
             if owner == "mismatch":
                 self.bus.publish("heard", {"text": text, "ignored": "not your voice (waiting for your yes or no)"})
                 return True
+            if owner == "unsure" and said == "yes" and cur["tier"] >= 3:
+                # A bare "yes" is too short to tell whose voice it is: an irreversible action needs more than that.
+                self.bus.publish("heard", {"text": text, "ignored": "too short to know it's you: "
+                                                                    "say “yes, go ahead please”, or click Confirm"})
+                return True
             if said is None:
                 self.bus.publish("heard", {"text": text, "ignored": "waiting for a yes or no"})
                 return True

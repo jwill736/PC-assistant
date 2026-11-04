@@ -224,13 +224,16 @@ class AudioOut:
     """A mono output stream fed with chunks; ``abort()`` silences it at once.
 
     The stream stays open between sentences (reopening a device costs 50-100 ms
-    and can click) and is closed after ``idle_close_s`` of silence.
+    and can click) and is closed after ``idle_close_s`` of silence. A device that
+    stops asking for audio (switched, asleep, unplugged) is noticed by
+    ``check_stalled`` and reopened on the next sentence, so "speaking" never sticks.
     """
 
     FADE_S = 0.01  # ramp down instead of cutting mid-waveform (a cut clicks)
+    STALL_S = 1.0  # a running stream asks for audio every few ms: this long without a request, the device is gone
 
     def __init__(self, sample_rate: int, device=None, stream_factory=None, idle_close_s: float = 15.0,
-                 latency: str | float = "high"):
+                 latency: str | float = "high", clock=None):
         self.sample_rate = sample_rate
         self.device = device
         # "low" asks Windows for the smallest buffer: any moment this process is busy (speech-to-text, a model
@@ -246,7 +249,9 @@ class AudioOut:
         self._lock = threading.Lock()
         self._idle = threading.Event()
         self._idle.set()
-        self._last_active = time.monotonic()
+        self._clock = clock if clock is not None else (lambda: time.monotonic())
+        self._last_active = self._clock()
+        self._last_callback = self._clock()  # or when playback last started: the device has had this long to ask
 
     def _open(self):
         if self._factory is not None:
@@ -263,20 +268,53 @@ class AudioOut:
         if not len(samples):
             return
         with self._lock:
+            if self._idle.is_set():
+                self._last_callback = self._clock()
             self._chunks.append(samples)
             self._idle.clear()
-            self._last_active = time.monotonic()
-        if self._stream is None:
-            self._stream = self._open()
-            self._stream.start()
+            self._last_active = self._clock()
+        self._ensure_stream()
 
     def warm(self) -> None:
         """Open the device ahead of a reply (opening costs 50-100 ms) and keep it open for another ``idle_close_s``."""
         with self._lock:
-            self._last_active = time.monotonic()
-        if self._stream is None:
-            self._stream = self._open()
-            self._stream.start()
+            self._last_active = self._clock()
+        self._ensure_stream()
+
+    def _ensure_stream(self) -> None:
+        if self._stream is not None:
+            return
+        try:
+            stream = self._open()
+            stream.start()
+        except Exception:  # no device right now: drop what was queued rather than "play" it forever
+            log.warning("could not open the speech output device", exc_info=True)
+            self._drop()
+            return
+        with self._lock:
+            self._last_callback = self._clock()
+        self._stream = stream
+
+    def _drop(self) -> None:
+        with self._lock:
+            self._chunks.clear()
+            self._pos = 0
+            self._idle.set()
+            self._last_active = self._clock()
+
+    def check_stalled(self) -> bool:
+        """While playing, has the device stopped asking for audio? Then drop what's queued, close the stream (the next
+        sentence opens it afresh, on whatever the default device is now) and say so. True if it had."""
+        latency = self.latency if isinstance(self.latency, (int, float)) else 0.0
+        quiet = self._clock() - self._last_callback
+        if self._stream is None or not self.playing or quiet < max(self.STALL_S, 3 * latency):
+            return False
+        log.warning("speech output stopped playing (device switched, asleep or unplugged?): reopening it")
+        self._drop()
+        stream, self._stream = self._stream, None
+        # Closing a stream whose device went away can block: never on the speech thread.
+        threading.Thread(target=self._close_stream, args=(stream,), name="tts-close", daemon=True).start()
+        return True
 
     def abort(self) -> None:
         import numpy as np
@@ -319,11 +357,15 @@ class AudioOut:
         return True
 
     def maybe_close(self) -> None:
-        if self._stream is not None and not self.playing and time.monotonic() - self._last_active >= self.idle_close_s:
+        if self._stream is not None and not self.playing and self._clock() - self._last_active >= self.idle_close_s:
             self.close()
 
     def close(self) -> None:
         stream, self._stream = self._stream, None
+        self._close_stream(stream)
+
+    @staticmethod
+    def _close_stream(stream) -> None:
         if stream is not None:
             try:
                 stream.stop()
@@ -342,6 +384,7 @@ class AudioOut:
                             self.underruns, self.latency)
         filled = 0
         with self._lock:
+            self._last_callback = self._clock()
             while filled < frames and self._chunks:
                 chunk = self._chunks[0]
                 n = min(frames - filled, len(chunk) - self._pos)
@@ -355,4 +398,4 @@ class AudioOut:
                 out[filled:] = 0
             if not self._chunks:
                 self._idle.set()
-                self._last_active = time.monotonic()
+                self._last_active = self._clock()

@@ -230,6 +230,7 @@ class SpeakerVerifier:
         self._embedder_error = ""
         self.last_score: float | None = None
         self.last_embedding: list[float] | None = None  # of the last clip checked: "That was me" learns from it
+        self.last_short = False  # the last clip was let through only because it was too short to judge ("yes")
         self._lock = threading.Lock()
 
     @property
@@ -249,10 +250,13 @@ class SpeakerVerifier:
         self.profile = load_profile(self.data_dir)
 
     def check(self, samples) -> tuple[bool, float | None]:
-        """(accepted, score). Unknown/short/unavailable → accepted, so it never locks the owner out.
-        The fingerprint stays in ``last_embedding`` so a rejection can be learned from without computing it again."""
+        """(accepted, score). Unknown/short/unavailable → accepted, so it never locks the owner out; a short one sets
+        ``last_short``, so a risky yes can still ask for more. ``samples`` should be the voice alone (calibration
+        enrolled voice only). The fingerprint stays in ``last_embedding`` so a rejection can be learned from without
+        computing it again."""
         self.last_embedding = None
-        if not self.active or len(samples) < SHORTEST_CLIP_S * SAMPLE_RATE:
+        self.last_short = self.active and len(samples) < SHORTEST_CLIP_S * SAMPLE_RATE
+        if not self.active or self.last_short:
             return True, None
         emb = self.embedder()
         if emb is None:

@@ -58,6 +58,14 @@ BACKCHANNEL = NON_WORDS | {"yeah", "yep", "yup", "ok", "okay", "right", "nice", 
 REPLY_WINDOW_S = 120  # a reply this long after the voice command it answers still opens the follow-up window
 SUGGEST_WINDOW_S = 15  # after Vesper says 'Say “why is my drive full”', saying it needs no name for this long
 QUOTED = re.compile(r"[“\"]([^”\"]{3,80})[”\"]")
+# In acoustic mode an utterance the name model didn't fire on is still heard out when it's this short (seconds of
+# speech): the kill switch and other no-name phrases live here, and speech-to-text on a clip this size is cheap.
+NO_NAME_MAX_S = 2.5
+# Vesper's voice keeps coming out of the speakers for a moment after ``last_end`` (the sound card's buffer).
+TAIL_S = 0.3
+# The acoustic models score a phrase after it ends: a hard trigger this soon after Vesper spoke may be its own tail.
+TRIGGER_GAP_S = 0.8
+ECHO_KEEP_S = 10.0  # what Vesper said before its newest line still counts as an echo for this long
 
 
 def _norm(token: str) -> str:
@@ -66,6 +74,17 @@ def _norm(token: str) -> str:
 
 def _norm_sentence(text: str) -> str:
     return " ".join(_norm(t) for t in text.split() if _norm(t))
+
+
+def _closest_stretch(a: str, b: str) -> float:
+    """How closely ``a`` matches the stretch of ``b`` most like it, about as many words long: a piece of a long reply
+    scores high here even when the whole reply is ten times its length."""
+    aw, bw = a.split(), b.split()
+    best = 0.0
+    for size in {max(1, len(aw) - 1), len(aw), len(aw) + 1}:
+        for i in range(max(1, len(bw) - size + 1)):
+            best = max(best, difflib.SequenceMatcher(None, a, " ".join(bw[i:i + size])).ratio())
+    return best
 
 
 def strip_leading_name(transcript: str, name: str) -> str:
@@ -121,6 +140,7 @@ class EnergySegmenter:
         self.min_voiced_frames = max(1, min_voiced_ms // FRAME_MS)
         self.noise = min_rms / 2
         self.preroll: deque = deque(maxlen=preroll_frames)
+        self.last_span: tuple[int, int, int] | None = None  # see SileroSegmenter.last_span
         self.reset()
 
     def reset(self) -> None:
@@ -129,6 +149,7 @@ class EnergySegmenter:
         self.silent = 0
         self.voiced_total = 0
         self.buffer: list = []
+        self._lead = 0  # frames of pre-roll before the speech in ``buffer``
         self.preroll.clear()
 
     @staticmethod
@@ -154,6 +175,7 @@ class EnergySegmenter:
                 if self.voiced >= self.start_frames:
                     self.in_speech = True
                     self.buffer = list(self.preroll)
+                    self._lead = max(0, len(self.buffer) - self.voiced)
                     self.silent = 0
                     self.voiced_total = self.voiced
             else:
@@ -168,6 +190,10 @@ class EnergySegmenter:
             self.silent += 1
         if self.silent >= self.silence_frames or len(self.buffer) >= self.max_frames:
             frames, voiced = self.buffer, self.voiced_total
+            # Where the speech sits in the clip (samples), without the lead-in or the trailing silence; it ends now.
+            start = sum(len(f) for f in frames[:self._lead])
+            end = sum(len(f) for f in frames[:len(frames) - self.silent])
+            self.last_span = (start, end, 0)
             self.reset()
             # Clicks, coughs and key clacks are loud but short: require real voiced time.
             return frames if voiced >= self.min_voiced_frames else None
@@ -186,7 +212,7 @@ class VoiceListener:
         self.state = "off"
         self.error = ""
         self.muted = False
-        self.paused = False  # calibration borrows the mic
+        self._pauses: frozenset = frozenset()  # who borrowed the mic (calibration, dictation): see pause()
         self.recent_heard: deque = deque(maxlen=40)  # the diagnostics report: why sentences ran or didn't
         self.tap: Callable | None = None  # gets every mic frame, paused or not (dictation records through it)
         self.taps: list[Callable] = []  # more frame consumers alongside it (the recorder): add_tap / remove_tap
@@ -221,8 +247,28 @@ class VoiceListener:
         self._rejected: OrderedDict = OrderedDict()  # id -> the last few sentences the speaker check turned away
         self._rejected_at: deque = deque(maxlen=20)  # when, for "I keep not recognising your voice"
         self._rejected_lock = threading.Lock()
+        self._recent_frames: deque = deque(maxlen=1500 // FRAME_MS)  # the last 1.5 s: a hard trigger's audio
 
     # ---- control ----------------------------------------------------------
+    @property
+    def paused(self) -> bool:
+        """Something borrowed the mic: nothing heard is a command until every borrower gave it back."""
+        return bool(self._pauses)
+
+    @paused.setter
+    def paused(self, value: bool) -> None:  # one unnamed borrower; the others keep theirs
+        if value:
+            self.pause("paused")
+        else:
+            self.resume("paused")
+
+    def pause(self, reason: str) -> None:
+        self._pauses = self._pauses | {reason}
+
+    def resume(self, reason: str) -> None:
+        """Give back one borrower's pause; dictation ending mid-calibration leaves the wizard's in place."""
+        self._pauses = self._pauses - {reason}
+
     def start(self) -> None:
         if self._thread is None:
             self.restart()
@@ -347,9 +393,15 @@ class VoiceListener:
         return mode if mode in ("acoustic", "hybrid", "transcript") else "transcript"
 
     def _on_hits(self, hits: list, speaking: bool) -> None:
+        # Vesper's own voice through the speakers: playing, or its tail still in the sound card's buffer.
+        recent = speaking or time.time() - self.speaker.last_end < TRIGGER_GAP_S
         for name, score in hits:
             kind = self.trigger_kind(name)
             self.bus.publish("wake_word", {"name": name, "score": score, "kind": kind})
+            if kind in ("name", "stop") and recent and self._in_own_words(name):
+                # 'Say “Vesper, why is my drive full”' must not cut itself off at "Vesper" (nor "I'll stop the
+                # recording" at "stop"). J saying it over the reply still works: the transcript has it.
+                continue
             if kind == "name":
                 self._name_hit_at = time.time()
                 if speaking:
@@ -359,11 +411,50 @@ class VoiceListener:
             elif kind == "stop":
                 if speaking:
                     self.speaker.interrupt()
-            elif not speaking and not self.muted:  # "clip that": act now, no speech-to-text
+            elif not recent and not self.muted:  # "clip that": act now, no speech-to-text
                 command = (self.cfg.get("hard_triggers") or {}).get(name) or name.replace("_", " ")
+                owner = self._trigger_owner()
+                if owner is None:
+                    self._heard({"text": command, "trigger": name, "score": score, "ignored": "voice not recognised"})
+                    continue
                 self.last_command = time.time()
+                self.last_owner = owner
                 self._heard({"text": command, "trigger": name, "score": score})
                 self.on_command(command)
+
+    def _in_own_words(self, model: str) -> bool:
+        """Is this model's phrase in what Vesper is saying (or just said)?"""
+        phrase = _norm_sentence(model.replace("_", " ").replace("-", " "))
+        said = _norm_sentence(getattr(self.speaker, "last_text", "") or "")
+        return bool(phrase) and f" {phrase} " in f" {said} "
+
+    def _trigger_owner(self) -> str | None:
+        """The speaker check on a hard trigger's own audio (the last moment of sound, its voiced part).
+        None: someone else's voice."""
+        if self.verifier is None or not self._recent_frames:
+            return "unknown"
+        import numpy as np
+
+        from .calibrate import trim
+
+        samples = np.concatenate(list(self._recent_frames)).astype(np.float32) / 32768.0
+        accepted, score = self.verifier.check(trim(samples, self._floor(), pad=0))
+        return self._owner(score, "") if accepted else None
+
+    def _floor(self) -> float:
+        """The noise floor calibration measured (it sets ``min_rms`` at 1.5x this), on the int16 scale."""
+        return max(150.0, float(self.cfg.get("min_rms", 350)) * 2 / 3)
+
+    def _owner(self, score, source) -> str:
+        """match | mismatch | pressed | unsure (too short to judge) | unknown, for a sentence the check let through."""
+        if source in ("hotkey", "button"):
+            return "pressed"
+        profile = getattr(self.verifier, "profile", None)
+        if score is not None and profile is not None:  # LOG mode lets a non-match through: remember it did
+            return "match" if score >= profile.threshold else "mismatch"
+        if getattr(self.verifier, "last_short", False):
+            return "unsure"
+        return "unknown"
 
     def _acoustic_wake(self, started_at: float | None) -> bool:
         """Did the name model fire at the *start* of this utterance? (Saying the name mid-sentence
@@ -474,6 +565,7 @@ class VoiceListener:
                     self._window_check = now  # follow-up windows open and close, conversations time out
                     self.refresh_state()
                 if self.wake:
+                    self._recent_frames.append(frame)
                     self._on_hits(self.wake.feed(frame), speaking)
                 was_speech = segmenter.in_speech
                 frames = segmenter.feed(frame)
@@ -491,8 +583,11 @@ class VoiceListener:
                 if not during:
                     self._set_state("transcribing")
                 try:
+                    span = getattr(segmenter, "last_span", None)  # where the speech sits in the clip, and how long ago
                     with self._keepalive():
-                        self._handle_audio(np.concatenate(frames), self._speech_started_at, during_speech=during)
+                        self._handle_audio(np.concatenate(frames), self._speech_started_at, during_speech=during,
+                                           span=span[:2] if span else None,
+                                           ended_at=time.time() - (span[2] if span else 0) / SAMPLE_RATE)
                 except Exception:
                     log.exception("voice pipeline error")
                 self._drain()
@@ -541,6 +636,7 @@ class VoiceListener:
         quiet = float(self.cfg.get("follow_up_silence_seconds", 4))
         voice_end = self.last_voice_end if end < self.last_voice_end < at else end
         if (window > 0 and since < window and at - voice_end < quiet and end - self.last_command < REPLY_WINDOW_S
+                and not getattr(self.speaker, "unprompted", False)  # a timer ring or an alert isn't a reply to you
                 and not self._room_busy(end) and not (self._live() and not self.cfg.get("follow_up_live", False))):
             return "next"
         return None
@@ -558,20 +654,36 @@ class VoiceListener:
     def _armed(self) -> bool:
         return self._arm_source() is not None
 
-    def is_own_echo(self, text: str, window_s: float = 4.0) -> bool:
+    def is_own_echo(self, text: str, window_s: float = 4.0, started_at: float | None = None) -> bool:
         """Did the mic just pick up our own reply? (speakers, no headset, no echo cancellation)"""
-        said = getattr(self.speaker, "last_text", "")
-        recent = self.speaker.speaking.is_set() or time.time() - self.speaker.last_end < window_s
-        if not said or not recent:
+        sp, now = self.speaker, time.time()
+        recent = sp.speaking.is_set() or now - sp.last_end < window_s
+        a = _norm_sentence(text)
+        if not a or not recent:
             return False
-        a, b = _norm_sentence(text), _norm_sentence(said)
-        if not a:
-            return False
-        if len(a) < 10:  # "yes", "stop", "cancel": too short to judge, and exactly what you'd say back
-            return a == b
-        if a in b:
-            return True
-        return difflib.SequenceMatcher(None, a, b).ratio() >= 0.6
+        # Begun while Vesper was still audible: then a slightly mis-heard piece of a long reply ("the sponsor sink")
+        # is the reply too. Not if it starts with the name and the reply never says it (that's J talking over it).
+        overlapped = sp.speaking.is_set() or (started_at or now) < sp.last_end + TAIL_S
+        named = split_wake(text, self.wake_words)[0]
+        for said in self._own_words(now):
+            b = _norm_sentence(said)
+            if not b:
+                continue
+            if len(a) < 10:  # "yes", "stop", "cancel": too short to judge, and exactly what you'd say back
+                if a == b:
+                    return True
+                continue
+            if a in b or difflib.SequenceMatcher(None, a, b).ratio() >= 0.6:
+                return True
+            if overlapped and not (named and not split_wake(said, self.wake_words, search_words=99)[0]) \
+                    and _closest_stretch(a, b) >= 0.8:
+                return True
+        return False
+
+    def _own_words(self, now: float) -> list[str]:
+        """What Vesper said lately: this turn's words, and what an unprompted line replaced in the last few seconds."""
+        earlier = [t for at, t in list(getattr(self.speaker, "said_before", ())) if now - at < ECHO_KEEP_S]
+        return [getattr(self.speaker, "last_text", "") or "", *reversed(earlier)]
 
     def _heard(self, data: dict) -> None:
         """Every sentence the mic caught and what became of it: the HUD strip, and the diagnostics report."""
@@ -582,13 +694,10 @@ class VoiceListener:
     def _suggested(self, text: str, started_at: float | None) -> bool:
         """Is this the phrase Vesper just told J to say ('Say “why is my drive full”…')? Then it's his answer, not
         the reply coming back through the speakers: he started talking after Vesper had finished."""
-        sp = self.speaker
-        said, end = getattr(sp, "last_text", "") or "", getattr(sp, "last_end", 0.0)
-        at = started_at or time.time()
-        if not said or sp.speaking.is_set() or not (end + 0.3 < at < end + SUGGEST_WINDOW_S):
+        if not self._suggest_open(started_at):
             return False
         heard = _norm_sentence(strip_leading_name(text, self.wake_words[0]) if self.wake_words else text)
-        for phrase in QUOTED.findall(said):
+        for phrase in QUOTED.findall(getattr(self.speaker, "last_text", "") or ""):
             want = _norm_sentence(phrase)
             for w in self.wake_words:  # 'Say “Vesper, why is my drive full”'
                 want = re.sub(rf"^{re.escape(_norm_sentence(w))}\s+", "", want)
@@ -596,16 +705,40 @@ class VoiceListener:
                 return True
         return False
 
-    def _handle_audio(self, audio, started_at: float | None = None, during_speech: bool = False) -> None:
+    def _suggest_open(self, started_at: float | None) -> bool:
+        """Did Vesper just finish a sentence suggesting a phrase to say, and did this utterance start after that?"""
+        sp = self.speaker
+        said, end = getattr(sp, "last_text", "") or "", getattr(sp, "last_end", 0.0)
+        at = started_at or time.time()
+        return bool(QUOTED.search(said)) and not sp.speaking.is_set() and end + 0.3 < at < end + SUGGEST_WINDOW_S
+
+    def _voice_part(self, samples, span: tuple[int, int] | None, ended_at: float | None):
+        """What the speaker check fingerprints: the speech alone (calibration enrolled voice only, too). Not the
+        segmenter's lead-in before it, and not the end of Vesper's own sentence still coming out of the speakers."""
+        start, end = span if span else (0, len(samples))
+        if not self.speaker.speaking.is_set():
+            began = (ended_at or time.time()) - len(samples) / SAMPLE_RATE  # when the clip's first sample was heard
+            start = max(start, int((self.speaker.last_end + TAIL_S - began) * SAMPLE_RATE))
+        return samples[start:end] if end > start else samples[:0]
+
+    def _handle_audio(self, audio, started_at: float | None = None, during_speech: bool = False,
+                      span: tuple[int, int] | None = None, ended_at: float | None = None) -> None:
+        """``span``: where the speech sits in ``audio`` (samples, without the segmenter's lead-in); ``ended_at``: when
+        its last sample was heard (now, if not given)."""
         import numpy as np
 
         samples = audio.astype(np.float32) / 32768.0
+        voice = self._voice_part(samples, span, ended_at)
         if not during_speech:  # you talking (not us): the stream's mic check cross-checks against this
             self.speech_times.append(time.time())
         source = self._arm_source(started_at)
         acoustic = self._acoustic_wake(started_at)
-        if self.wake_mode() == "acoustic" and not (acoustic or source or during_speech):
-            return  # the name model didn't fire: nothing addressed to us, skip speech-to-text
+        # Acoustic mode and the name model didn't fire: not addressed to us. Still heard out when it may be a phrase
+        # that needs no name: one Vesper just suggested, or one short enough to be the kill switch.
+        gated = self.wake_mode() == "acoustic" and not (acoustic or source or during_speech)
+        speech_s = ((span[1] - span[0]) if span else len(samples)) / SAMPLE_RATE
+        if gated and not (self._suggest_open(started_at) or speech_s <= NO_NAME_MAX_S):
+            return  # skip speech-to-text
         t0 = time.perf_counter()
         text = self.correct(self.stt.transcribe(samples, self._hints()))
         stt_ms = round((time.perf_counter() - t0) * 1000)
@@ -613,10 +746,11 @@ class VoiceListener:
         if _norm(text.replace(" ", "")) in {h.replace(" ", "") for h in HALLUCINATIONS}:
             return
         suggested = not during_speech and self._suggested(text, started_at)
-        if not suggested and self.is_own_echo(text):
+        if not suggested and self.is_own_echo(text, started_at=started_at):
             self._heard({"text": text, "ignored": "own voice", "stt_ms": stt_ms})
             return
-        matched, command = split_wake(text, self.wake_words)
+        # In acoustic mode the name in the transcript alone doesn't wake it (that's what the model is for).
+        matched, command = (False, text) if gated else split_wake(text, self.wake_words)
         if suggested and not matched:
             matched, command = True, text  # the phrase Vesper just suggested: no name needed
         if acoustic and not matched:  # the model heard the name even if the transcript mangled it
@@ -627,11 +761,13 @@ class VoiceListener:
         if during_speech:
             said = _norm_sentence(command if matched else text)
             if said in STOP_PHRASES:
-                if self._owner_ok(samples, source) and not self._stop_word_is_echo(said):
+                owner = self._owner_ok(voice, source)
+                if owner is not None and not self._stop_word_is_echo(said):
                     self.speaker.interrupt()
                     self._heard({"text": text, "interrupted": True, "stt_ms": stt_ms})
                     if said == "cancel" or (said in CONVERSATION_STOP and source == "conversation"):
                         self.last_command = time.time()
+                        self.last_owner = owner  # this command's voice, not the one before it
                         self.on_command(said)  # cancel what's waiting / end the conversation
                 return
             if not matched:  # talking over a reply needs the name (or push-to-talk)
@@ -656,15 +792,13 @@ class VoiceListener:
         # Only the owner may command it — unless they physically pressed push-to-talk.
         owner = "pressed" if source in ("hotkey", "button") else "unknown"
         if self.verifier is not None and source not in ("hotkey", "button"):
-            accepted, score = self.verifier.check(samples)
+            accepted, score = self.verifier.check(voice)  # its fingerprint is also what "That was me" learns
             if not accepted:
                 rid, streak = self._remember_rejection(command if matched else text, matched, score)
                 self._heard({"text": text, "ignored": "voice not recognised", "score": score, "stt_ms": stt_ms,
                                            "rejection": rid, "rejections_recent": streak})
                 return
-            profile = getattr(self.verifier, "profile", None)
-            if score is not None and profile is not None:  # LOG mode lets a non-match through: remember it did
-                owner = "match" if score >= profile.threshold else "mismatch"
+            owner = self._owner(score, source)
         if during_speech:
             self.speaker.interrupt()
         self._heard({"text": text, "wake": matched, "armed": bool(source), "stt_ms": stt_ms,
@@ -722,10 +856,12 @@ class VoiceListener:
         reply = set(_norm_sentence(getattr(self.speaker, "last_text", "")).split())
         return sum(w in reply for w in words) / len(words) < 0.5
 
-    def _owner_ok(self, samples, source) -> bool:
+    def _owner_ok(self, samples, source) -> str | None:
+        """The owner verdict for a stop word said over a reply (see _owner); None: someone else's voice."""
         if self.verifier is None or source in ("hotkey", "button"):
-            return True
-        return self.verifier.check(samples)[0]
+            return self._owner(None, source)
+        accepted, score = self.verifier.check(samples)
+        return self._owner(score, source) if accepted else None
 
     def _stop_word_is_echo(self, said: str) -> bool:
         """Without a voice profile, a lone "stop" that the reply itself contains might be the reply."""

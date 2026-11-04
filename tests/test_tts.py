@@ -402,3 +402,101 @@ def test_synthesized_speech_loses_its_padding():
     quiet = np.zeros(500, dtype=np.float32)
     assert trim_silence(quiet, sr) is quiet  # nothing loud: leave it alone
 
+
+
+# ---- a sound card that stops asking for audio ------------------------------------------------------------------------
+
+class DeadStream:
+    """The device went away (switched, HDMI asleep, headset off): PortAudio never calls back again."""
+
+    made = 0
+
+    def __init__(self, callback):
+        DeadStream.made += 1
+        self.callback, self.closed = callback, False
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class Clock:
+    def __init__(self, t=100.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def test_a_device_that_stops_calling_back_is_noticed_and_reopened():
+    clock, streams = Clock(), []
+    out = AudioOut(1000, stream_factory=lambda cb: streams.append(DeadStream(cb)) or streams[-1], clock=clock)
+    out.play(np.ones(500, np.float32))
+    clock.t += 0.5
+    assert out.check_stalled() is False and out.playing  # not yet: it may just be slow to start
+    clock.t += 1.0
+    assert out.check_stalled() is True and not out.playing
+    assert wait_for(lambda: streams[0].closed)  # closed off the speech thread
+    out.play(np.ones(500, np.float32))  # the next sentence opens the device afresh
+    assert len(streams) == 2 and out.playing
+
+
+def test_a_healthy_stream_is_never_taken_for_a_dead_one():
+    clock, streams = Clock(), []
+    out = AudioOut(1000, stream_factory=lambda cb: streams.append(FakeStream(cb)) or streams[-1], clock=clock)
+    out.play(np.ones(5000, np.float32))
+    for _ in range(5):
+        clock.t += 0.9
+        streams[0].pull(100)  # the card keeps asking
+        assert out.check_stalled() is False and out.playing
+
+
+def test_a_device_that_will_not_open_drops_the_sentence_instead_of_playing_it_forever():
+    def broken(_cb):
+        raise OSError("Error opening OutputStream: Invalid device")
+    out = AudioOut(1000, stream_factory=broken)
+    out.play(np.ones(500, np.float32))  # never raises into the speech thread
+    assert not out.playing and out.wait(timeout=0.1)
+
+
+def test_speaking_clears_when_the_device_goes_away_mid_reply(monkeypatch):
+    monkeypatch.setattr(neural, "available", lambda: True)
+    monkeypatch.setattr(AudioOut, "STALL_S", 0.05, raising=False)  # notice it at once (it is dead whenever we look)
+    sp = tts.Speaker(Bus(), "supertonic", loader=lambda *a, **k: FakeVoice(),
+                     audio_factory=lambda sr: AudioOut(sr, stream_factory=DeadStream))
+    sp.start()
+    wait_for(lambda: sp.state == "ready")
+    sp.say("Hello there.", expects_reply=False)
+    assert sp.speaking.is_set()
+    wait_for(lambda: not sp.speaking.is_set())  # it used to stay set for good, through interrupt() too
+    made = DeadStream.made
+    sp.say("Still here.", expects_reply=False)  # and the next reply opens the device again
+    wait_for(lambda: DeadStream.made == made + 1)
+    sp.stop()
+
+
+# ---- something said unprompted in the middle of a reply ------------------------------------------------------------
+
+def quiet_speaker():
+    sp = tts.Speaker(bus=SimpleNamespace(publish=lambda *a, **k: None, client_count=0), engine="browser")
+    sp._q = SimpleNamespace(put=lambda _item: None)  # nothing plays: "speaking" stays as say() leaves it
+    return sp
+
+
+def test_an_alert_landing_mid_reply_keeps_the_replys_echo_text_and_its_follow_up_window():
+    sp = quiet_speaker()
+    turn = sp.new_turn()
+    sp.say("Tomorrow is busy.", expects_reply=False, turn=turn)
+    sp.say("Do you want me to move the sponsor sync?", turn=turn)
+    sp.say("Raid incoming from Dana.", expects_reply=False)  # a stream alert while the reply still plays
+    assert sp.expects_reply is True and sp.unprompted is False
+    assert "move the sponsor sync" in sp.last_text and "Raid incoming" in sp.last_text
+    sp.speaking.clear()  # the reply is over: the next line on its own is unprompted, and replaces it
+    sp.say("Your pizza timer is done.")
+    assert sp.unprompted is True and sp.last_text == "Your pizza timer is done." and sp.expects_reply is False
+    assert "move the sponsor sync" in sp.said_before[-1][1]  # still known to the echo guard for a few seconds

@@ -47,6 +47,10 @@ class SileroSegmenter:
                 sample_rate=SAMPLE_RATE, num_threads=1)
             vad = sherpa_onnx.VoiceActivityDetector(cfg, buffer_size_in_seconds=max_utterance_s + 5)
         self.vad = vad
+        # For the utterance ``feed`` just returned: where the speech sits in it (start, end, in samples: everything
+        # before ``start`` is pre-roll) and how many samples ago its last one was heard. The speaker check scores
+        # only the speech; the pre-roll often holds the end of Vesper's own sentence.
+        self.last_span: tuple[int, int, int] | None = None
         self.reset()
 
     def reset(self) -> None:
@@ -80,7 +84,10 @@ class SileroSegmenter:
             return None
         a = max(first - self.preroll, self._buf_start) - self._buf_start
         b = min(last, self._fed) - self._buf_start
-        return [self._buf[a:b].copy()] if b > a else None
+        if b <= a:
+            return None
+        self.last_span = (max(0, first - self._buf_start - a), b - a, self._fed - self._buf_start - b)
+        return [self._buf[a:b].copy()]
 
 
 def make_segmenter(cfg: dict, models_dir: Path, on_progress=None):

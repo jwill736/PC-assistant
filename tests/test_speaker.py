@@ -104,7 +104,9 @@ def test_off_mode_and_short_clips_skip_the_model(tmp_path):
     assert v.check(clip(2)) == (True, None)
     v.mode = "strict"
     assert v.check(clip(2, seconds=0.5)) == (True, None)  # too short to judge: never lock the owner out
-    assert emb.calls == 0
+    assert emb.calls == 0 and v.last_short is True  # ...but say so: a risky yes still asks for more
+    v.check(clip(1))
+    assert v.last_short is False
 
 
 def test_no_profile_means_no_check(tmp_path):

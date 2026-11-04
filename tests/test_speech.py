@@ -63,6 +63,23 @@ def test_silero_segmenter_returns_speech_plus_preroll():
     assert len(outs) == 1
     assert np.array_equal(outs[0], pcm[16000 - 4800:32000])  # 300 ms of lead-in, then the speech
     assert any(speaking) and not speaking[-1]
+    # where the speech itself starts and ends in it (the voice check scores only that), and how long ago it ended
+    assert seg.last_span == (4800, 4800 + 16000, 6400)
+
+
+def test_energy_segmenter_says_where_the_speech_sits_in_the_clip():
+    import math
+
+    from assistant.voice.listener import FRAME_SAMPLES, EnergySegmenter
+
+    def tone(amplitude):
+        return [int(amplitude * math.sin(i / 3)) for i in range(FRAME_SAMPLES)]
+    seg = EnergySegmenter(min_rms=300, silence_ms=300, max_utterance_s=5)
+    outs = [seg.feed(tone(50)) for _ in range(20)] + [seg.feed(tone(3000)) for _ in range(30)]
+    outs += [seg.feed(tone(50)) for _ in range(15)]
+    clip = next(o for o in outs if o)
+    # 7 quiet frames of pre-roll, the 30 loud ones, then the 10 quiet ones that ended it
+    assert len(clip) == 47 and seg.last_span == (7 * FRAME_SAMPLES, 37 * FRAME_SAMPLES, 0)
 
 
 def test_silero_segmenter_reset_restarts_the_clock():

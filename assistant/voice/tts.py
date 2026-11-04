@@ -74,7 +74,9 @@ class Speaker:
         self.speaking = threading.Event()
         self.last_end = 0.0
         self.last_text = ""  # this turn's words, so the mic can ignore hearing itself
+        self.said_before: deque = deque(maxlen=4)  # (when it was replaced, text): the echo guard still knows them
         self.expects_reply = False  # did the last reply ask something? (opens the follow-up window)
+        self.unprompted = False  # the last thing said wasn't a reply to a command (an alert, a reminder)
         self.turn = 0
         self._silenced = -1  # turns up to this one were interrupted: drop the rest of them
         self._text_turn = -1
@@ -158,11 +160,23 @@ class Speaker:
         if self._stale(turn):
             log.debug("dropped stale speech (turn %s < %s): %s", turn, self.turn, text[:60])
             return
+        mid_reply = not streamed and self.speaking.is_set() and not self.unprompted and not self._cancel.is_set()
         # Flag immediately so the mic ignores us before the worker even starts talking.
         self.speaking.set()
-        self.last_text = f"{self.last_text} {text}"[-800:].strip() if streamed and turn == self._text_turn else text
-        self._text_turn = turn
-        self.expects_reply = asks_something(text) if expects_reply is None else expects_reply
+        if mid_reply:
+            # An alert or a nudge landing while a reply still plays: the reply keeps its window (its own last
+            # sentence decides that), and the echo guard knows both.
+            self.last_text = f"{self.last_text} {text}"[-800:].strip()
+        else:
+            if streamed and turn == self._text_turn:
+                self.last_text = f"{self.last_text} {text}"[-800:].strip()
+            else:
+                if self.last_text:
+                    self.said_before.append((time.time(), self.last_text))
+                self.last_text = text
+            self._text_turn = turn
+            self.unprompted = not streamed
+            self.expects_reply = asks_something(text) if expects_reply is None else expects_reply
         self._q.put((turn, text, time.perf_counter(), self.out is None or not self.out.playing))
 
     def prewarm(self) -> None:
@@ -286,6 +300,8 @@ class Speaker:
                 if self.speaking.is_set():
                     if self.out is not None and self.out.playing and self._stale(self._playing_turn):
                         self.out.abort()
+                    if self.out is not None:
+                        self.out.check_stalled()  # a sound card that stopped asking for audio never ends the reply
                     self._finish_if_idle()
                 elif self.out is not None:
                     self.out.maybe_close()

@@ -116,6 +116,26 @@ def test_full_calibration_writes_layer_and_profile(cfg):
     assert any(d.get("level") == 123 for _, d, _ in bus.events)
 
 
+class SizedEmbedder(FakeEmbedder):
+    def __init__(self):
+        super().__init__()
+        self.sizes = []
+
+    def embed(self, samples):
+        self.sizes.append(len(samples))
+        return super().embed(samples)
+
+
+def test_the_profile_is_built_from_the_voice_alone_as_the_live_check_scores_it(cfg):
+    emb = SizedEmbedder()
+    lead = np.concatenate([silence(0.5), speech(0.7), silence(1.3)])  # a 2.5 s take with 0.7 s of "Friday" in it
+    cal = make(cfg, embedder=emb, record=recorder(wake=lead, read=np.concatenate([speech(3.5), silence(0.5)])))
+    result = cal.run()
+    assert result["wake_takes"] == 5 and "profile" in result
+    assert all(abs(n - SR * 0.7) <= 480 for n in emb.sizes[:5])  # not the quiet before and after it (to a frame)
+    assert all(n <= SR * 3 for n in emb.sizes[5:])
+
+
 def test_not_enough_speech_skips_enrollment_but_keeps_mic_level(cfg):
     cal = make(cfg, record=recorder(noise=silence(1), wake=silence(2.5), read=silence(4)),
                transcribe=transcriber([]))
@@ -167,12 +187,22 @@ def test_calibration_layer_merges_under_user_config(tmp_path):
 
 class FakeListener:
     def __init__(self, wake_words):
-        self.paused = False
+        self.pauses = set()
         self.paused_during_run = None
         self.wake_words = wake_words
         self.cfg = {}
         self._model = None
         self.restarts = 0
+
+    @property
+    def paused(self):
+        return bool(self.pauses)
+
+    def pause(self, reason):
+        self.pauses.add(reason)
+
+    def resume(self, reason):
+        self.pauses.discard(reason)
 
     def restart(self):
         self.restarts += 1

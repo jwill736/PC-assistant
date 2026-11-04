@@ -553,8 +553,9 @@ class Assistant:
             if pending_id and pending_id != pending["id"]:
                 return "That confirmation is out of date; nothing ran."
             via = via or ("voice" if self._ctx.get("source") == "voice" else "hud")
-            if via == "voice" and pending["tier"] >= 3 and self._ctx.get("owner") == "mismatch":
-                # LOG mode lets other voices through; an irreversible action still needs yours.
+            if via == "voice" and pending["tier"] >= 3 and self._ctx.get("owner") in ("mismatch", "unsure"):
+                # LOG mode lets other voices through, and a bare "yes" is too short to judge: an irreversible action
+                # still needs yours.
                 return "That one needs your voice. Press the talk hotkey and say yes, or click Confirm."
             self.pending = None
             self.svc.bus.publish("pending", None)

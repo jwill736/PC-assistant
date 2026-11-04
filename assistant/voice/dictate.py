@@ -143,7 +143,6 @@ class Capture:
         self.frames: list = []
         self.via = ""
         self._stream = None
-        self._was_paused = False
 
     def _listener_ok(self) -> bool:
         lst = self.listener
@@ -154,8 +153,7 @@ class Capture:
         self.frames = []
         if self._listener_ok():
             lst = self.listener
-            self._was_paused = lst.paused
-            lst.paused = True  # what you dictate is never a command
+            lst.pause("dictation")  # what you dictate is never a command
             lst.tap = self.frames.append
             self.via = "listener"
             return self.via
@@ -179,7 +177,7 @@ class Capture:
         if self.via == "listener":
             lst = self.listener
             lst.tap = None
-            lst.paused = self._was_paused
+            lst.resume("dictation")  # only its own pause: a calibration that started meanwhile keeps the mic
         elif self._stream is not None:
             try:
                 self._stream.stop()

@@ -601,7 +601,7 @@ class Runtime:
         self.calibrator = cal
 
         def run():
-            listener.paused = True  # the wizard owns the mic; nothing it hears is a command
+            listener.pause("calibration")  # the wizard owns the mic; nothing it hears is a command
             result: dict = {"error": "calibration crashed"}
             try:
                 try:
@@ -610,7 +610,7 @@ class Runtime:
                         cal.embedder = self.verifier.embedder()
                     result = cal.run()
                 finally:
-                    listener.paused = False
+                    listener.resume("calibration")
                 if not result.get("cancelled") and not result.get("error"):
                     self.apply_voice_calibration()
             finally:

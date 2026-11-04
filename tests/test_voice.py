@@ -1,6 +1,7 @@
 import math
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -231,3 +232,107 @@ def test_the_suggested_phrase_still_needs_your_voice():
                              cfg={"follow_up_any_seconds": 0})
     lst._handle_audio(AUDIO, started_at=sp.last_end + 1.0)
     assert commands == [] and lst.bus.heard()[-1]["ignored"] == "voice not recognised"
+
+
+# ---- the echo guard on long replies, and speech said unprompted ----------------------------------------------------
+
+LONG_REPLY = ("Tomorrow looks busy: you have the dentist at nine, a call with Dana at eleven, the sponsor sync at two "
+              "and your stream at eight. The weather is cold and rainy with a high of six degrees. "
+              "Do you want me to move the sponsor sync to Thursday?")
+
+
+def test_a_misheard_piece_of_a_long_reply_is_still_its_own_echo():
+    sp = FakeSpeaker(LONG_REPLY, ago=0.9)
+    sp.expects_reply = True
+    lst, commands = listener("do you want me to move the sponsor sink to thursday", speaker=sp)
+    lst._handle_audio(AUDIO, started_at=sp.last_end - 2.0)  # began while Vesper was still saying it
+    assert commands == [] and lst.bus.heard()[-1]["ignored"] == "own voice"
+
+
+def test_an_answer_that_repeats_words_of_the_question_is_not_an_echo():
+    sp = FakeSpeaker(LONG_REPLY, ago=0.9)
+    sp.expects_reply = True
+    lst, commands = listener("move the sponsor sync to friday", speaker=sp)
+    lst._handle_audio(AUDIO, started_at=sp.last_end + 0.6)  # J started after Vesper had finished
+    assert commands == ["move the sponsor sync to friday"]
+    sp = FakeSpeaker(LONG_REPLY, ago=0.9)
+    lst, commands = listener("Friday, move the sponsor sync to Thursday", speaker=sp)
+    lst._handle_audio(AUDIO, started_at=sp.last_end - 1.0)  # over the reply, but with the name it never says
+    assert commands == ["move the sponsor sync to Thursday"]
+
+
+def test_the_reply_is_still_known_as_an_echo_after_an_alert_took_its_place():
+    from collections import deque
+
+    sp = FakeSpeaker("Raid incoming from Dana.", ago=0.5)
+    sp.said_before = deque([(time.time() - 0.5, "Opening Discord now, and your stream key is set.")])
+    lst, commands = listener("opening discord now and your stream key is set", speaker=sp)
+    lst._handle_audio(AUDIO, started_at=sp.last_end - 2.0)
+    assert commands == [] and lst.bus.heard()[-1]["ignored"] == "own voice"
+
+
+def test_something_said_unprompted_opens_no_window_to_keep_going():
+    sp = FakeSpeaker("Your pizza timer is done.", ago=1.0)
+    sp.expects_reply, sp.unprompted = False, True  # a timer ring, half a minute after J's last command
+    lst, commands = listener("and the other one", speaker=sp)
+    lst.last_command = time.time() - 30
+    lst._handle_audio(AUDIO, started_at=time.time())
+    assert commands == [] and lst.bus.heard()[-1]["wake"] is False
+    sp.unprompted = False  # the same words as a reply to J: he can keep going without the name
+    lst._handle_audio(AUDIO, started_at=time.time())
+    assert commands == ["and the other one"]
+
+
+# ---- the speaker check scores J's voice, not the lead-in or Vesper's tail ------------------------------------------
+
+class SizedVerifier(FakeVerifier):
+    def __init__(self, accept=True):
+        super().__init__(accept)
+        self.sizes = []
+
+    def check(self, samples):
+        self.sizes.append(len(samples))
+        return super().check(samples)
+
+
+def test_the_voice_check_scores_the_speech_not_the_lead_in_before_it():
+    v = SizedVerifier()
+    lst, commands = listener("Friday, end the stream", verifier=v)
+    lst._handle_audio(AUDIO, span=(9600, 32000))  # 0.6 s of pre-roll, then the speech
+    assert v.sizes == [22400] and commands == ["end the stream"]
+
+
+def test_the_end_of_vespers_own_sentence_is_not_scored_as_your_voice():
+    v = SizedVerifier()
+    now = time.time()
+    sp = FakeSpeaker("Want me to end it?")
+    sp.last_end = now - 0.5
+    lst, commands = listener("yes, end it now please", speaker=sp, verifier=v)
+    # a 2 s clip heard up to now: its first 1.5 s were still Vesper (plus 0.3 s of the sound card's buffer)
+    lst._handle_audio(AUDIO, started_at=now - 0.1, ended_at=now)
+    assert abs(v.sizes[0] - 3200) <= 16 and commands == ["yes, end it now please"]
+
+
+class ShortVerifier:
+    """Like the real one: a clip under 0.8 s of voice is let through, unjudged."""
+
+    active = True
+    profile = SimpleNamespace(threshold=0.5)
+
+    def __init__(self):
+        self.last_short = False
+
+    def check(self, samples):
+        self.last_short = len(samples) < 0.8 * 16000
+        return (True, None) if self.last_short else (True, 0.9)
+
+
+def test_a_yes_too_short_to_judge_is_marked_unsure_not_passed_as_yours():
+    sp = FakeSpeaker("Delete the clip? Say yes or no.", ago=2)
+    sp.expects_reply = True
+    lst, commands = listener("Yes.", speaker=sp, verifier=ShortVerifier())
+    lst._handle_audio(AUDIO, span=(9600, 14400), started_at=sp.last_end + 1)  # 0.3 s of "yes" after 0.6 s of lead-in
+    assert commands == ["Yes."] and lst.last_owner == "unsure"
+    lst.stt.text = "Friday, delete the clip"
+    lst._handle_audio(AUDIO, started_at=time.time())  # 1.7 s of voice: judged
+    assert lst.last_owner == "match"

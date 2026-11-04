@@ -2361,6 +2361,7 @@ function onEvent(ev) {
   }
   switch (type) {
     case 'user_said': S.log.push({ role: 'user', text: data.text, source: data.source, ts: ev.ts }); strip.you(data.text); render.log(); break;
+    case 'log_forgotten': S.log = S.log.filter(m => !(m.ts >= data.start && m.ts <= data.end)); render.log(); break;  // "forget this conversation"
     case 'assistant_said':
       if (data.text) { S.log.push({ role: 'assistant', text: data.text, source: data.source, ms: data.ms, ts: ev.ts }); render.log(); }
       strip.reply(data.text || '');

@@ -74,6 +74,13 @@ sentence and that Setup > Brain can switch to a model that can."""
 BENCH_FILE = local_llm.BENCH_FILE
 OFFLINE = ("I can't answer that one without a model. Start Ollama or LM Studio with a Llama model, "
            "or add ANTHROPIC_API_KEY to the .env file.")
+# A connection that stalls (Wi-Fi gone, the socket left open) gives up within a minute, and is tried once more: the
+# SDK's own default waits ten minutes, three times, while every voice command queues behind it.
+COMMAND_TIMEOUT, COMMAND_RETRIES = anthropic.Timeout(60.0, connect=5.0), 1
+SKILL_READ_S = 180.0  # a skill's question (a job's summary: 2,500 words) runs in the background
+LONG_READ_S = 600.0  # the briefing and research write long answers with a lot of thinking first
+CHANGED = "That question has changed: {question}"  # a yes or no for a question that was since replaced
+AT_THE_PC = ("voice", "text")  # where the waiting question is in front of J (said aloud, or the HUD card)
 
 
 def _clip_spoken(text: str, max_words: int = 90) -> str:
@@ -115,10 +122,11 @@ class Assistant:
         svc.think = self.think  # skills ask the model through this
         svc.off_record = self.set_off_record
         self.convo = convo_mod.Conversation(svc)  # conversation mode (brain/conversation.py)
-        self._macro_pins: dict[str, list[dict]] = {}  # a macro's step args as its question described them
         self.wait = time.sleep  # a macro's "wait" step (a test swaps this, not the process-wide time.sleep)
         self.convo.brain = self.brain
         self.convo.off_record_check = lambda: time.time() < self.off_record_until
+        self.convo.on_forget = self._forget_history  # "forget this conversation": the models' history goes too
+        self._history_forgotten = False
         svc.conversation = self.convo
         self.on_kill = None  # the runtime adds what only it can stop: speech, background jobs
         self.on_pending = None  # e.g. a Windows toast with Yes/No buttons
@@ -132,6 +140,8 @@ class Assistant:
         self.pending: dict | None = None
         self._queued: list[dict] = []  # questions waiting their turn: a new one never replaces the one J is answering
         self.replaced: str | None = None  # the question J's newest request just replaced (said in the reply)
+        self._asked: dict[str, str] = {}  # source -> the question it was last shown, for a bare "yes" (see confirm)
+        self._late_notes: list[dict] = []  # "[system note] User confirmed" from a yes that ran beside a request
         self._plock = threading.RLock()  # pending and _queued (an offer comes in on the EventSub thread)
         self.active_profile: str | None = None
         self.last_briefing: dict | None = None
@@ -160,8 +170,9 @@ class Assistant:
         if not self.cfg.get("enabled", True):
             return None
         key = self.svc.cfg.secret(self.cfg.get("api_key_env"))
+        limits = {"timeout": COMMAND_TIMEOUT, "max_retries": COMMAND_RETRIES}
         try:
-            client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
+            client = anthropic.Anthropic(api_key=key, **limits) if key else anthropic.Anthropic(**limits)
         except Exception:
             client = None
         # No key, no token and no `ant auth login` profile means no brain; say so up front.
@@ -171,6 +182,11 @@ class Assistant:
         if client is None:
             log.warning("Claude API not configured; running on the local command router only")
         return client
+
+    def _client_for(self, read_s: float):
+        """The Claude client with a longer read timeout, for answers that take longer to write than a command's."""
+        with_options = getattr(self.client, "with_options", None)
+        return with_options(timeout=anthropic.Timeout(read_s, connect=5.0)) if with_options else self.client
 
     def set_off_record(self, minutes: float) -> float:
         self.off_record_until = time.time() + max(0.0, minutes) * 60
@@ -196,8 +212,8 @@ class Assistant:
                                         max_tokens=max_tokens)["content"]
                 elif which == "claude" and self.claude_ready:
                     ask = prompt + ("\n\nAnswer with JSON only, matching this schema: " + json.dumps(schema) if schema else "")
-                    msg = self.client.messages.create(model=self.cfg["model"], max_tokens=max_tokens,
-                                                      messages=[{"role": "user", "content": ask}])
+                    msg = self._client_for(SKILL_READ_S).messages.create(model=self.cfg["model"], max_tokens=max_tokens,
+                                                                         messages=[{"role": "user", "content": ask}])
                     text = "".join(getattr(b, "text", "") for b in msg.content)
             except Exception:
                 log.exception("think (%s) failed", which)
@@ -311,14 +327,18 @@ class Assistant:
         )
 
     # ------------------------------------------------------------------
-    def handle(self, text: str, source: str = "text", turn: int | None = None, owner: str | None = None) -> dict:
+    def handle(self, text: str, source: str = "text", turn: int | None = None, owner: str | None = None,
+               pending_id: str | None = None) -> dict:
         """``turn`` (voice commands) tags the spoken reply, so a newer command drops what's left of it.
-        ``owner`` is how the speaker check judged the voice: match | mismatch | pressed | unknown."""
+        ``owner`` is how the speaker check judged the voice: match | mismatch | pressed | unknown.
+        ``pending_id``: the question a yes or no answers (a phone button): one for a question since replaced runs
+        nothing."""
         text = (text or "").strip()
         if not text:
             return {"reply": "", "kind": "empty"}
         with self._lock:
-            self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner}
+            self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner, "pending_id": pending_id}
+            asked_before = (self.pending_view() or {}).get("id")
             # the morning briefing (invite titles, email senders) stays in Claude's history for follow-ups
             self._tainted = any(isinstance(m.get("content"), str) and m["content"] in BRIEFING_MARKS for m in self.history)
             self._tainted_by = "your briefing" if self._tainted else "chat"
@@ -332,7 +352,7 @@ class Assistant:
                 log.exception("routing failed")
                 intent = None
             if (in_convo and intent is not None and intent.kind in ("confirm", "cancel") and not self.pending_view()
-                    and clean(text) not in HARD_CANCEL):
+                    and not pending_id and clean(text) not in HARD_CANCEL):
                 intent = None  # "yeah" / "nope" answers what Vesper asked; there's nothing to confirm
             # private words (a journal entry) never go into the conversation log or its search
             private = intent is not None and intent.tool in PRIVATE_TOOLS
@@ -347,7 +367,7 @@ class Assistant:
             speak = (source == "voice" or self.svc.cfg["voice"].get("speak_typed")
                      or (in_convo and convo.last_source == "voice" and source != "automation"))
             if in_convo:
-                convo.turn_started(shown, source)
+                convo.turn_started(shown, source, owner=owner)
             # Claude's reply is spoken sentence by sentence as it streams in, not after the last word.
             self._stream_on = bool(speak and self.svc.cfg["voice"]["tts"].get("stream", True))
             self._speak_turn, self._streamed, self._early = turn, False, self._stream_on
@@ -361,6 +381,9 @@ class Assistant:
                         out = {"reply": convo_mod.LOST_MODEL, "kind": "offline"}
                     else:
                         out = {"reply": self._ask(text, convo=in_convo), "kind": brain or "offline"}
+            except _Stopped:  # the kill switch, while the model was still on it
+                self._streamed = False
+                out = {"reply": "Stopped. PC control is paused.", "kind": "kill"}
             except Exception as exc:
                 log.exception("command failed")
                 out = {"reply": f"That failed: {type(exc).__name__}.", "kind": "error"}
@@ -375,11 +398,14 @@ class Assistant:
                 # A waiting confirmation keeps the mic open for the "yes"; otherwise only a question does.
                 self.svc.speak(reply, expects_reply=True if self.pending_view() else None, turn=turn)
             if in_convo or convo.active:  # the HUD's conversation panel
-                convo.turn_done(reply, source, said=None if in_convo else text, started=in_convo)
+                convo.turn_done(reply, source, said=None if in_convo else text, started=in_convo, owner=owner)
                 out["conversation"] = convo.active
             if reply:
                 if not self.off_record() and not private:
                     self.svc.storage.log("assistant", redact(reply), source)
+            if private:
+                out["private"] = True  # (the diagnostics report leaves its words out too)
+            self._note_asked(source, asked_before)
             self.svc.bus.publish("assistant_said", {
                 "text": reply, "kind": out.get("kind"), "source": source, "ms": out["ms"],
                 "pending": self.pending_view(),
@@ -398,17 +424,40 @@ class Assistant:
             return {"text": self.pending["text"], "id": self.pending["id"], "tier": self.pending["tier"]}
         return None
 
+    def _note_asked(self, source: str, before: str | None) -> None:
+        """The question ``source`` has now been shown, for a bare "yes" from it later. A reply on a screen (the HUD,
+        the phone) comes with the waiting card; a spoken one only asks a question this command raised."""
+        view = self.pending_view()
+        if view and source and (view["id"] != before or source != "voice"):
+            self._asked[source] = view["id"]
+
+    def _changed_since(self, pending: dict, pending_id: str | None, source: str | None) -> str | None:
+        """Why a yes or no isn't for the question waiting now, or None. With an id (a card, a button, the voice
+        window): it must be this one. Without (typed, or said with the wake word): the question its surface was last
+        shown must still be the one waiting; away from the PC (the phone), it must have been shown at all."""
+        if pending_id:
+            stale = pending_id != pending["id"]
+        elif source:
+            seen = self._asked.get(source)
+            stale = seen != pending["id"] if seen is not None or source not in AT_THE_PC else False
+        else:
+            stale = False
+        if not stale:
+            return None
+        if source:
+            self._asked[source] = pending["id"]  # the reply asks this one: a yes to it now is for it
+        return CHANGED.format(question=question(pending["text"]))
+
     # ------------------------------------------------------------------
     def _run_intent(self, intent: Intent) -> dict:
         kind = intent.kind
+        ctx = self._ctx
         if kind == "confirm":
-            return {"reply": self.confirm(), "kind": "confirm"}
+            via = "voice" if ctx.get("source") == "voice" else "hud"
+            return {"reply": self.confirm(ctx.get("pending_id"), via=via, owner=ctx.get("owner"), source=ctx.get("source")),
+                    "kind": "confirm"}
         if kind == "cancel":
-            had = self.pending is not None
-            self.pending = None
-            self.svc.bus.publish("pending", None)
-            nxt = self._next_question()
-            return {"reply": ("Cancelled." if had else "Okay.") + (f" {nxt}" if nxt else ""), "kind": "cancel"}
+            return {"reply": self.decline(ctx.get("pending_id"), source=ctx.get("source")), "kind": "cancel"}
         if kind == "kill":
             self.stop_everything("voice")
             return {"reply": "Stopped. PC control is paused until you say resume control.", "kind": "kill"}
@@ -432,10 +481,10 @@ class Assistant:
             return {"reply": f"It's {clock(now)}, {now.strftime('%A, %B')} {now.day}.", "kind": "time"}
         if kind == "briefing":
             b = self._fresh_morning_briefing() or self.briefing("morning")
-            return {"reply": b["spoken"], "kind": "briefing", "data": b}
+            return {"reply": self._spoken_briefing(b, "morning"), "kind": "briefing", "data": b}
         if kind == "recap":
             b = self.briefing("recap")
-            return {"reply": b["spoken"], "kind": "recap", "data": b}
+            return {"reply": self._spoken_briefing(b, "recap"), "kind": "recap", "data": b}
         if kind == "next":
             if self.brain():
                 return {"reply": self._ask("What should I work on next? Check my tasks, calendar and today's "
@@ -451,6 +500,18 @@ class Assistant:
 
     # ---- macros (trigger phrases) --------------------------------------
     def macro_risks(self, name: str) -> list[str]:
+        """What in this macro needs a yes, worded for the question (see _macro_question)."""
+        return self._macro_question(name)[0]
+
+    def macro_needs_yes(self, name: str) -> bool:
+        """For the HUD's macro buttons: only whether a step needs a yes, on throwaway copies (nothing is kept)."""
+        macro = self.macros.get(name.lower())
+        return any(tool and tool.needs_confirmation(args)
+                   for tool, args in ((self.tools.tools.get(t), a) for t, a in (macro.tool_steps() if macro else [])))
+
+    def _macro_question(self, name: str) -> tuple[list[str], list[dict]]:
+        """(what needs a yes, each tool step's args as that question pinned them: a slot, a login). The pins travel
+        with the question (``_pins`` in its call), so its yes runs exactly what it described."""
         macro = self.macros.get(name.lower())
         risks, pinned = [], []
         for tool_name, args in macro.tool_steps() if macro else []:
@@ -458,9 +519,7 @@ class Assistant:
             if tool and tool.needs_confirmation(args):
                 risks.append(tool.describe(args))  # may pin the exact target into this copy (a slot, a login)
             pinned.append(args)
-        if macro:
-            self._macro_pins[macro.name.lower()] = pinned  # the yes runs exactly what this question described
-        return risks
+        return risks, pinned
 
     def _tier_of(self, name: str, args: dict) -> int:
         if name == "run_macro":
@@ -469,28 +528,30 @@ class Assistant:
         tool = self.tools.tools.get(name)
         return tool.tier_for(args) if tool else 0
 
-    def run_macro(self, name: str, *, confirmed: bool | str = False) -> dict:
-        """``confirmed``: False, or how the yes came in (voice / hud / toast); True means the HUD."""
+    def run_macro(self, name: str, *, confirmed: bool | str = False, pins: list[dict] | None = None) -> dict:
+        """``confirmed``: False, or how the yes came in (voice / hud / toast); True means the HUD. ``pins``: the step
+        args the question that got this yes described (a HUD click without one works them out now)."""
         early, self._early = self._early, False  # its steps' replies aren't spoken one by one
         try:
-            return self._run_macro(name, confirmed=confirmed)
+            return self._run_macro(name, confirmed=confirmed, pins=pins)
         finally:
             self._early = early
 
-    def _run_macro(self, name: str, *, confirmed: bool | str = False) -> dict:
+    def _run_macro(self, name: str, *, confirmed: bool | str = False, pins: list[dict] | None = None) -> dict:
         via = confirmed if isinstance(confirmed, str) else ("hud" if confirmed else None)
         macro = self.macros.get(name.lower())
         if macro is None:
             return {"reply": f"I don't have a macro called {name}.", "kind": "error"}
-        # at the yes, run what the question pinned; working the args out again could pick a different slot
-        risks = [] if via and macro.name.lower() in self._macro_pins else self.macro_risks(name)
+        # at the yes, run what its question pinned; working the args out again could pick a different slot
+        risks, fresh = self._macro_question(name) if not (via and pins is not None) else ([], pins)
         if risks and not via:
-            if not self._set_pending([("run_macro", {"name": macro.name})], f"run {macro.name} ({'; '.join(risks)})"):
+            if not self._set_pending([("run_macro", {"name": macro.name, "_pins": fresh})],
+                                     f"run {macro.name} ({'; '.join(risks)})"):
                 return {"reply": f"I'll ask you about running {macro.name} once you've answered me.", "kind": "pending"}
             return {"reply": f"{macro.name} will {', '.join(risks)}. Say yes to run it.{self._replaced_note()}",
                     "kind": "pending"}
         spoken, results = [], []
-        pinned = iter(self._macro_pins.pop(macro.name.lower(), None) or [a for _t, a in macro.tool_steps()])
+        pinned = iter(fresh)
         for step in macro.steps:
             if self.tools.guard.hands_off:
                 spoken.append(f"{macro.name} stopped: PC control is paused.")
@@ -527,11 +588,18 @@ class Assistant:
                 "input_schema": {"type": "object", "properties": {"name": {"type": "string", "enum": [m.name for m in self.macros.values()]}},
                                  "required": ["name"]}}
 
-    def run_tool(self, name: str, args: dict, *, confirmed: bool | str = False, hints: dict | None = None) -> dict:
-        """``confirmed``: False, or how the yes came in (voice / hud / toast); True means the HUD."""
+    def run_tool(self, name: str, args: dict, *, confirmed: bool | str = False, hints: dict | None = None,
+                 beside: bool = False) -> dict:
+        """``confirmed``: False, or how the yes came in (voice / hud / toast); True means the HUD. ``beside``: a yes
+        that came in while another thread's command holds the model (see confirm): it runs with its own context and
+        isn't spoken as part of that command's reply."""
         via = confirmed if isinstance(confirmed, str) else ("hud" if confirmed else None)
         if name == "run_macro":
-            return self.run_macro(args.get("name", ""), confirmed=via or False)
+            pins = args.get("_pins") if via else None  # only a confirmed question's own pins
+            if beside:
+                with self._lock:  # a macro's steps may ask the model: this one waits for the request in flight
+                    return self.run_macro(args.get("name", ""), confirmed=via or False, pins=pins)
+            return self.run_macro(args.get("name", ""), confirmed=via or False, pins=pins)
         tool = self.tools.tools.get(name)
         if tool is None:
             return {"reply": f"I don't have a {name} tool.", "kind": "error"}
@@ -540,7 +608,7 @@ class Assistant:
             if not self._set_pending([(name, args)], what):
                 return {"reply": f"I'll ask you to {what} once you've answered me.", "kind": "pending"}
             return {"reply": question(what) + self._replaced_note(), "kind": "pending"}  # asked once (confirm_window.py)
-        result = self.tools.run(name, args, confirmed_by=via)
+        result = self.tools.run(name, args, confirmed_by=via, context={"source": via} if beside else None)
         said = self.svc.skills.say(name, args, result) if self.svc.skills is not None and not _failed(result) else None
         reply = said or summarize(name, args, result, self.svc.tz, hints)
         if name == "run_routine" and result.get("close_candidates"):
@@ -549,9 +617,9 @@ class Assistant:
                 reply += f" Want me to close {', '.join(names)}?{self._replaced_note()}"
             else:
                 reply += f" I'll ask about closing {', '.join(names)} once you've answered me."
-        if self._early and reply:  # say it now; the HUD's tool chip and panels follow
+        if self._early and reply and not beside:  # say it now; the HUD's tool chip and panels follow
             self._speak_sentence(reply, final=True)
-        self.svc.bus.publish("tool", {"name": name, "args": args, "result": result})
+        self.svc.bus.publish("tool", {"name": name, "args": {} if name in PRIVATE_TOOLS else args, "result": result})
         return {"reply": reply, "kind": "tool", "tool": name, "data": result}
 
     def offer(self, calls: list[tuple[str, dict]], text: str) -> bool:
@@ -602,34 +670,90 @@ class Assistant:
             self.on_pending(self.pending_view())
         return f"Next: {question(nxt['text'])}"
 
-    def confirm(self, pending_id: str | None = None, via: str | None = None) -> str:
-        """Run what's waiting on a yes. ``pending_id`` (HUD, toast) must match what's waiting now,
-        so a slow click can never confirm a different action that replaced it."""
-        with self._lock:
+    def confirm(self, pending_id: str | None = None, via: str | None = None, owner: str | None = None,
+                source: str | None = None) -> str:
+        """Run what's waiting on a yes. ``pending_id`` (HUD, toast, a phone button, the voice window) must match
+        what's waiting now, so a slow click can never confirm a different action that replaced it; a yes without one
+        (typed, or said with the wake word) answers what its ``source`` was last shown (see _changed_since).
+        ``owner``: how the speaker check judged a spoken yes. A yes never waits for a model request in flight on
+        another thread (a stalled connection): it runs beside it."""
+        via = via or "hud"
+        with self._plock:
             pending = self.pending
-            if not pending or pending["expires"] < time.time():
+            live = bool(pending) and pending["expires"] >= time.time()
+            why = None
+            if not live:
                 self.pending = None
-                self.svc.bus.publish("pending", None)
-                nxt = self._next_question()  # never this yes: J hasn't heard it yet
-                return "Nothing waiting on a yes." + (f" {nxt}" if nxt else "")
-            if pending_id and pending_id != pending["id"]:
-                return "That confirmation is out of date; nothing ran."
-            via = via or ("voice" if self._ctx.get("source") == "voice" else "hud")
-            if via == "voice" and pending["tier"] >= 3 and self._ctx.get("owner") in ("mismatch", "unsure"):
-                # LOG mode lets other voices through, and a bare "yes" is too short to judge: an irreversible action
-                # still needs yours.
-                if self._ctx.get("owner") == "unsure":
-                    return "A bare yes is too short to know it's you: say \"yes, go ahead please\", or click Confirm."
-                return "That one needs your voice. Press the talk hotkey and say yes, or click Confirm."
+            else:
+                why = self._changed_since(pending, pending_id, source)
+                if why is None and via == "voice" and pending["tier"] >= 3 and owner in ("mismatch", "unsure"):
+                    # LOG mode lets other voices through, and a bare "yes" is too short to judge: an irreversible
+                    # action still needs yours.
+                    why = ("A bare yes is too short to know it's you: say \"yes, go ahead please\", or click Confirm."
+                           if owner == "unsure" else
+                           "That one needs your voice. Press the talk hotkey and say yes, or click Confirm.")
+                if why is None:
+                    self.pending = None  # taken: nothing can replace it or run it twice from here on
+        if why:
+            return why
+        self.svc.bus.publish("pending", None)
+        if not live:
+            nxt = self._next_question()  # never this yes: J hasn't heard it yet
+            return "Nothing waiting on a yes." + (f" {nxt}" if self._asked_now(source, nxt) else "")
+        self._settled(pending)
+        if self._lock.acquire(blocking=False):  # (a spoken or typed yes: this thread is the command holding it)
+            try:
+                return self._run_confirmed(pending, via, source)
+            finally:
+                self._lock.release()
+        return self._run_confirmed(pending, via, source, beside=True)
+
+    def _run_confirmed(self, pending: dict, via: str, source: str | None, beside: bool = False) -> str:
+        own = not beside and not self._ctx  # a yes from outside any command (a button, the voice window, a toast)
+        if own:  # who answered, for the action log and the skills watching what ran (a recording started by phone)
+            self._ctx = {"source": source or via, "utterance": "yes"}
+        try:
+            replies = [self.run_tool(name, args, confirmed=via, beside=beside)["reply"] for name, args in pending["calls"]]
+        finally:
+            if own:
+                self._ctx = {}
+        # let Claude know the parked action happened (after the request in flight, if one is)
+        note = [{"role": "user", "content": f"[system note] User confirmed; executed: {pending['text']}. "
+                                            f"Result: {' '.join(replies)}"},
+                {"role": "assistant", "content": "Done."}]
+        if beside:
+            self._late_notes = (self._late_notes + note)[-8:]
+        elif self.history:
+            self.history.extend(note)
+        nxt = self._next_question()
+        return " ".join(r for r in [*replies, nxt if self._asked_now(source, nxt) else ""] if r) or "Done."
+
+    def _settled(self, pending: dict) -> None:
+        """Answered, wherever: no surface's next bare yes is for it any more."""
+        self._asked = {k: v for k, v in self._asked.items() if v != pending["id"]}
+
+    def _asked_now(self, source: str | None, nxt: str) -> str:
+        """The question that waited its turn is asked in this reply: that surface has been shown it."""
+        view = self.pending_view() if nxt else None
+        if view and source:
+            self._asked[source] = view["id"]
+        return nxt
+
+    def decline(self, pending_id: str | None = None, source: str | None = None) -> str:
+        """A no: "Cancelled.", and the question waiting its turn is asked. ``pending_id``: the question it answers;
+        a no for one that was since replaced cancels nothing."""
+        with self._plock:
+            pending = self.pending
+            if pending and pending_id and pending["expires"] > time.time():
+                why = self._changed_since(pending, pending_id, source)
+                if why:
+                    return why
             self.pending = None
-            self.svc.bus.publish("pending", None)
-            replies = [self.run_tool(name, args, confirmed=via)["reply"] for name, args in pending["calls"]]
-            if self.history:  # let Claude know the parked action happened
-                self.history.append({"role": "user", "content": f"[system note] User confirmed; executed: {pending['text']}. "
-                                                                 f"Result: {' '.join(replies)}"})
-                self.history.append({"role": "assistant", "content": "Done."})
-            nxt = self._next_question()
-            return " ".join(r for r in [*replies, nxt] if r) or "Done."
+        self.svc.bus.publish("pending", None)
+        if pending:
+            self._settled(pending)
+        nxt = self._next_question()
+        return ("Cancelled." if pending else "Okay.") + (f" {self._asked_now(source, nxt)}" if nxt else "")
 
     def cancel(self, pending_id: str | None = None) -> None:
         """A "No" from the HUD or the toast, or the card running out: the question waiting its turn is asked aloud."""
@@ -670,6 +794,20 @@ class Assistant:
         with self._lock:
             self.history, self.user_turns = [], 0
 
+    def _forget_history(self) -> None:
+        """"Forget this conversation": what the models were sent of it goes before their next request (not in the
+        middle of one: a tool loop may be what's forgetting it)."""
+        self._history_forgotten = True
+
+    def _start_request(self) -> None:
+        """Before a request to a model: drop a forgotten conversation; add what a yes beside the last one ran."""
+        if self._history_forgotten:
+            self._history_forgotten = False
+            self.history, self.user_turns, self.local_history, self._late_notes = [], 0, [], []
+        notes, self._late_notes = self._late_notes, []
+        if notes and self.history:
+            self.history.extend(notes)
+
     # ------------------------------------------------------------------
     off_record_until: float = 0.0
 
@@ -697,7 +835,9 @@ class Assistant:
         return f"[{now:%A %B %d %Y, %I:%M %p} | active window: {where} | profile: {self.active_profile or 'none'}]"
 
     def _create(self, messages: list, *, tools: list | None = None, effort: str | None = None,
-                max_tokens: int = 4096, fmt: dict | None = None, system: str | None = None, on_text=None):
+                max_tokens: int = 4096, fmt: dict | None = None, system: str | None = None, on_text=None,
+                read_s: float | None = None):
+        """One request to Claude. ``read_s``: a longer read timeout than a command's (the briefing, research)."""
         model = self.cfg["model"]
         kwargs: dict = {
             "model": model,
@@ -719,20 +859,50 @@ class Assistant:
         if self.cfg.get("server_fallbacks", True) and _supports(model, SERVER_FALLBACK_MODELS):
             kwargs["betas"] = ["server-side-fallback-2026-07-01"]
             kwargs["fallbacks"] = "default"
-        if on_text is not None:
-            with self.client.beta.messages.stream(**kwargs) as stream:
-                for delta in stream.text_stream:
-                    if self.tools.guard.hands_off:
-                        raise _Stopped  # leaving the with-block closes the connection
-                    on_text(delta)
-                return stream.get_final_message()
-        return self.client.beta.messages.create(**kwargs)
+        client = self._client_for(read_s) if read_s else self.client
+        dropped = threading.Event()  # the kill switch let go of this request: nothing more of it is said
+
+        def request():
+            if on_text is not None:
+                with client.beta.messages.stream(**kwargs) as stream:
+                    for delta in stream.text_stream:
+                        if self.tools.guard.hands_off or dropped.is_set():
+                            raise _Stopped  # leaving the with-block closes the connection
+                        on_text(delta)
+                    return stream.get_final_message()
+            return client.beta.messages.create(**kwargs)
+        return self._unless_stopped(request, dropped)
+
+    def _unless_stopped(self, request, dropped: threading.Event):
+        """Run a model request so the kill switch never waits on it. A stalled connection sends nothing, so the
+        check between streamed words never runs: the request waits on its own thread, and the kill switch lets go of
+        it at once (this command ends; the request runs out on its own and is thrown away)."""
+        box: dict = {}
+        done = threading.Event()
+
+        def run():
+            try:
+                box["out"] = request()
+            except BaseException as exc:  # handed to the command, as if it had run here
+                box["exc"] = exc
+            finally:
+                done.set()
+        started, guard = time.time(), self.tools.guard
+        threading.Thread(target=run, name="model-request", daemon=True).start()
+        while not done.wait(0.1):
+            if guard.hands_off and guard.since >= started:
+                dropped.set()
+                raise _Stopped
+        if "exc" in box:
+            raise box["exc"]
+        return box["out"]
 
     def _ask_claude(self, text: str, convo: bool = False) -> str:
         if not self.claude_ready:
             return ("I don't know that one offline. Add ANTHROPIC_API_KEY to the .env file and I can handle anything.")
         idle_minutes, max_turns = self._history_limits(convo)
         idle = time.time() - self.last_turn > idle_minutes * 60
+        self._start_request()
         if idle or self.user_turns >= max_turns:
             self.reset()  # start fresh rather than editing history, so the conversation stays append-only
         elif convo and self.user_turns >= int(self.convo.setting("summarize_after", 20)):
@@ -846,6 +1016,7 @@ class Assistant:
         lcfg = (self.svc.cfg.get("brain") or {}).get("local") or {}
         idle_minutes, max_turns = self._history_limits(convo)
         idle = time.time() - self.last_turn > idle_minutes * 60
+        self._start_request()
         if idle or len(self.local_history) > 4 * max_turns:
             self.local_history = []
         elif convo and sum(1 for m in self.local_history if m.get("role") == "user") >= \
@@ -931,7 +1102,9 @@ class Assistant:
         return reply.strip() or "Done."
 
     def _local_briefing(self, prompt: str) -> dict | None:
-        llm = self.local.refresh()
+        # mid-game, as for think(): the model already loaded or the light one, never the big one onto the graphics
+        # card (None: the built-in summary)
+        llm = self.local.in_game() if self.low_power() == "game" else self.local.refresh()
         if llm is None:
             return None
         try:
@@ -957,12 +1130,14 @@ class Assistant:
                 continue
             args = block.input if isinstance(block.input, dict) else {}
             if block.name == "run_macro":
-                if self.macro_risks(args.get("name", "")) or self._tainted:
-                    pending_calls.append(("run_macro", args))
-                    pending_text.append(f"run {args.get('name')}")
-                    payload = {"status": "awaiting_confirmation", "ask_user": f"run {args.get('name')}"}
+                name = str(args.get("name", ""))
+                risks, pins = self._macro_question(name)
+                if risks or self._tainted:
+                    pending_calls.append(("run_macro", {"name": name, "_pins": pins}))  # never pins the model wrote
+                    pending_text.append(f"run {name}")
+                    payload = {"status": "awaiting_confirmation", "ask_user": f"run {name}"}
                 else:
-                    out = self.run_macro(args.get("name", ""))
+                    out = self.run_macro(name)
                     payload = {"ok": out["kind"] != "error", "reply": out["reply"], "steps": out.get("data")}
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": compact(payload),
                                 **({"is_error": True} if payload.get("ok") is False else {})})
@@ -978,7 +1153,8 @@ class Assistant:
                 payload: dict = {"status": "awaiting_confirmation", "ask_user": what}
             else:
                 payload = self.tools.run(block.name, args)
-                self.svc.bus.publish("tool", {"name": block.name, "args": args, "result": payload})
+                self.svc.bus.publish("tool", {"name": block.name, "args": {} if block.name in PRIVATE_TOOLS else args,
+                                              "result": payload})
                 if payload.get("blocked") and self.tools.guard.hands_off:
                     payload = {**payload, "note": "The user stopped all actions. Don't retry; say you've stopped."}
                 if tool and tool.network:  # a search's results: links the model may follow without a yes
@@ -1033,6 +1209,14 @@ class Assistant:
         built = datetime.fromtimestamp(b["created"], self.svc.tz).date()
         return b if built == datetime.now(self.svc.tz).date() else None
 
+    def _spoken_briefing(self, b: dict, kind: str) -> str:
+        """Live on stream, viewers hear it: times and counts only (event titles, tasks and senders are on the HUD)."""
+        try:
+            live = bool(self.svc.live and self.svc.live())
+        except Exception:
+            live = False
+        return briefing.on_air(self.svc, kind) if live else b["spoken"]
+
     def briefing(self, kind: str = "morning") -> dict:
         data = briefing.gather_morning(self.svc) if kind == "morning" else briefing.gather_recap(self.svc)
         user = self.svc.cfg["assistant"]["user_name"]
@@ -1042,12 +1226,13 @@ class Assistant:
             prompt = template.format(user=user, data=json.dumps(data, default=str))
             try:
                 resp = self._create([{"role": "user", "content": prompt}], effort=self.cfg.get("briefing_effort", "high"),
-                                    max_tokens=16000, fmt={"type": "json_schema", "schema": briefing.BRIEFING_SCHEMA})
+                                    max_tokens=16000, fmt={"type": "json_schema", "schema": briefing.BRIEFING_SCHEMA},
+                                    read_s=LONG_READ_S)
                 if resp.stop_reason not in {"refusal", "max_tokens"}:
                     text = next(b.text for b in resp.content if getattr(b, "type", "") == "text")
                     result = json.loads(text)
                     result["generated_by"] = "claude"
-            except (anthropic.APIError, StopIteration, json.JSONDecodeError):
+            except (anthropic.APIError, StopIteration, json.JSONDecodeError, _Stopped):
                 log.exception("Claude briefing failed; using local version")
         elif self.brain() == "local":
             template = briefing.MORNING_INSTRUCTIONS if kind == "morning" else briefing.RECAP_INSTRUCTIONS
@@ -1079,7 +1264,8 @@ class Assistant:
         resp = None
         for _ in range(5):
             resp = self._create(messages, tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 8}],
-                                effort="high", max_tokens=16000, system="You are a precise research analyst.")
+                                effort="high", max_tokens=16000, system="You are a precise research analyst.",
+                                read_s=LONG_READ_S)
             if resp.stop_reason != "pause_turn":
                 break
             messages.append({"role": "assistant", "content": resp.content})

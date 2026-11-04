@@ -68,6 +68,9 @@ class Runtime:
         self.voice_taps: list = []
         # Voice commands run here, not on the mic thread, so "stop" is heard while Claude thinks or talks.
         self._commands = ThreadPoolExecutor(max_workers=1, thread_name_prefix="command")
+        # A yes or no from the voice window runs here: never queued behind a command still waiting on a model.
+        self._answers = ThreadPoolExecutor(max_workers=1, thread_name_prefix="answer")
+        self._heard_turns: dict[int, dict] = {}  # voice turn -> what the mic heard, marked private for diagnostics
         self._bench_running = False  # the model test (one at a time)
         self.svc.free_model_memory = self.free_model_memory
         self.svc.live = lambda: self._live()[0]
@@ -153,6 +156,9 @@ class Runtime:
             return
         if owner is None:
             owner = getattr(self.listener, "last_owner", "unknown") if self.listener else "unknown"
+        # the mic notes each sentence just before handing it over: this command's line, for the diagnostics report
+        heard = list(getattr(self.listener, "recent_heard", None) or [])[-1:] if self.listener else []
+        said = text
         for tap in list(self.voice_taps):  # a yes/no window, dictation
             try:
                 out = tap(text, owner)
@@ -162,19 +168,48 @@ class Runtime:
             if out is True:
                 return
             if isinstance(out, str) and out:
+                pending_id = getattr(out, "pending_id", None)  # the voice window's answer names its question
+                if pending_id:
+                    self._answers.submit(self.answer, str(out), pending_id, "voice", owner, turn, said)
+                    return
                 text = out
                 break
+        if heard and not heard[0].get("ignored"):
+            self._heard_turns = {**{t: h for t, h in self._heard_turns.items() if t > turn - 8}, turn: heard[0]}
         self._commands.submit(self._run_voice_command, text, turn, owner)
 
-    def command(self, text: str, source: str = "automation") -> dict:
-        """Run a command as if typed (routines, the phone bridge), queued behind any voice command."""
+    def command(self, text: str, source: str = "automation", pending_id: str | None = None) -> dict:
+        """Run a command as if typed (routines, the phone bridge), queued behind any voice command. ``pending_id``: a
+        Yes/No button's question, answered at once instead (see answer)."""
+        if pending_id:
+            return self.answer(text, pending_id, source)
         return self._commands.submit(self.assistant.handle, text, source).result(timeout=300)
 
     def _run_voice_command(self, text: str, turn: int, owner: str = "unknown") -> None:
+        heard = self._heard_turns.pop(turn, None)
         try:
-            self.assistant.handle(text, "voice", turn=turn, owner=owner)
+            out = self.assistant.handle(text, "voice", turn=turn, owner=owner)
         except Exception:
             log.exception("voice command failed: %s", text)
+            return
+        if heard is not None and (out or {}).get("private"):
+            heard["private"] = True  # a journal entry: the diagnostics report keeps its words out
+
+    def answer(self, word: str, pending_id: str, via: str, owner: str | None = None, turn: int | None = None,
+               said: str | None = None) -> dict:
+        """A yes or no that names its question (the voice window, a phone button): answered at once, never queued
+        behind a command (a stalled model request can't hold it up), and never for a question that replaced it."""
+        yes = str(word).strip().lower() == "yes"
+        if via == "voice":
+            self.bus.publish("user_said", {"text": said or word, "source": via})
+        reply = (self.assistant.confirm(pending_id, via=via, owner=owner, source=via) if yes
+                 else self.assistant.decline(pending_id, source=via))
+        waiting = self.assistant.pending_view()
+        self.bus.publish("assistant_said", {"text": reply, "kind": "confirm" if yes else "cancel", "source": via,
+                                            "pending": waiting})
+        if via == "voice":
+            self.speaker.say(reply, expects_reply=True if waiting else None, turn=turn)
+        return {"reply": reply, "kind": "confirm" if yes else "cancel"}
 
     # ---- kill switch and confirmations -------------------------------------
     def kill_switch(self, source: str = "hotkey") -> dict:
@@ -196,8 +231,9 @@ class Runtime:
                     self.svc.jobs.cancel(job["id"])
 
     def confirm_pending(self, pending_id: str | None, via: str) -> str:
-        """A yes from outside a command (HUD button, toast): run it, show and say the result."""
-        reply = self.assistant.confirm(pending_id, via=via)
+        """A yes from outside a command (HUD button, toast): run it, show and say the result. It must name the card's
+        question: one without an id is treated as a card that's out of date."""
+        reply = self.assistant.confirm(pending_id or "(none)", via=via, source=via)
         self.bus.publish("assistant_said", {"text": reply, "kind": "confirm", "source": via})
         if via == "toast":
             self.speaker.say(reply)
@@ -283,6 +319,7 @@ class Runtime:
         if self.eventsub:
             self.eventsub.stop()
         self._commands.shutdown(wait=False, cancel_futures=True)
+        self._answers.shutdown(wait=False, cancel_futures=True)
         if self.svc.jobs:
             self.svc.jobs.shutdown()
 
@@ -601,6 +638,8 @@ class Runtime:
             return
         cur = self.svc.activity.current
         if cur and cur["category"] != "idle":
+            if self._low_power() == "game" and self.assistant.brain() == "local":
+                return  # not mid-game: the local model would load onto the graphics card. Once the game is over.
             self._briefed_on = today
             threading.Thread(target=self.assistant.briefing, args=("morning",), daemon=True).start()
 
@@ -884,7 +923,7 @@ class Runtime:
             "calibrating": self.calibrator is not None,
             "last_calibration": latest["data"] if latest else None,
             "macros": [{"name": m.name, "triggers": m.triggers, "steps": len(m.steps),
-                        "needs_yes": bool(self.assistant.macro_risks(m.name))}
+                        "needs_yes": self.assistant.macro_needs_yes(m.name)}
                        for m in self.assistant.macros.values()],
         }
 

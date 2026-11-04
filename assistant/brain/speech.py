@@ -186,6 +186,8 @@ def _calendar_speech(result: dict, tz: tzinfo, hints: dict) -> str:
         mins = int((start - now).total_seconds() // 60)
         when = f"in {duration(mins * 60)}" if mins < 180 else f"at {clock(start)}"
         day = "" if start.date() == now.date() else " tomorrow"
+        if result.get("live"):  # on air: viewers would hear the title
+            return f"Your next one is{day} {when}; details on the HUD."
         return f"Next up: {e['title']}{day} {when}."
     when = hints.get("when", "today")
     if when == "tomorrow":
@@ -196,8 +198,11 @@ def _calendar_speech(result: dict, tz: tzinfo, hints: dict) -> str:
     if not events:
         free = result.get("free_today") or []
         return f"Nothing scheduled {when}." + (f" You've got {duration(sum(b['minutes'] for b in free) * 60)} of open time." if when == "today" and free else "")
-    listed = ", ".join(f"{clock(datetime.fromisoformat(e['start']))} {e['title']}" for e in events[:5])
     more = f", plus {len(events) - 5} more" if len(events) > 5 else ""
+    if result.get("live"):
+        listed = ", ".join(clock(datetime.fromisoformat(e["start"])) for e in events[:5])
+        return f"{len(events)} event{'s' if len(events) != 1 else ''} {when}, at {listed}{more}; details on the HUD."
+    listed = ", ".join(f"{clock(datetime.fromisoformat(e['start']))} {e['title']}" for e in events[:5])
     return f"{len(events)} event{'s' if len(events) != 1 else ''} {when}: {listed}{more}."
 
 

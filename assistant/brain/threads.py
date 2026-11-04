@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS convo_meta (key TEXT PRIMARY KEY, value TEXT);
 # ---- the style profile ---------------------------------------------------------------------------------------
 # Each dimension is a 0-4 scale; the defaults reproduce the persona as it was (brain/conversation.py PERSONA).
 STYLE_DEFAULT = {"length": 2, "humour": 2, "questions": 2, "formality": 1}
+OWN_SOURCES = ("voice", "text", "phone")  # J's own words (as skills/memory.py's OWN_SOURCES)
 STYLE_LABELS = {"length": ("One line", "Brief", "Balanced", "Fuller", "Detailed"),
                 "humour": ("Serious", "Dry", "Warm", "Playful", "Funny"),
                 "questions": ("Never", "Rarely", "Sometimes", "Often", "Curious"),
@@ -342,7 +343,9 @@ class ThreadKeeper:
         return self.get(thread_id)
 
     def notes_prompt(self, turns: list[dict], *, earlier: dict | None, mode: str, user: str, assistant: str) -> str:
-        lines = "\n".join(f"{user if e['role'] == 'user' else assistant}: {redact(e['text'])}" for e in turns)[-7000:]
+        def who(e: dict) -> str:  # a voice the speaker check said wasn't J's is never written up as his
+            return assistant if e["role"] != "user" else f"Someone else (not {user})" if e.get("other") else user
+        lines = "\n".join(f"{who(e)}: {redact(e['text'])}" for e in turns)[-7000:]
         prior = ""
         if earlier:
             prior = ("NOTES SO FAR (update them; keep what still holds): " + json.dumps(
@@ -356,7 +359,8 @@ class ThreadKeeper:
     def learn(self, thread_id: int, turns: list[dict]) -> list[dict]:
         """What J said that's worth keeping → long-term memory, tagged with the thread (memory's own filters apply)."""
         mem = getattr(self.svc, "memory", None)
-        said = [{"role": "user", "text": e["text"]} for e in turns if e.get("role") == "user"]
+        said = [{"role": "user", "text": e["text"]} for e in turns if e.get("role") == "user" and not e.get("other")
+                and e.get("source", "voice") in OWN_SOURCES]  # never another voice in the room, as memory's own
         if mem is None or not said:
             return []
         try:
@@ -388,7 +392,7 @@ class ThreadKeeper:
         spans = st.query("SELECT start, end FROM convo_spans WHERE thread_id = ?", (int(thread_id),))
         logged = 0
         for s in spans:
-            logged += st.execute("DELETE FROM log WHERE ts >= ? AND ts <= ?", (s["start"], (s["end"] or self.clock()) + 1)).rowcount
+            logged += self._drop_log(s["start"], s["end"] or self.clock())
         mem = getattr(self.svc, "memory", None)
         facts = mem.forget_ref(f"thread:{thread_id}") if mem is not None and hasattr(mem, "forget_ref") else []
         st.execute("DELETE FROM convo_threads WHERE id = ?", (int(thread_id),))
@@ -399,7 +403,15 @@ class ThreadKeeper:
     def forget_session(self, start: float, end: float) -> int:
         """An unsaved conversation: just its words in the log (nothing else was kept)."""
         self.add_span(start, end, None)
-        return self.svc.storage.execute("DELETE FROM log WHERE ts >= ? AND ts <= ?", (start, end + 1)).rowcount
+        return self._drop_log(start, end)
+
+    def _drop_log(self, start: float, end: float) -> int:
+        """Those minutes' words out of the log (and so out of the search index), and off the HUD's log."""
+        n = self.svc.storage.execute("DELETE FROM log WHERE ts >= ? AND ts <= ?", (start, end + 1)).rowcount
+        bus = getattr(self.svc, "bus", None)
+        if bus is not None:
+            bus.publish("log_forgotten", {"start": start, "end": end + 1})
+        return n
 
     def set_followups(self, thread_id: int, on: bool) -> bool:
         return self.svc.storage.execute("UPDATE convo_threads SET followups = ? WHERE id = ?",

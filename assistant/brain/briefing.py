@@ -153,6 +153,24 @@ DATA:
 {data}"""
 
 
+def on_air(svc: Services, kind: str) -> str:
+    """What the briefing says out loud while J is live on stream: times and counts only. Viewers would hear event
+    titles, tasks and who emailed; the whole briefing is on the HUD."""
+    if kind != "morning":
+        return "Your recap is on the HUD. You're live, so I won't read it out."
+    now = datetime.now(svc.tz)
+    events = [e for e in _safe("calendar", lambda: svc.calendars.agenda(1), []) if not e.get("all_day")
+              and datetime.fromisoformat(e["start"]).date() == now.date()]
+    ahead = [datetime.fromisoformat(e["start"]) for e in events if datetime.fromisoformat(e["start"]) > now]
+    tasks = len(_safe("tasks", svc.storage.list_tasks, []))
+    parts = [f"{len(events)} event{'s' if len(events) != 1 else ''} today"]
+    if ahead:
+        mins = int((ahead[0] - now).total_seconds() // 60)
+        parts.append(f"the next one {'in ' + duration(mins * 60) if mins < 180 else 'at ' + clock(ahead[0])}")
+    parts.append(f"{tasks} open task{'s' if tasks != 1 else ''}")
+    return f"You're live, so just the numbers: {', '.join(parts)}. The rest of your briefing is on the HUD."
+
+
 def _hours(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 

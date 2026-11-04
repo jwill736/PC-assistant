@@ -39,6 +39,12 @@ def answer(text: str) -> str | None:
     return None
 
 
+class Answer(str):
+    """"yes" / "no" from the window, carrying the id of the question it answers (so it can't confirm a newer one)."""
+
+    pending_id: str | None = None
+
+
 def question(what: str) -> str:
     """The one spoken question for a waiting action: 'post to Discord: “x”' -> 'Post to Discord: “x”? Say yes or no.'"""
     what = (what or "").strip().rstrip("?.")
@@ -100,7 +106,9 @@ class ConfirmWindow:
                 return True
             cur["phase"], cur["toasted"] = "waiting", True  # the answer is on its way; expiry still clears the card
             self._publish("answered", answer=said)
-            return said
+            out = Answer(said)
+            out.pending_id = cur["id"]
+            return out
 
     # ---- the state machine -----------------------------------------------------------------------------------------
     def tick(self) -> str:

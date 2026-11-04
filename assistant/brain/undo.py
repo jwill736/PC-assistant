@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 KEEP = 30  # actions remembered (this session only)
 OPEN, UNDONE, CHANGED = "open", "undone", "changed"
+# Done on Vesper's own (a raid's auto-marker, a chat spike's, a routine): listed, but never "that" in "undo that".
+BACKGROUND = frozenset({"highlight", "stream_moments", "automation"})
 
 
 @dataclass
@@ -83,10 +85,11 @@ class ActionHistory:
         self._next = 1
         self._lock = threading.RLock()
 
-    def add(self, tool: str, label: str, tier: int, undo: Undo | None) -> dict:
+    def add(self, tool: str, label: str, tier: int, undo: Undo | None, source: str | None = None) -> dict:
+        """``source``: who asked (the command's source); one of BACKGROUND is never picked for "undo that"."""
         with self._lock:
             item = {"id": self._next, "tool": tool, "label": label, "tier": tier, "at": self.clock(), "undo": undo,
-                    "state": OPEN, "note": ""}
+                    "state": OPEN, "note": "", "source": source}
             self._next += 1
             self.items = (self.items + [item])[-self.keep:]
         self._changed()
@@ -100,9 +103,10 @@ class ActionHistory:
                      "undo": i["undo"].text if i["undo"] else None} for i in reversed(self.items)]
 
     def pick(self, count: int = 1) -> list[int]:
-        """The newest ``count`` actions not undone yet (one Vesper can't undo counts too: "that" is the last thing)."""
+        """The newest ``count`` actions not undone yet (one Vesper can't undo counts too: "that" is the last thing).
+        Never one Vesper did on its own (BACKGROUND): "that" is J's last change."""
         with self._lock:
-            live = [i["id"] for i in reversed(self.items) if i["state"] == OPEN]
+            live = [i["id"] for i in reversed(self.items) if i["state"] == OPEN and i.get("source") not in BACKGROUND]
         return live[:max(1, int(count or 1))]
 
     def _get(self, ids) -> list[dict]:
@@ -120,7 +124,7 @@ class ActionHistory:
     def undo(self, ids) -> dict:
         """Put back each of ``ids`` (newest first). Never one J has changed since; never one with no way back."""
         undone, changed, cant, failed = [], [], [], []
-        items = self._get(ids)
+        items = sorted(self._get(ids), key=lambda i: -i["id"])  # newest first, whatever order they came in
         for i in items:
             u: Undo | None = i["undo"]
             if i["state"] != OPEN:

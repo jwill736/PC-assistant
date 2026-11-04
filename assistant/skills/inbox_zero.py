@@ -32,6 +32,7 @@ from .nudges import ago_words
 from .people import ROBOT, account_kind, clean_subject, display_name, first_name, gmail_or_reason, on_air
 
 OWED_Q = "in:inbox -from:me newer_than:14d"
+THREAD_CACHE = 200  # whole threads kept between refreshes (a refresh reads about 80)
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 VERBS = (r"(?:send|get|follow|check|look|review|share|call|e-?mail|circle|update|loop|confirm|put|draft|schedule|set|"
          r"take|reach|ping|forward|ask|find|make|write|prepare|sort|handle|fix|book|text|dig|come back|be in touch|"
@@ -173,7 +174,14 @@ class InboxZero(Skill):
             return hit[2]
         th = gm.thread(tid, account=account)
         if th.get("ok"):
-            self._threads[tid] = (marker, self.clock(), th)
+            now = self.clock()
+            self._threads.pop(tid, None)
+            self._threads[tid] = (marker, now, th)
+            # whole threads with their bodies: keep the ones still fresh, and only the newest THREAD_CACHE of those
+            for old in [k for k, v in self._threads.items() if now - v[1] >= 6 * 3600]:
+                del self._threads[old]
+            while len(self._threads) > THREAD_CACHE:
+                del self._threads[next(iter(self._threads))]
         return th
 
     def refresh(self) -> dict:

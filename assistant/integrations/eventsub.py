@@ -45,6 +45,7 @@ SUBSCRIPTIONS: dict[str, tuple[str, Callable[[str, str], dict]]] = {
 }
 
 TIERS = {"1000": "tier 1", "2000": "tier 2", "3000": "tier 3", "prime": "Prime"}
+MAX_NAMES = 5000  # spoken forms of chatters' names kept for "shout out <name>"; the ones heard least lately go first
 
 
 def normalize(sub_type: str, e: dict) -> dict | None:
@@ -125,8 +126,11 @@ class TwitchFeed:
                 self.events.appendleft(ev)
             login = (ev.get("detail") or {}).get("login") or (ev.get("user") or "").lower()
             if login:
-                self.names[_squash(ev.get("user") or login)] = login
-                self.names[_squash(login)] = login
+                for key in (_squash(ev.get("user") or login), _squash(login)):
+                    self.names.pop(key, None)  # to the end: heard just now
+                    self.names[key] = login
+                while len(self.names) > MAX_NAMES:
+                    del self.names[next(iter(self.names))]
         return ev
 
     def recent_events(self, limit: int = 20) -> list[dict]:

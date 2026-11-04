@@ -181,3 +181,13 @@ def test_due_words():
 def test_routes(svc, said, tool):
     skills = Skills(svc, ["debrief"])
     assert route(said, RouterContext(skill_route=skills.route)).tool == tool
+
+
+def test_a_password_said_in_a_debrief_never_reaches_the_notes(setup, svc):
+    # audit F17: every other note path refuses or removes a secret; the debrief wrote it to the notes table as said
+    db = setup[0]
+    r = db.save("dana's wifi password is hunter22 and I'll send her the deck by friday")
+    assert r["ok"] and "hunter22" not in r["note"] and "the deck" in r["note"]
+    stored = svc.storage.query("SELECT text FROM notes") + svc.storage.query("SELECT text FROM debrief_log")
+    assert stored and not any("hunter22" in row["text"] for row in stored)
+    assert "left the password out" in svc.skills.say("debrief_save", {}, r)

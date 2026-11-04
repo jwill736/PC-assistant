@@ -20,7 +20,7 @@ Three things for streams:
 | What's left out | Vesper's own voice coming back through your speakers; anything with "Vesper, …" in it; your answers to Vesper's questions and conversation turns; voices the speaker check turned away; "hmm"/"uh"; everything while you're **off the record**. Passwords, keys and card numbers become `[secret]` |
 | Where they go | the OBS overlay's **Captions** panel (a Browser source), and, if you name one, an OBS **Text** source |
 | YouTube chat | read while you're live on YouTube, into the co-pilot: questions show "· YouTube" after the name, mood and greetings count it, the recap shows **YouTube msgs**. Viewers wrote it: Vesper never reads it out or acts on it |
-| YouTube quota | YouTube allows 10,000 units a day (reset at midnight Pacific). A chat read costs 5. Vesper keeps 1,500 for everything else and spreads the rest over a 5-hour stream: about one read every 11 seconds. The **YouTube Live** panel shows today's use |
+| YouTube quota | YouTube allows 10,000 units a day (reset at midnight Pacific). A chat read costs 5. Vesper keeps 1,500 for everything else and spreads the rest over a 5-hour stream: about one read every 11 seconds. A stream that runs past midnight Pacific reads a little slower after midnight (about every 20 seconds), so that evening's stream still gets a read about every 15 to 20 seconds. The **YouTube Live** panel shows today's use |
 | Titles | "set the title to …" asks once "Twitch and YouTube, or just Twitch?" and remembers. Then the usual yes question, as for Twitch today. "set the YouTube title to …", "set the YouTube description to …": YouTube only. "titles on Twitch only" / "titles on both": change your choice |
 | Recap & growth | **Stream** tab → **Co-pilot** → **Last stream**: a card **Next to your last 5 streams** with each number, better or worse and by how much. "how did that stream compare", "stream growth" |
 
@@ -57,6 +57,8 @@ while you're live.
 - Captions show what your mic hears as speech. With a voice profile (Setup → Voice), sentences in other voices are
   left out only when they were meant for Vesper; a friend talking into your mic would be captioned. Use `hide` for words
   you never want on screen.
+- Mute your mic in OBS and the captions stop too, and what's up comes down: viewers can't hear you, so they can't read
+  you either. The mic is `obs.mic_source` in config.yaml, else OBS's "Mic/Aux" (the one stream health watches).
 - A caption appears when you finish a sentence (Vesper hears sentences, not single words), usually within a second.
 - Nothing is kept: captions live in memory for a few seconds, never in a log or the database.
 - The recap's viewer numbers are Twitch's. YouTube chat counts in "chat messages an hour".

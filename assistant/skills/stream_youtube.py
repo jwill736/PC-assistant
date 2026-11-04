@@ -154,14 +154,28 @@ class StreamYouTube(Skill):
         st.execute("INSERT INTO stream_youtube_quota (day, units) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET units = "
                    + ("MAX(units, excluded.units)" if all_of_it else "units + excluded.units"), (day, units))
 
+    def _midnight(self) -> float:
+        """When today's quota day began (midnight Pacific)."""
+        day = datetime.fromtimestamp(self.clock(), PACIFIC)
+        return day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
     def chat_interval(self, api_s: float) -> float | None:
         """Seconds to the next chat read: YouTube's own pace, or slower so the rest of today's budget lasts the stream
-        (``stream_hours`` minus what's been streamed, at least an hour). None: the budget is spent."""
+        (``stream_hours`` minus what's been streamed today, at least an hour). None: the budget is spent.
+
+        Paced by the quota day: a late stream that runs past midnight Pacific starts on a new budget, and that day
+        still has tonight's stream ahead of it. So the hours past midnight are paced as if a whole ``stream_hours``
+        stream follows them, rather than spent at full speed as the last hour of this one."""
         left = (self.daily() - int(self.setting("reserve", 1500)) - self.spent()) // COST["chat"]
         if left <= 0:
             return None
-        streamed = self.clock() - self.state.since if self.state.live else 0.0
-        rest = max(3600.0, float(self.setting("stream_hours", 5)) * 3600 - streamed)
+        hours = float(self.setting("stream_hours", 5)) * 3600
+        now, midnight = self.clock(), self._midnight()
+        start = self.state.since if self.state.live else now
+        if start < midnight:  # began before today's quota day: the rest of it, then tonight's stream
+            rest = hours + max(3600.0, hours - (now - midnight))
+        else:
+            rest = max(3600.0, hours - (now - start))
         return round(max(api_s, float(self.setting("min_chat_s", 3)), rest / left), 1)
 
     def _call(self, method: str, path: str, units: int, *, params: dict | None = None, json: dict | None = None) -> dict:
@@ -224,7 +238,7 @@ class StreamYouTube(Skill):
                 return
             raise
         first, self.page = self.page is None, data.get("nextPageToken") or self.page
-        feed, n = self.svc.twitch_feed, 0
+        feed, n, got = self.svc.twitch_feed, 0, self.clock()  # got: when the read came back (Twitch chat kept coming)
         for m in data.get("items") or []:
             sn, who = m.get("snippet") or {}, m.get("authorDetails") or {}
             text = (sn.get("displayMessage") or "").strip()
@@ -232,9 +246,9 @@ class StreamYouTube(Skill):
                 continue  # J's own messages, deleted ones, polls, bans and the like
             if first and _ts(sn.get("publishedAt")) < now - 60:
                 continue  # the backlog from before Vesper looked: not this stretch of the stream
-            if feed is not None:  # arrival time: the co-pilot reads the feed in time order
+            if feed is not None:  # arrival time (after the read): the co-pilot and moments read the feed in time order
                 feed.add({"kind": "chat", "platform": "youtube", "user": (who.get("displayName") or "someone")[:40],
-                          "login": f"yt:{who.get('channelId') or ''}", "text": text[:500], "ts": now + n * 1e-6})
+                          "login": f"yt:{who.get('channelId') or ''}", "text": text[:500], "ts": got + n * 1e-6})
             n += 1
         self.read += n
         if data.get("offlineAt"):

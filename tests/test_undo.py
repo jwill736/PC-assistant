@@ -238,6 +238,36 @@ def test_bringing_a_window_forward_can_be_undone(vesper, monkeypatch):
     assert front["w"] is chrome
 
 
+def test_hud_undo_button_puts_the_front_window_back(vesper, svc, monkeypatch):
+    """INTEG-11: clicking the HUD's Undo button makes the HUD the front window, so "the front window is the HUD now,
+    not discord" and the undo was refused. It looks past the HUD, at the window behind it."""
+    name = str((svc.cfg.get("assistant") or {}).get("name") or "Vesper")
+    chrome, disc = desktop.WindowInfo("Docs", "chrome", 1, 100), desktop.WindowInfo("Discord", "discord", 2, 200)
+    hud = desktop.WindowInfo(f"{name} HUD", "chrome", 3, 300)
+    z = [chrome, disc, hud]  # front-most first, as Windows lists them
+
+    def focus(h):
+        w = next(x for x in z if x.handle == h)
+        z.remove(w)
+        z.insert(0, w)
+        return True
+    monkeypatch.setattr(desktop, "list_windows", lambda: list(z))
+    monkeypatch.setattr(desktop, "active_window", lambda: z[0])
+    monkeypatch.setattr(desktop, "_focus", focus)
+    vesper.handle("switch to discord")
+    assert z[0] is disc
+    item = vesper.tools.history.view()[0]
+    focus(300)  # J clicks the HUD's Undo button: the HUD window is now in front, discord right behind it
+    out = svc.skills["undo"].actions()["undo"]({"id": item["id"]})
+    assert z[0] is chrome and out.get("ok") is not False, out
+    vesper.handle("switch to discord")
+    item = vesper.tools.history.view()[0]
+    focus(100)  # J went back to chrome himself, then clicked Undo on the HUD: what he chose since is left alone
+    focus(300)
+    out = svc.skills["undo"].actions()["undo"]({"id": item["id"]})
+    assert out.get("ok") is False and "not discord" in out["error"]
+
+
 # ---- the tiers --------------------------------------------------------------------------------------------------
 
 def test_the_kill_switch_stops_an_undo_too(vesper, ep):

@@ -48,7 +48,10 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
     if tool == "where_am_i":
         active = result.get("active")
         apps = [a for a in result.get("apps", {}) if a != "unknown"]
-        here = f"You're in {active['app']}: {active['title'][:80]}." if active else "I can't read the active window."
+        if active and result.get("live"):  # on air: the app, not its window's title (an email subject, a DM)
+            here = f"You're in {active['app']}; the window titles are on the HUD."
+        else:
+            here = f"You're in {active['app']}: {active['title'][:80]}." if active else "I can't read the active window."
         return f"{here} {result.get('open_windows', 0)} windows open across {len(apps)} apps."
     if tool == "open_urls":
         opened = result.get("opened", [])

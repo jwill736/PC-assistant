@@ -270,7 +270,7 @@ def register(app: FastAPI, runtime: Any, *, page: Callable[..., HTMLResponse], p
             await socket.close(code=4401)
             return
         await socket.accept()
-        queue = bus.subscribe()
+        queue = bus.subscribe(kind="overlay")  # not a HUD: doesn't keep system stats and the meters going
         try:
             snap = overlay.snapshot(latest(), overlay.settings(cfg), recent_events())
             await socket.send_text(json.dumps({"type": "snapshot", "data": snap}))

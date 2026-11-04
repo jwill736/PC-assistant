@@ -37,6 +37,9 @@ Without an app name it uses the window in front. If you typed into the HUD, it u
 - A huge window (a long chat, a big timeline) is read for at most 2.5 seconds. If what you want is further down, scroll
   it into view and ask again.
 - Apps running as administrator can't be pressed from Vesper (Windows blocks it); it says so.
+- While you're live, it says back only the words you used ("Click reply in chrome?"), never the window's own text
+  around the button (a page title or an email subject). If several fit, it says "Three fit: they're on the HUD" and the
+  HUD's **Click by name** panel lists them.
 
 ## Undo that
 

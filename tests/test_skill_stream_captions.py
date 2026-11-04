@@ -143,6 +143,52 @@ def test_the_stream_ending_takes_captions_down(env, monkeypatch):
     assert cap.svc.obs.sent[-1] == ("Captions", "") and cap.status()["lines"] == []
 
 
+class MicOBS(FakeOBS):
+    """OBS's audio inputs as last reported (OBSController.cached_inputs): no request on the mic thread."""
+
+    def __init__(self, muted=False, name="Mic/Aux"):
+        super().__init__()
+        self.inputs = [{"name": "Desktop Audio", "muted": False}, {"name": name, "muted": muted}]
+
+    def cached_inputs(self):
+        return [dict(i) for i in self.inputs]
+
+    def mute(self, on, name="Mic/Aux"):
+        for i in self.inputs:
+            if i["name"] == name:
+                i["muted"] = on
+
+
+def test_captions_go_quiet_while_the_mic_is_muted_in_obs(env, monkeypatch):
+    """HUD-2: J mutes his mic in OBS (a call, someone in the room); viewers can't hear him, but captions printed it."""
+    cap, clock, state = env
+    cap.svc.obs = MicOBS(muted=True)
+    monkeypatch.setitem(cap.cfg, "obs_source", "Captions")
+    cap.set_on(True)
+    cap.svc.obs.sent.clear()
+    heard(cap, "hang on, it's my doctor calling about the test results")
+    assert cap.current() == [] and cap.svc.obs.sent == []
+    cap.svc.obs.mute(False)  # back on the mic
+    heard(cap, "okay I'm back")
+    assert texts(cap) == ["okay I'm back"] and cap.svc.obs.sent[-1] == ("Captions", "okay I'm back")
+    cap.svc.obs.mute(True)  # muted again: what's up comes down at the next tick
+    cap.tick()
+    assert cap.status()["lines"] == [] and cap.svc.obs.sent[-1] == ("Captions", "")
+
+
+def test_the_mic_is_the_one_stream_health_watches(env, monkeypatch):
+    cap, clock, state = env
+    cap.svc.obs = MicOBS(muted=True, name="Rode NT-USB")  # J's own name for it, set as obs.mic_source
+    monkeypatch.setitem(cap.svc.cfg["obs"], "mic_source", "rode nt-usb")
+    cap.set_on(True)
+    heard(cap, "this stays off")
+    assert texts(cap) == []
+    cap.svc.obs.inputs[0]["muted"] = True  # desktop audio muted, the mic not: captions as usual
+    cap.svc.obs.mute(False, "Rode NT-USB")
+    heard(cap, "this shows")
+    assert texts(cap) == ["this shows"]
+
+
 def test_obs_text_source_problems_show_on_the_hud(env, monkeypatch):
     cap, clock, state = env
     monkeypatch.setitem(cap.cfg, "obs_source", "Captions")

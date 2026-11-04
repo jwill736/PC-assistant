@@ -82,6 +82,7 @@ class GoogleAccounts:
         self.http = http or httpx.Client(timeout=30)
         self.clock = clock
         self._lock = threading.RLock()
+        self._refreshing: dict[str, threading.Lock] = {}  # one token refresh at a time per account
         self._pending: dict[str, dict] = {}
         self._tokens: dict[str, dict] = self._load()
         self.on_change: Callable[[str], None] | None = None  # an account connected (email): read its docs again
@@ -209,31 +210,53 @@ class GoogleAccounts:
                 pass
         return tok is not None
 
+    def _valid(self, email: str) -> tuple[dict, str | None]:
+        """(the account's token, its access token if still good). Call with ``_lock`` held."""
+        tok = self._tokens.get(email)
+        if not tok:
+            raise GoogleError(f"{email} isn't connected.")
+        if tok.get("error"):
+            raise GoogleError(tok["error"])
+        if self.clock() < tok.get("expires_at", 0):
+            return tok, tok["access_token"]
+        if not tok.get("refresh_token"):
+            tok["error"] = "Signed out: click Reconnect."
+            self._save()
+            raise GoogleError(tok["error"])
+        return tok, None
+
     def _access(self, email: str) -> str:
         with self._lock:
-            tok = self._tokens.get(email)
-            if not tok:
-                raise GoogleError(f"{email} isn't connected.")
-            if tok.get("error"):
-                raise GoogleError(tok["error"])
-            if self.clock() < tok.get("expires_at", 0):
-                return tok["access_token"]
-            if not tok.get("refresh_token"):
-                tok["error"] = "Signed out: click Reconnect."
-                self._save()
-                raise GoogleError(tok["error"])
+            _tok, good = self._valid(email)
+            if good:
+                return good
+            refreshing = self._refreshing.setdefault(email, threading.Lock())
+        # The refresh POST (up to 30 s on a bad network) holds only this account's refresh lock: everything else that
+        # asks about accounts (which are connected, what they allowed) answers meanwhile.
+        with refreshing:
+            with self._lock:  # another thread may have refreshed it while this one waited
+                tok, good = self._valid(email)
+                if good:
+                    return good
+                rt = tok["refresh_token"]
             resp = self.http.post(TOKEN_URL, data={"client_id": self.client_id, "client_secret": self.client_secret,
-                                                   "refresh_token": tok["refresh_token"], "grant_type": "refresh_token"})
-            if resp.status_code != 200:
-                if "invalid_grant" in resp.text:  # revoked, password changed, or a test app's 7 days ran out
-                    tok["error"] = "Google ended the sign-in: click Reconnect."
-                    self._save()
-                raise GoogleError(f"Couldn't refresh the sign-in for {email}: {_reason(resp)}")
-            data = resp.json()
-            tok["access_token"] = data["access_token"]
-            tok["expires_at"] = self.clock() + int(data.get("expires_in", 3600)) - 60
-            self._save()
-            return tok["access_token"]
+                                                   "refresh_token": rt, "grant_type": "refresh_token"})
+            with self._lock:
+                if self._tokens.get(email) is not tok:  # reconnected or removed meanwhile: go by what's there now
+                    good = self._valid(email)[1]
+                    if good:
+                        return good
+                    raise GoogleError(f"The sign-in for {email} changed while it was refreshed: try again.")
+                if resp.status_code != 200:
+                    if "invalid_grant" in resp.text:  # revoked, password changed, or a test app's 7 days ran out
+                        tok["error"] = "Google ended the sign-in: click Reconnect."
+                        self._save()
+                    raise GoogleError(f"Couldn't refresh the sign-in for {email}: {_reason(resp)}")
+                data = resp.json()
+                tok["access_token"] = data["access_token"]
+                tok["expires_at"] = self.clock() + int(data.get("expires_in", 3600)) - 60
+                self._save()
+                return tok["access_token"]
 
     def get(self, email: str, url: str, params: dict | None = None, headers: dict | None = None) -> httpx.Response:
         return self.request("GET", email, url, params=params, headers=headers)

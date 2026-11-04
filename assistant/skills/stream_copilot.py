@@ -823,12 +823,20 @@ class StreamCopilot(Skill):
             return (f"Live {result['uptime']}, {v}. {result['follows']} new follows; chat's {result['mood']['label']}.")
         if tool == "chat_pulse":
             m, qs = result["mood"], result["questions"]
-            if result["focus"] == "questions":  # names only: viewers' words stay on the HUD
+            if result["focus"] == "questions":  # viewers' words stay on the HUD
                 if not qs:
                     return "No open questions in chat."
                 late = sum(1 for q in qs if q["late"])
+                # On air, no names at all: a viewer picks their own (a YouTube channel name is any text they type).
+                # Off air, a Twitch login only (letters, digits and _).
+                if self._live():
+                    who = ""
+                elif qs[0].get("platform") == "youtube":
+                    who = " Latest from a YouTube viewer."
+                else:
+                    who = f" Latest from {qs[0]['user']}."
                 return (f"{len(qs)} open question{'s' if len(qs) != 1 else ''}" + (f", {late} waiting over two minutes"
-                        if late else "") + f". Latest from {qs[0]['user']}. They're on the HUD.")
+                        if late else "") + f".{who} They're on the HUD.")
             return f"Chat's {m['label']}, {m['rate']} messages a minute."
         if tool == "stream_recap":
             g = result.get("growth") or {}

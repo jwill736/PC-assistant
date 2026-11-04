@@ -10,6 +10,8 @@ A sentence becomes a caption unless:
   reply;
 - it was for Vesper: said with the name ("Vesper, …"), or in a window Vesper opened (an answer to its question, a
   conversation turn, push-to-talk);
+- J's mic is muted in OBS (a call, someone in the room): viewers can't hear him, so it isn't captioned either, and
+  what's up comes down. The mic is ``obs.mic_source``, else "Mic/Aux", the one stream health watches;
 - the speaker check turned it away (someone else's voice), or it is a noise ("hmm");
 - off the record is on: nothing is captioned until it ends.
 Secrets in it become [secret] (privacy.redact, the same rule the log uses), and J's own words to hide
@@ -34,6 +36,7 @@ from collections import deque
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
+from ..integrations.stream_health import pick_mic
 from ..privacy import redact
 from . import Skill
 from ._kit import save_setting
@@ -115,6 +118,20 @@ class StreamCaptions(Skill):
         except Exception:
             return True  # can't tell: caption nothing
 
+    def _mic_muted(self) -> bool:
+        """J's mic input is muted in OBS. Read from what OBS last reported (its mute events, or the 15 s re-read):
+        nothing is asked of OBS here, on the mic thread."""
+        read = getattr(self.svc.obs, "cached_inputs", None) if getattr(self.svc, "obs", None) is not None else None
+        if read is None:
+            return False
+        try:
+            inputs = [i for i in read() or [] if isinstance(i, dict)]
+        except Exception:
+            return False
+        source = str((self.svc.cfg.get("obs") or {}).get("mic_source") or "")
+        name = pick_mic([str(i.get("name") or "") for i in inputs], source)
+        return any(i.get("name") == name and i.get("muted") for i in inputs)
+
     def current(self) -> list[dict]:
         now = self.clock()
         return [dict(x) for x in list(self.lines) if now - x["ts"] < float(self.setting("keep_s", KEEP_S))]
@@ -125,7 +142,7 @@ class StreamCaptions(Skill):
             self.hear(ev["data"])
 
     def hear(self, heard: dict) -> str | None:
-        if not self.showing() or self._private():
+        if not self.showing() or self._private() or self._mic_muted():
             return None
         text = caption_text(heard, self.svc.cfg["assistant"].get("wake_words") or [], self.setting("hide") or [])
         if not text:
@@ -170,8 +187,8 @@ class StreamCaptions(Skill):
 
     def tick(self) -> None:
         with self._llock:
-            keep = self.current() if self.showing() else []
-            old = len(self.lines) - len(keep)  # a line got old, or captions stopped showing (the stream ended)
+            keep = self.current() if self.showing() and not self._mic_muted() else []
+            old = len(self.lines) - len(keep)  # a line got old, captions stopped showing (the stream ended), or muted
             for _ in range(old):
                 self.lines.popleft()
         if old:

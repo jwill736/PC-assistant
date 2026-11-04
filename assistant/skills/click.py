@@ -11,7 +11,6 @@ that" puts them back the way they were); a click can't. Windows only: elsewhere 
 
 from __future__ import annotations
 
-import os
 import re
 import time
 
@@ -55,8 +54,7 @@ class Click(Skill):
 
     # ---- which window ------------------------------------------------------------------------------------------
     def _is_hud(self, w) -> bool:
-        name = str(((self.svc.cfg.get("assistant") or {}).get("name")) or "Vesper")
-        return (getattr(w, "title", "") or "").startswith(f"{name} HUD") or getattr(w, "pid", 0) == os.getpid()
+        return desktop.is_hud(w, str(((self.svc.cfg.get("assistant") or {}).get("name")) or "Vesper"))
 
     def _window(self, app: str):
         """(the window, why not)."""
@@ -113,14 +111,17 @@ class Click(Skill):
         if nodes is None:
             a["_problem"] = unreadable(w)
             return
-        found = uia.match(nodes, str(a.get("target") or ""), str(a.get("action") or "click"))
+        found = uia.match(nodes, str(a.get("target") or ""), str(a.get("action") or "click"), quiet=self._live())
         if found.node is not None:
             a["_target"] = uia.pin(found.node, w)
         elif found.choices:
             names = [n.where() for n in found.choices]
-            self.choices = {"at": self.clock(), "pins": [uia.pin(n, w) for n in found.choices],
+            self.choices = {"at": self.clock(), "pins": [uia.pin(n, w) for n in found.choices], "names": names,
                             "args": {k: v for k, v in a.items() if not k.startswith("_")}}
-            a["_problem"] = f"Which one: {_either(names)}?"
+            if self._live():  # what's around them can be private (a page title, an email subject): on the HUD only
+                a["_problem"] = f"{_count(len(names))} fit: they're on the HUD. Say {_or(ORDER[:len(names)])}."
+            else:
+                a["_problem"] = f"Which one: {_either(names)}?"
             a["_choices"] = names
         else:
             a["_problem"] = found.problem + (" (It's a big window: I only read part of it.)" if cut else "")
@@ -136,6 +137,9 @@ class Click(Skill):
             return a.get("_problem") or "press that"
         act = str(a.get("action") or "click")
         kind = "switch" if act in ("on", "off", "toggle") else uia.KIND_SAID.get(t["kind"], "control")
+        if self._live():  # on air: the names J said, not the window's own text (a link, a page or Store-app title)
+            what = f"{str(a.get('target') or 'that')[:60]} in {str(a.get('app') or 'the window in front')[:40]}"
+            return f"type “{str(a.get('text') or '')[:80]}” into {what}" if act == "type" else f"{VERB.get(act, act)} {what}"
         under = f" under {t['context'][:40]}" if t.get("context") and t["context"].lower() != t["name"].lower() else ""
         what = f"the {t['name'][:60]} {kind}{under} in {t['app']}"
         if act == "type":
@@ -299,8 +303,11 @@ class Click(Skill):
             args["text"] = text
         return Intent("tool", "ui_control", args)
 
+    def _live(self) -> bool:
+        return bool(self.svc.live and self.svc.live())
+
     def say(self, tool, args, result):
-        live = bool(self.svc.live and self.svc.live())
+        live = self._live()
         if tool == "ui_list":
             n, app = result.get("count", 0), result.get("app")
             if not n:
@@ -313,6 +320,8 @@ class Click(Skill):
         if tool != "ui_control":
             return None
         act, name = result.get("action"), result.get("control")
+        if live:  # the control's own name can be a long link or a subject line: say back what J said
+            name = str(args.get("target") or "that")[:60]
         if result.get("already"):
             return f"{name} is already {result.get('state')}."
         if act in ("on", "off", "toggle"):
@@ -325,8 +334,9 @@ class Click(Skill):
         found = self.found
         if found and self.svc.live and self.svc.live():  # a window's names can be private (DMs, email subjects)
             found = {**found, "controls": [], "hidden": len(found["controls"])}
+        c = self.choices  # with what's around each one, so J can tell them apart (live, only the HUD says it)
         return {"available": self.backend is not None, "found": found, "last": self.last,
-                "choices": [p["name"] for p in (self.choices or {}).get("pins", [])] if self.choices else []}
+                "choices": list(c.get("names") or [p["name"] for p in c["pins"]]) if c else []}
 
     def selftest(self) -> list[dict]:
         if not uia.IS_WINDOWS:
@@ -338,6 +348,17 @@ class Click(Skill):
 
 def unreadable(w) -> str:
     return f"I can't read {uia.app_name(w)}'s controls (it may be running as administrator)."
+
+
+ORDER = ["first", "second", "third"]
+
+
+def _count(n: int) -> str:
+    return {2: "Two", 3: "Three"}.get(n, str(n))
+
+
+def _or(words: list[str]) -> str:
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + f" or {words[-1]}"
 
 
 def _either(names: list[str]) -> str:

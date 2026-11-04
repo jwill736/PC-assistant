@@ -258,6 +258,59 @@ def test_live_on_stream_the_list_stays_off_the_hud_and_out_loud(vesper, svc, cli
     assert click.status()["found"]["controls"] == [] and click.status()["found"]["hidden"] > 0
 
 
+def test_click_question_on_air_says_no_private_context(svc):
+    """INTEG-5: live, the yes question read the page title around the button (an email subject) on stream."""
+    gmail = WindowInfo("Re: Salary review - j@acme.com - Gmail - Google Chrome", "chrome", 21, 600)
+    doc = ctl("Re: Salary review - j@acme.com - Gmail", "Document", (), [ctl("", "Group", (), [ctl("Reply", "Button")])])
+    world = FakeUIA({600: ctl("Chrome", "Window", (), [doc])})
+    sk = Click(svc, backend=world, windows=lambda: [gmail], front=lambda: gmail)
+    svc.skills.all["click"] = sk
+    a = Assistant(svc)
+    sk.runtime = SimpleNamespace(assistant=a)
+    svc.live = lambda: True
+    out = a.handle("click reply in chrome")
+    assert out["kind"] == "pending" and out["reply"] == "Click reply in chrome? Say yes or no."
+    out = a.handle("yes")
+    assert world.done == [("invoke", "Reply")] and out["reply"] == "Done: reply."
+    svc.live = lambda: False  # off air the question names exactly what it found, as before
+    assert "under Re: Salary review" in a.handle("click reply in chrome")["reply"]
+
+
+def test_on_air_which_one_and_why_not_stay_on_the_hud(vesper, svc, click):
+    svc.live = lambda: True
+    out = vesper.handle("press join")
+    assert out["reply"] == "Three fit: they're on the HUD. Say first, second or third."
+    assert click.status()["choices"] == ["Join in General", "Join in Gaming", "Join in Music"]  # J can tell them apart
+    out = vesper.handle("the second one")
+    assert out["kind"] == "pending" and out["reply"] == "Click join in the window in front? Say yes or no."
+    vesper.handle("yes")
+    assert ("invoke", "Join") in click.backend.done
+    settings, _ = uia.walk(click.backend, click.backend.roots[300])
+    assert uia.match(settings, "bluetooth", "on", quiet=True).problem == "bluetooth is greyed out right now."
+    mail = [ctl("Re: Salary review", "Hyperlink", ("invoke",))]
+    assert "Closest: Re: Salary review" in uia.match(mail, "balary rev").problem  # off air: the near miss helps
+    assert uia.match(mail, "balary rev", quiet=True).problem == "I can't see anything called “balary rev” there."
+
+
+def test_the_yes_never_runs_an_uncapped_search_of_the_whole_window():
+    """INTEG-16: when the pinned control wasn't under its old spot (J was back in his game, the HUD covered it), find()
+    ran FindFirst over every descendant, with no cap overall, while the yes held the assistant. Now it returns None
+    and refind() walks the window inside its time budget."""
+    calls = []
+
+    class El:
+        def GetCachedPropertyValue(self, prop):
+            return [9, 9]  # some other control is there now
+
+    client = SimpleNamespace(ElementFromPointBuildCache=lambda pt, cache: El(),
+                             CreatePropertyCondition=lambda *a: calls.append("condition"))
+    backend = uia.ComBackend.__new__(uia.ComBackend)
+    backend.U = SimpleNamespace(tagPOINT=lambda x, y: (x, y))
+    backend._local = SimpleNamespace(client=client, cache=object(), cond=object())
+    root = SimpleNamespace(FindFirstBuildCache=lambda *a: calls.append("descendants"))
+    assert backend.find(root, (1, 2), (0, 0, 10, 10)) is None and calls == []
+
+
 def test_an_unknown_app_or_control_just_says_so(vesper, world):
     assert "can't see anything called" in vesper.handle("click the frobnicate button")["reply"]
     assert vesper.handle("click export in blender")["kind"] != "pending"

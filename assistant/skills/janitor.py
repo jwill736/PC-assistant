@@ -30,6 +30,7 @@ import psutil
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
 from ..brain.undo import Undo
+from ..integrations import nvml
 from . import Skill, check
 
 IS_WINDOWS = sys.platform == "win32"
@@ -81,10 +82,14 @@ def parse_gpus(out: str) -> list[dict]:
             bits = int(p[3], 16) if p[3].lower().startswith("0x") else int(p[3])
         except ValueError:
             bits = 0
-        gpus.append({"name": p[5] if len(p) > 5 and p[5] else "GPU", "temp_c": _num(p[0]), "power_w": _num(p[1]),
-                     "limit_w": _num(p[2]), "util": _num(p[4]), "throttle": [v for k, v in THROTTLE.items() if bits & k],
-                     "power_capped": bool(bits & 0x4), "thermal": bool(bits & 0x60)})
+        gpus.append(gpu_row(p[5] if len(p) > 5 else "", _num(p[0]), _num(p[1]), _num(p[2]), _num(p[4]), bits))
     return gpus
+
+
+def gpu_row(name: str, temp_c, power_w, limit_w, util, bits: int) -> dict:
+    return {"name": name or "GPU", "temp_c": temp_c, "power_w": power_w, "limit_w": limit_w, "util": util,
+            "throttle": [v for k, v in THROTTLE.items() if bits & k], "power_capped": bool(bits & 0x4),
+            "thermal": bool(bits & 0x60)}
 
 
 def drives() -> list[dict]:
@@ -308,6 +313,10 @@ class Janitor(Skill):
 
     # ---- health -------------------------------------------------------------------------------------------
     def gpus(self) -> list[dict]:
+        if self.runner is run_smi:  # read in-process through NVML when it's there: no nvidia-smi launch a minute
+            rows = nvml.health()
+            if rows is not None:
+                return [gpu_row(r["name"], r["temp_c"], r["power_w"], r["limit_w"], r["util"], r["bits"]) for r in rows]
         for reasons in dict.fromkeys([self._reasons, "clocks_event_reasons.active"]):
             out = self.runner([f"--query-gpu=temperature.gpu,power.draw,power.limit,{reasons},utilization.gpu,name",
                                "--format=csv,noheader,nounits"])
@@ -497,6 +506,9 @@ class Janitor(Skill):
 
     # ---- skill surface ------------------------------------------------------------------------------------
     def selftest(self) -> list[dict]:
+        card = nvml.driver() if self.runner is run_smi else None
+        if card:
+            return [check("NVIDIA driver", "pass", f"{card} (read through NVML)")]
         out = self.runner(["--query-gpu=name,driver_version", "--format=csv,noheader"])
         if not out:
             return [check("nvidia-smi", "warn", "didn't answer: no GPU temperature or throttling alerts",

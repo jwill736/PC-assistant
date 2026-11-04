@@ -142,7 +142,9 @@ class Supervisor:
         gen = part.generation
         t = threading.Thread(target=self._poll_loop, args=(part, gen), name=f"poll-{part.name}", daemon=True)
         part.thread = t
-        part.last_beat = self.now()  # the stall clock starts now
+        # The stall clock starts now, or for a part that hasn't run yet, after its start delay: Look-around waits 5
+        # minutes, longer than its 4-minute stall limit, and was restarted 6 times before it ever ran (PERF-8).
+        part.last_beat = self.now() + (part.delay if not part.runs and gen == 1 else 0)
         t.start()
 
     def _poll_loop(self, part: Part, gen: int) -> None:

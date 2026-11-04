@@ -84,21 +84,34 @@ class TurnLatency:
 
 
 class Prewarm:
-    """On the wake word (or as soon as you start talking to it), get the voice ready: at most every ``gap_s``."""
+    """On the wake word, or as soon as you start talking to it, get the voice ready: at most every ``gap_s``.
 
-    STATES = {"hearing", "armed"}
+    "Talking to it" is armed (the hotkey, a follow-up window, a conversation) or within ``exchange_s`` of a sentence it
+    took as meant for it. Speech before that (an hour of talking to chat, with the name heard only in the words) no
+    longer opens the speakers every 5 seconds: it kept the output stream running all the time J talked, ~50 audio
+    callbacks a second (PERF-12). The first reply of an exchange then opens the device itself (50-100 ms)."""
 
-    def __init__(self, speaker, gap_s: float = 5.0, clock: Callable[[], float] = time.monotonic):
-        self.speaker, self.gap_s, self.clock = speaker, gap_s, clock
+    def __init__(self, speaker, gap_s: float = 5.0, clock: Callable[[], float] = time.monotonic,
+                 exchange_s: float = 120.0):
+        self.speaker, self.gap_s, self.clock, self.exchange_s = speaker, gap_s, clock, exchange_s
         self._last = -1e9
+        self._talking_to_us = -1e9  # when a sentence was last meant for Vesper (or it was woken or armed)
         self.count = 0
 
     def on_event(self, event: dict) -> None:
         kind, data = event.get("type"), event.get("data") or {}
-        if kind == "wake" or (kind == "voice_state" and data.get("state") in self.STATES):
-            now = self.clock()
-            if now - self._last < self.gap_s or self.speaker.speaking.is_set():
-                return
-            self._last = now
-            self.count += 1
-            self.speaker.prewarm()
+        state = data.get("state") if kind == "voice_state" else None
+        if kind == "heard":
+            if not data.get("ignored") and (data.get("wake") or data.get("armed") or data.get("trigger")):
+                self._talking_to_us = self.clock()
+            return
+        if kind == "wake" or state == "armed":
+            self._talking_to_us = self.clock()
+        elif state != "hearing" or self.clock() - self._talking_to_us > self.exchange_s:
+            return
+        now = self.clock()
+        if now - self._last < self.gap_s or self.speaker.speaking.is_set():
+            return
+        self._last = now
+        self.count += 1
+        self.speaker.prewarm()

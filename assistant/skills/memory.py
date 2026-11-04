@@ -71,6 +71,8 @@ class MemorySkill(Skill):
         assistant = getattr(runtime, "assistant", None)
         self._ctx = lambda: getattr(assistant, "_ctx", None) or {}
         self._game = lambda: (getattr(assistant, "low_power", None) or (lambda: ""))() == "game"
+        if self.memory.embedder is not None and hasattr(assistant, "gpu_keep_alive"):
+            self.memory.embedder.keep_alive = assistant.gpu_keep_alive  # mid-game: never a model load in the background
 
     def _think(self, *a, **kw):
         out = self.svc.think(*a, **kw)

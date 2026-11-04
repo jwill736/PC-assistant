@@ -936,7 +936,7 @@ render.triggers = function triggers() {
 
 const TTS_ENGINES = [
   ['supertonic', 'Supertonic', 'fast · 85 MB'],
-  ['kokoro', 'Kokoro', 'British voices · 320 MB · slower'],
+  ['kokoro', 'Kokoro', 'British voices · 350 MB · slower, ~6× the CPU a sentence'],  // measured: PERF-11
   ['pyttsx3', 'Windows', 'built-in, robotic'],
   ['none', 'Off', 'replies on screen only'],
 ];
@@ -2350,6 +2350,10 @@ function onEvent(ev) {
   pulse(type, data);
   if (Vesper._hooks[type]) Vesper.emit(type, data, ev);
   if (sticky.has(type)) {
+    if (type === 'system' && data && data.history_add) {  // the newest sample: keep the last 90 here (runtime._poll_system)
+      const had = S.data.system?.history || [], last = had.length ? had[had.length - 1].ts : -Infinity;
+      data.history = had.concat(data.history_add.filter(x => x.ts > last)).slice(-90);
+    }
     S.data[type] = data;
     if (type === 'obs' || type === 'twitch') paintPrivacy();
     const fns = { system: ['vitals', 'stats'], obs: ['obs', 'stats'], twitch: ['twitch', 'stats'], activity: ['activity', 'stats'],

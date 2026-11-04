@@ -85,9 +85,11 @@ class EventBus:
         loop = self._loop
         if loop is None or loop.is_closed():
             return
-        payload = json.dumps(event, default=str)
         with self._lock:
             clients = list(self._clients)
+        if not clients:
+            return  # nobody connected: not even worth the JSON
+        payload = json.dumps(event, default=str)
         for q in clients:
             loop.call_soon_threadsafe(_offer, q, payload)
 

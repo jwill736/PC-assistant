@@ -24,6 +24,7 @@ from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Callable
 
+from .. import resources
 from ..bus import EventBus
 from . import stt as stt_mod
 from .level import LevelMeter
@@ -384,7 +385,8 @@ class VoiceListener:
         from . import wakeword
 
         try:
-            self.wake = wakeword.load(self.cfg, self.models_dir)
+            with resources.loading("wake words"):
+                self.wake = wakeword.load(self.cfg, self.models_dir)
         except Exception:
             log.exception("wake word models failed to load; using the transcript only")
             self.wake = None
@@ -516,7 +518,8 @@ class VoiceListener:
         """The loaded engine (downloading its model the first time)."""
         with self._stt_lock:
             if self.stt is None:
-                self.stt = stt_mod.load(self.cfg, self.models_dir, self._progress("speech model"))
+                with resources.loading("speech-to-text"):
+                    self.stt = stt_mod.load(self.cfg, self.models_dir, self._progress("speech model"))
         return self.stt
 
     def transcribe(self, samples) -> str:
@@ -558,7 +561,9 @@ class VoiceListener:
         try:
             with self._keepalive():  # first run downloads the models
                 self.ensure_stt()
-                segmenter = make_segmenter(self.cfg, self.models_dir, self._progress("voice detector"))
+                with resources.loading("voice detection" + (" + Smart Turn" if self.cfg.get("end_of_turn") == "smart"
+                                                             else "")):
+                    segmenter = make_segmenter(self.cfg, self.models_dir, self._progress("voice detector"))
         except Exception as exc:
             self.error = f"Speech model failed to load: {exc}"
             log.exception("speech model load failed")

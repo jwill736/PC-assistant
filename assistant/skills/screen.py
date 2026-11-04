@@ -182,11 +182,15 @@ class Screen(Skill):
         self.http = http or lazy_client(timeout=120, trust_env=False)  # the model is on this PC or the home network
         self.window, self.capture, self.ocr, self.clock, self.windows = window, capture_fn, ocr, clock, windows
         self.brain = None  # the runtime's LocalBrain (set at start)
+        self.keep_alive = lambda held, usual: usual  # the vision model's keep_alive now (None: not now; set at start)
         self.last: dict | None = None
         self._lock = threading.Lock()
 
     def start(self, runtime) -> None:
-        self.brain = getattr(getattr(runtime, "assistant", None), "local", None)
+        assistant = getattr(runtime, "assistant", None)
+        self.brain = getattr(assistant, "local", None)
+        if hasattr(assistant, "gpu_keep_alive"):
+            self.keep_alive = assistant.gpu_keep_alive  # mid-game: J's look is kept loaded briefly, not 15 minutes
         self.publish()  # the HUD panel's empty state
 
     # ---- which model sees ----------------------------------------------------------------------------------
@@ -214,7 +218,10 @@ class Screen(Skill):
 
     def ask_vision(self, target, prompt: str, jpeg: bytes) -> str | None:
         url, model, caps = target
-        body = {"model": model, "stream": False, "keep_alive": "15m",
+        keep = self.keep_alive(lambda: self.brain is not None and self.brain.holds(model), "15m")
+        if keep is None:
+            return None  # background work mid-game, and the model isn't loaded: not now
+        body = {"model": model, "stream": False, "keep_alive": keep,
                 "messages": [{"role": "user", "content": prompt, "images": [base64.b64encode(jpeg).decode()]}],
                 "options": {"temperature": 0.2, "num_predict": 500, "num_ctx": 8192}}
         if caps and "thinking" in caps:

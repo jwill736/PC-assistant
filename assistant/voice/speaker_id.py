@@ -88,7 +88,10 @@ class SherpaEmbedder:
         cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(model_path), num_threads=threads, provider="cpu")
         if not cfg.validate():
             raise RuntimeError(f"invalid speaker model config: {model_path}")
-        self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
+        from .. import resources
+
+        with resources.loading("speaker check"):
+            self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
         self.name = MODEL_NAME
 
     def embed(self, samples) -> list[float]:

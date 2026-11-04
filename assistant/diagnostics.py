@@ -388,6 +388,14 @@ def run(cfg, svc=None, runtime=None, *, timeout: float = 15.0, write: bool = Tru
     ]
     if sk is not None:
         jobs.append(("selftests", lambda: sk.selftests(min(timeout, 10.0))))
+    snap = None
+    if runtime is not None:  # what Vesper is using: the last 30 s measurement, or what it used while this report ran
+        from . import resources
+
+        try:
+            snap = resources.begin()
+        except Exception:
+            snap = None
     results = run_parallel(jobs, timeout + 2)  # the health check inside has its own limit: a little longer
 
     def got(key: str, default: Any) -> Any:
@@ -452,11 +460,21 @@ def run(cfg, svc=None, runtime=None, *, timeout: float = 15.0, write: bool = Tru
         "system": got("system", {}), "gpu": got("gpu", {}), "models": models,
         "checks": checks, "skills": skills, "connections": connections, "startup": startup,
         "watchdog": watchdog, "voice": voice_report(runtime), "log": recent_log_lines(cfg.data_dir),
+        "resources": _resources(snap, runtime) if runtime is not None else None,
     }
     report = Redactor.for_cfg(cfg).deep(report)
     if write:
         report["files"] = write_report(report, Path(cfg.data_dir), now)
     return report
+
+
+def _resources(snap, runtime) -> dict | None:
+    from . import resources
+
+    try:
+        return resources.recent(snap, runtime)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"[:200]}
 
 
 def write_report(report: dict, data_dir: Path, now: datetime) -> dict:
@@ -591,6 +609,15 @@ def to_markdown(r: dict) -> str:
                 lines += [f"{label}: " + ", ".join(f"{k} {v2:.0f}" for k, v2 in top), ""]
     else:
         lines += ["Not measured (Vesper hasn't started since this was added).", ""]
+    res = r.get("resources")
+    lines += ["## What Vesper is using", ""]
+    if res and not res.get("error"):
+        from .resources import markdown
+
+        lines += markdown(res) + [""]
+    else:
+        lines += [f"Not measured ({res['error']})." if res else
+                  "Vesper wasn't running in this process: Setup → Diagnostics → What Vesper is using measures it.", ""]
     wd = r.get("watchdog")
     lines += ["## Watchdog · running parts", ""]
     if wd:

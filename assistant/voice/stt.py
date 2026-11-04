@@ -196,5 +196,5 @@ def load(cfg: dict, models_dir: Path, on_progress: Callable[[float], None] | Non
     if engine == "whisper":
         return WhisperSTT(cfg.get("stt_model", "base.en"), cfg.get("stt_device", "auto"))
     path = models.ensure(engine, models_dir, on_progress)
-    return SherpaSTT(engine, path, threads=int(cfg.get("stt_threads", 2)),
+    return SherpaSTT(engine, path, threads=int(cfg.get("stt_threads", 1) or 1),
                      hotwords_score=float(cfg.get("hotwords_score", 2.0) or 0))

@@ -32,6 +32,7 @@ class OBSController:
         self.stop_requested_at = 0.0  # the assistant ended the stream itself (so "offline" isn't an alarm)
         self._events = None           # obsws EventClient: mic meters and replay-saved events
         self._events_next_try = 0.0
+        self._events_meters = False   # the event connection includes the mic meters (20 events a second)
         self.last_replay_path: str | None = None
     # ---- connection -----------------------------------------------------
     def _connect(self) -> bool:
@@ -307,11 +308,18 @@ class OBSController:
             return None
 
     # ---- events: mic levels every 50 ms, replay saved -------------------------
-    def ensure_events(self, on_meters=None, on_replay_saved=None) -> bool:
-        """Keep an event connection open (reconnects after OBS restarts). False if it can't right now."""
+    def ensure_events(self, on_meters=None, on_replay_saved=None, meters: bool = True) -> bool:
+        """Keep an event connection open (reconnects after OBS restarts). False if it can't right now.
+
+        ``meters``: also OBS's mic levels, 20 events a second. Only the live mic check and the pre-stream check read
+        them, so the runtime asks for them only then: with OBS open all evening they cost 2% of a core and 20 wakeups
+        a second (PERF-4). Changing it subscribes again (about 50 ms, once on going live)."""
         if not self.enabled:
             return False
         ev = self._events
+        if ev is not None and self._events_meters != meters:
+            self.close_events()
+            ev = None
         if ev is not None and getattr(getattr(ev, "worker", None), "is_alive", lambda: False)():
             return True
         if time.time() < self._events_next_try:
@@ -321,7 +329,7 @@ class OBSController:
             from obsws_python.subs import Subs
 
             ev = obs.EventClient(host=self.host, port=self.port, password=self.password, timeout=3,
-                                 subs=Subs.OUTPUTS | Subs.INPUTS | Subs.INPUTVOLUMEMETERS)
+                                 subs=Subs.OUTPUTS | Subs.INPUTS | (Subs.INPUTVOLUMEMETERS if meters else 0))
         except Exception as exc:
             self._events = None
             self._events_next_try = time.time() + 15
@@ -341,7 +349,7 @@ class OBSController:
         def on_input_mute_state_changed(data):  # J muted or unmuted an input in OBS (captions stop at once)
             self._muted(getattr(data, "input_name", ""), bool(getattr(data, "input_muted", False)))
         ev.callback.register([on_input_volume_meters, on_replay_buffer_saved, on_input_mute_state_changed])
-        self._events = ev
+        self._events, self._events_meters = ev, meters
         return True
 
     def close_events(self) -> None:

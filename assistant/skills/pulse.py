@@ -207,6 +207,9 @@ class Pulse(Skill):
             hh, mm = 5, 0
         due = now.hour * 60 + now.minute >= hh * 60 + mm
         if due and self._tried != day and not self.svc.storage.query("SELECT 1 FROM pulse_cards WHERE day=?", (day,)):
+            if getattr(self.svc, "model_waits", lambda: False)():  # mid-game and no model loaded: after the game
+                self.publish()
+                return
             self._tried = day
             try:
                 self.build("schedule")

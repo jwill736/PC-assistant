@@ -47,8 +47,8 @@ Three things for streams:
 
 **What it costs mid-game.** Captions add no new model. Vesper's speech-to-text (Parakeet 110M, on the CPU) already runs
 on every sentence when your wake mode is "transcript"; with a trained wake word ("acoustic" mode) it normally skips
-sentences without the name, and while captions are showing it hears them all. Measured: about 0.05 CPU-core seconds per
-second of speech (150 ms of 2 threads for a 7-second sentence). Talking half the time, that is about 2.5% of one core,
+sentences without the name, and while captions are showing it hears them all. Measured: about 0.04 CPU-core seconds per
+second of speech on its one thread (`voice.stt_threads`, 1 since the performance pass). Talking half the time, that is about 2% of one core,
 well under 1% of your whole CPU, and nothing on the GPU. YouTube chat is one small web request every ~11 seconds, only
 while you're live.
 

@@ -1,13 +1,14 @@
 'use strict';
 /* OBS overlay. Read-only: its key opens /overlay/state and /overlay/ws, which send only the whitelisted pieces
    (assistant/overlay.py). Every string goes in through textContent. Panels: ?panels=nowplaying,goals,mood,countdown,
-   followers,timers (copilot = mood). Empty panels fold away so nothing sits on stream with a dash in it. */
+   followers,timers,captions (copilot = mood). Empty panels fold away so nothing sits on stream with a dash in it. */
 (() => {
   const q = new URLSearchParams(location.search);
   const KEY = q.get('key') || '';
   const ALIAS = { music: 'nowplaying', spotify: 'nowplaying', copilot: 'mood', chat: 'mood', subgoal: 'goals', goal: 'goals',
-    ticker: 'followers', follows: 'followers', events: 'followers', alerts: 'followers', timer: 'timers' };
-  const ALL = ['nowplaying', 'goals', 'mood', 'countdown', 'followers', 'timers'];
+    ticker: 'followers', follows: 'followers', events: 'followers', alerts: 'followers', timer: 'timers',
+    caption: 'captions', subtitles: 'captions', cc: 'captions' };
+  const ALL = ['nowplaying', 'goals', 'mood', 'countdown', 'followers', 'timers', 'captions'];
   const wanted = [...new Set((q.get('panels') || 'nowplaying,goals,mood').toLowerCase().split(/[,\s]+/).map(p => ALIAS[p] || p).filter(p => ALL.includes(p)))];
   const showEmpty = q.get('show') === 'all';
   const D = {};
@@ -95,6 +96,12 @@
       const list = h('div', { class: 'timers' });
       return { el: card('timers', 'Timers', list), list };
     },
+    captions() {  /* subtitles: no kicker, no accent bar; the last line or two J said */
+      const list = h('div', { class: 'cap-lines' });
+      const el = h('section', { class: 'card c-captions', 'data-panel': 'captions', 'data-empty': '' }, list);
+      box.append(el);
+      return { el, list, ids: '' };
+    },
   };
   for (const name of wanted) P[name] = build[name]();
 
@@ -162,7 +169,21 @@
       p.list.replaceChildren(...list.slice(0, 4).map(tickerRow));
     },
     timers() { tickClock(); },
+    captions() { paintCaptions(); },
   };
+  /* A line stays up keep_s after it was said, then the panel folds away (the text stays for the fade). */
+  function paintCaptions() {
+    const p = P.captions;
+    if (!p) return;
+    const c = D.captions || {}, now = Date.now() / 1000;
+    const lines = (c.showing ? c.lines || [] : []).filter(l => now - l.ts < (c.keep_s || 7));
+    setEmpty('captions', !lines.length);
+    const ids = lines.map(l => l.id).join();
+    if (!lines.length || ids === p.ids) return;
+    const fresh = !p.ids.split(',').includes(String(lines.at(-1).id));
+    p.ids = ids;
+    p.list.replaceChildren(...lines.map((l, i) => h('p', { class: `cap${fresh && i === lines.length - 1 && !still() ? ' new' : ''}` }, l.text)));
+  }
 
   const VERB = {
     follow: () => 'followed', sub: () => 'subscribed', resub: e => `resubscribed${e.amount ? ` · ${e.amount} months` : ''}`,
@@ -217,6 +238,7 @@
       });
       P.timers.list.replaceChildren(...rows);
     }
+    paintCaptions();
     const np = D.nowplaying;
     if (P.nowplaying && np && np.track && np.duration_ms) {
       const ms = np.playing ? np.progress_ms + (now - np.at) * 1000 : np.progress_ms;

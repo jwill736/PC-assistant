@@ -108,7 +108,9 @@ def callout(ev: dict, cfg: dict) -> str | None:
 
 
 class TwitchFeed:
-    """Recent events and chat for the HUD, Claude and the highlight detector."""
+    """Recent events and chat for the HUD, Claude and the highlight detector. YouTube Live chat joins it too
+    (skills/stream_youtube.py): ``platform: "youtube"`` and a ``login`` of ``yt:<channel id>``; those names are never
+    offered for a Twitch shoutout or raid."""
 
     def __init__(self, keep_events: int = 100, keep_chat: int = 300, clock=time.time):
         self.events: deque = deque(maxlen=keep_events)
@@ -125,7 +127,7 @@ class TwitchFeed:
             else:
                 self.events.appendleft(ev)
             login = (ev.get("detail") or {}).get("login") or (ev.get("user") or "").lower()
-            if login:
+            if login and ev.get("platform", "twitch") == "twitch":
                 for key in (_squash(ev.get("user") or login), _squash(login)):
                     self.names.pop(key, None)  # to the end: heard just now
                     self.names[key] = login
@@ -139,7 +141,9 @@ class TwitchFeed:
 
     def recent_chat(self, limit: int = 50) -> list[dict]:
         with self._lock:
-            return [{"user": m["user"], "text": m["text"][:300], "ts": m["ts"]} for m in list(self.chat)[-limit:]]
+            return [{"user": m["user"], "text": m["text"][:300], "ts": m["ts"],
+                     **({"platform": m["platform"], "login": m.get("login") or ""} if m.get("platform") else {})}
+                    for m in list(self.chat)[-limit:]]
 
     def resolve(self, spoken: str) -> str:
         """A name as heard ("john doe", "tenz") -> the login of someone seen recently, else the squashed name."""

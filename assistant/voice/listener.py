@@ -240,6 +240,8 @@ class VoiceListener:
         self.in_conversation: Callable[[], bool] = lambda: False
         self.is_live: Callable[[], bool] = lambda: False
         self.conversation_noise: Callable[[], None] = lambda: None  # "hmm" mid-conversation: J is thinking
+        # Live captions (skills/stream_captions.py): every sentence becomes text, even ones acoustic mode would skip.
+        self.hear_all: Callable[[], bool] = lambda: False
         self.unaddressed: deque = deque(maxlen=20)  # when we heard talk that wasn't for us (a chatty room)
         self.last_voice_end = 0.0  # when the last utterance (anyone's) ended: silence closes the follow-up early
         self._window = ""  # what the HUD was last told about the open window
@@ -737,7 +739,7 @@ class VoiceListener:
         # that needs no name: one Vesper just suggested, or one short enough to be the kill switch.
         gated = self.wake_mode() == "acoustic" and not (acoustic or source or during_speech)
         speech_s = ((span[1] - span[0]) if span else len(samples)) / SAMPLE_RATE
-        if gated and not (self._suggest_open(started_at) or speech_s <= NO_NAME_MAX_S):
+        if gated and not (self._suggest_open(started_at) or speech_s <= NO_NAME_MAX_S or self.hear_all()):
             return  # skip speech-to-text
         t0 = time.perf_counter()
         text = self.correct(self.stt.transcribe(samples, self._hints()))

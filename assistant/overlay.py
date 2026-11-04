@@ -7,7 +7,8 @@ private can reach the stream even if a skill's data grows:
 - now playing (Spotify: track, artist, album, cover, progress), stream goals (this stream's subs / follows / bits
   against targets J sets in Setup), the chat mood gauge (score and word, never a message), a countdown (one J
   starts, else the next event on a *stream* calendar, without its title), the follower ticker (follows, subs,
-  gifts, cheers, raids, hype trains: who and how many, never what they wrote) and timers (time left, never the label).
+  gifts, cheers, raids, hype trains: who and how many, never what they wrote), timers (time left, never the label)
+  and live captions (skills/stream_captions.py: J's own words, already filtered there; only while they're showing).
 """
 
 from __future__ import annotations
@@ -20,13 +21,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-PANELS = ("nowplaying", "goals", "mood", "countdown", "followers", "timers")
+PANELS = ("nowplaying", "goals", "mood", "countdown", "followers", "timers", "captions")
 ALIASES = {"music": "nowplaying", "spotify": "nowplaying", "now_playing": "nowplaying", "copilot": "mood", "chat": "mood",
            "chatmood": "mood", "subgoal": "goals", "sub_goal": "goals", "goal": "goals", "ticker": "followers",
-           "follows": "followers", "events": "followers", "alerts": "followers", "timer": "timers"}
+           "follows": "followers", "events": "followers", "alerts": "followers", "timer": "timers",
+           "caption": "captions", "subtitles": "captions", "cc": "captions"}
 THEMES = ("transparent", "bare", "dark")
 # Bus events the overlay listens to; everything else never leaves the server on its socket.
-WATCH = {"spotify", "stream_copilot", "automations", "twitch_event", "calendar", "hud_overlay"}
+WATCH = {"spotify", "stream_copilot", "automations", "twitch_event", "calendar", "hud_overlay", "stream_captions"}
 TICKER_KINDS = {"follow", "sub", "resub", "gift", "cheer", "raid", "hype_train"}
 GOAL_KINDS = {"subs": "Sub goal", "follows": "Follower goal", "bits": "Bits goal"}
 ART_HOSTS = ("i.scdn.co", "mosaic.scdn.co", "image-cdn-ak.spotifycdn.com", "image-cdn-fa.spotifycdn.com")
@@ -147,8 +149,20 @@ def follower(ev: dict | None) -> dict | None:
             "ts": _num(ev.get("ts")) or time.time()}
 
 
+def captions(status: dict | None) -> dict:
+    """The last line or two J said (stream_captions filtered them: no commands to Vesper, no echo, no secrets)."""
+    c = status or {}
+    if not c.get("showing"):
+        return {"showing": False, "lines": [], "keep_s": 0}
+    lines = [{"id": int(_num(x.get("id")) or 0), "text": _text(x.get("text"), 200), "ts": _num(x.get("ts")) or time.time()}
+             for x in (c.get("lines") or [])[-2:] if isinstance(x, dict) and _text(x.get("text"))]
+    return {"showing": True, "lines": lines, "keep_s": max(2.0, min(30.0, _num(c.get("keep_s")) or 7.0))}
+
+
 def parts_for(kind: str, data: Any, latest: dict, conf: dict) -> dict:
     """The overlay pieces one bus event changes (``latest``: the bus's last payload per type)."""
+    if kind == "stream_captions":
+        return {"captions": captions(data)}
     if kind == "spotify":
         return {"nowplaying": now_playing(data)}
     if kind == "stream_copilot":
@@ -166,7 +180,8 @@ def snapshot(latest: dict, conf: dict, recent_events: list[dict] | None = None) 
     ticker = [x for x in (follower(e) for e in (recent_events or [])) if x][:6]
     return {"nowplaying": now_playing(latest.get("spotify")), "mood": mood(latest.get("stream_copilot")),
             "goals": goals(latest.get("stream_copilot"), conf), "timers": timers(latest.get("automations")),
-            "countdown": countdown(latest.get("calendar"), conf), "followers": ticker}
+            "countdown": countdown(latest.get("calendar"), conf), "followers": ticker,
+            "captions": captions(latest.get("stream_captions"))}
 
 
 def event_type(payload: str) -> str:

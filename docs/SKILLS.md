@@ -102,3 +102,9 @@ and wrap loops in `:root[data-motion="full"]` (the Setup → Display setting, wh
 `tests/test_skill_<name>.py`: use the `svc`/`cfg` fixtures from `tests/conftest.py`, fake every network call, and
 cover the routes (`route(text, RouterContext(skill_route=Skills(svc, ["thing"]).route))`), the tools, `say`, and
 the edge cases. `pytest -q` and `ruff check assistant tests` must pass; `node --check` the JS.
+
+## New in 2.3
+
+| Area | Skills | What they do | Doc |
+|---|---|---|---|
+| Streaming | `stream_captions`, `stream_youtube` | J's words as live captions in OBS (from the listener's `heard` event); YouTube Live chat into the Twitch feed, titles on Twitch and YouTube; the recap next to the last 5 streams (in `stream_copilot`) | docs/VESPER-2.3-streaming.md |

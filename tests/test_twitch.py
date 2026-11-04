@@ -255,7 +255,8 @@ def test_risky_twitch_actions_wait_for_a_yes(svc):
     out = a.handle("Set the title to Building my own JARVIS")
     assert out["kind"] == "pending" and out["reply"].startswith("Set the stream title to “Building my own JARVIS”?")
     assert a.handle("run an ad")["kind"] == "pending"
-    assert a.handle("tell chat hello there")["reply"] == "Say in chat: “hello there”? Say yes or no."
+    assert a.handle("tell chat hello there")["reply"] == ("Say in chat: “hello there”? Say yes or no. "
+                                                          "I've dropped the earlier question: run a 60-second ad.")
 
 
 # ---- the chat guard ---------------------------------------------------------------------

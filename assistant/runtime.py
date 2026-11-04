@@ -441,12 +441,15 @@ class Runtime:
             return
         self.bus.publish("twitch_event", {k: v for k, v in ev.items() if k != "text"})  # viewer text stays off the HUD feed
         said = callout(ev, tw_cfg.get("callouts") or {})
+        asks = False
         if kind == "raid" and said and ev.get("user"):
             login = (ev.get("detail") or {}).get("login") or ev["user"]
-            self.assistant.offer([("twitch_shoutout", {"user": login})], f"shout out {login}")
+            asks = self.assistant.offer([("twitch_shoutout", {"user": login})], f"shout out {login}")
+            if not asks:  # J is answering another question: his "yes" is for that one; this is asked after it
+                said = said.rsplit(" Want me to", 1)[0] + " I'll ask about a shoutout once you've answered me."
         if said:
             self.bus.publish("announce", {"text": said})
-            self.speaker.say(said, expects_reply=True if kind == "raid" else False)
+            self.speaker.say(said, expects_reply=asks)
         amount = int(ev.get("amount") or 0)
         big = (kind in ("raid", "hype_train") or (kind == "cheer" and amount >= 5 * int((tw_cfg.get("callouts") or {}).get("cheer_min", 100)))
                or (kind == "gift" and amount >= 5))

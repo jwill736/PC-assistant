@@ -495,6 +495,22 @@ def test_conversation_mode_hears_about_a_finished_job_once(svc):
     assert convo.asides() == ""
 
 
+def test_a_job_that_finishes_in_the_same_clock_tick_as_the_conversation_is_still_told_once(svc):
+    """Windows' clock moves in ~15 ms steps: a job done in the tick the conversation began (or the last aside was
+    read) has the very same time, and a strict "finished after" check skipped it for good."""
+    t = 1_800_000_000.0
+    log = [{"id": "j1", "title": "Week wrap", "state": "done", "line": "ready", "ts": t}]
+    svc.tasks = SimpleNamespace(done_since=lambda ts, mark=False: [dict(e) for e in log if e["ts"] > ts])
+    convo = Conversation(svc, clock=lambda: t)
+    convo.brain = lambda: "local"
+    assert convo.begin()[0]
+    assert "- Week wrap: ready" in convo.asides()
+    assert convo.asides() == ""  # told once, though it is still inside the look-back
+    log.append({"id": "j2", "title": "Inbox", "state": "done", "line": "3 drafts", "ts": t})  # same tick again
+    line = convo.asides()
+    assert "- Inbox: 3 drafts" in line and "Week wrap" not in line
+
+
 def test_the_brain_puts_the_aside_in_the_conversation_prompt(svc):
     a = Assistant(svc)
     svc.tasks = SimpleNamespace(done_since=lambda ts, mark=False: [{"id": "x", "title": "Week wrap", "state": "done",

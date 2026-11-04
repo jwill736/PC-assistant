@@ -330,6 +330,7 @@ class Conversation:
         self.interrupted = False  # J cut the last reply short: the model is told on the next turn
         self.ended: dict | None = None  # {"reason", "ts"} of the last one
         self.asides_seen = 0.0  # background jobs (skills/tasks_agent.py) finished before this were already mentioned
+        self._asides_told: dict[str, None] = {}  # ids already mentioned: the times alone tie on Windows' ~15 ms clock
         self.speaker = None  # the runtime's Speaker: talking now counts as activity
         self.brain: Callable[[], str | None] = lambda: None  # set by the assistant: which model answers, if any
         self.on_change: list[Callable[[dict], None]] = []
@@ -486,11 +487,17 @@ class Conversation:
         if tasks is None or self.on_stream:
             return ""
         try:
-            done = tasks.done_since(self.asides_seen, mark=True)
+            # Look a second further back and skip what was told: a job that finished in the same clock tick as the
+            # last look (or as the conversation's start) would otherwise never be mentioned.
+            done = [d for d in tasks.done_since(self.asides_seen - 1.0, mark=True) if d["id"] not in self._asides_told]
         except Exception:
             log.exception("job asides failed")
             return ""
         self.asides_seen = self.clock()
+        for d in done:
+            self._asides_told[d["id"]] = None
+        while len(self._asides_told) > 200:
+            self._asides_told.pop(next(iter(self._asides_told)))
         user = self.svc.cfg["assistant"].get("user_name") or "J"
         lines = [f"- {d['title']}: " + (f"didn't work ({d['line']})" if d["state"] == "failed" else
                                         f"waiting on {user}'s OK to {d['waiting']}" if d.get("waiting") else

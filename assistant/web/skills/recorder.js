@@ -291,10 +291,16 @@
     await act('set', { notes_dir: v.trim() }, r => `Notes go to ${r.notes_dir}`);
   }
   function foot(d, n) {
-    const key = `${d.notes_dir}|${d.ffmpeg}|${d.keep_audio_days}|${d.hotkey}|${d.hotkey_ok}`;
+    const key = `${d.notes_dir}|${d.ffmpeg}|${d.keep_audio_days}|${d.hotkey}|${d.hotkey_ok}|${d.auto_offer}|${(d.always || []).join('|')}`;
     if (n.foot._key === key) return;
     n.foot._key = key;
     fill(n.foot,
+      h('span', { class: 'rec-foot-i' }, h('span', { class: 'rec-k' }, 'Meetings'),
+        h('button', { class: 'btn small ghost', 'aria-pressed': String(!!d.auto_offer), title: 'When a call starts during a calendar meeting, ask “Record notes for …?” once',
+          onclick: () => act('set', { auto_offer: !d.auto_offer }, r => (r.auto_offer ? 'I’ll offer to record calls.' : 'No more offers to record.')) },
+          d.auto_offer ? 'Offer to record: on' : 'Offer to record: off'),
+        (d.always || []).map(t => h('span', { class: 'pill', title: 'Recorded every time, without asking' }, `Always: ${t} `,
+          h('button', { class: 'btn small ghost', 'aria-label': `Stop always recording ${t}`, onclick: () => act('always', { meeting: t, on: false }, () => `I’ll ask before recording ${t}.`) }, '×')))),
       h('span', { class: 'rec-foot-i' }, h('span', { class: 'rec-k' }, 'Notes'), h('span', { class: 'mono rec-dir', title: d.notes_dir }, d.notes_dir),
         h('button', { class: 'btn small ghost', onclick: () => changeFolder(d.notes_dir) }, 'Change')),
       h('span', { class: 'rec-foot-i' }, h('span', { class: 'rec-k' }, 'Audio'),

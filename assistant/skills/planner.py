@@ -9,6 +9,12 @@
   switch to stream mode when a stream is on tonight (a HUD button; nothing switches on its own).
 - "weekly review" (and a nudge on Friday at 4 PM): hours by category, tasks done, meetings, streams, wins, leaks and
   next week's top three.
+- "plan my week" / "am i overbooked this week" (and a nudge on Sunday evening for next week): work hours and meetings,
+  stream nights (the stream calendar, e.g. the Twitch schedule's iCal link; else ``stream_nights`` or the learned
+  rhythm), gym toward the weekly habit ("gym 3 times a week", habits.py), and bed against ``sleep_hours`` (bedtime from
+  the rhythm). Which days break ("Thursday: meeting till 6, stream at 7, no gym slot, bed after 1 AM") and one fix;
+  "book it" puts the gym block on the calendar through focusblocks (tier 2: J hears the exact time and says yes).
+  All of it is worked out here, in UTC, so DST nights are their real length; nothing asks a model.
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ from __future__ import annotations
 import re
 import time
 from collections import defaultdict
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, time as dtime, timedelta, timezone
 
 from ..brain.router import Intent
 from ..brain.speech import clock, duration
@@ -24,6 +30,7 @@ from ..brain.tools import Tool, obj
 from ..integrations.activity import IDLE, summarize
 from ..integrations.calendars import free_blocks
 from . import Skill, words
+from .habits import GYM
 
 PLAN_SCHEMA = {"type": "object", "properties": {
     "order": {"type": "array", "items": {"type": "integer"}, "description": "task ids, most important first"},
@@ -169,6 +176,217 @@ def next_workday(d: date) -> date:
     return d
 
 
+# ---- the week: work, streams, gym and sleep -------------------------------------------------------------------------
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+UTC = timezone.utc
+
+
+def _u(iso: str) -> datetime:
+    return datetime.fromisoformat(iso).astimezone(UTC)
+
+
+def _wall(d: date, hm: str, tz) -> datetime:
+    """A wall-clock time on a day, in UTC (a time DST skips lands just after the jump)."""
+    h, m = (int(x) for x in str(hm).split(":"))
+    return datetime.combine(d, dtime(h, m), tzinfo=tz).astimezone(UTC)
+
+
+def _hm(dt: datetime) -> str:
+    return {(0, 0): "midnight", (12, 0): "noon"}.get((dt.hour, dt.minute)) or clock(dt)
+
+
+def _night(d: date, hm: str, tz) -> datetime:
+    """A time on the night of ``d``: before noon means after midnight."""
+    return _wall(d + timedelta(days=1) if int(str(hm).split(":")[0]) < 12 else d, hm, tz)
+
+
+def _gaps(busy: list[tuple], lo: datetime, hi: datetime, need: timedelta) -> list[tuple]:
+    out, cur = [], lo
+    for s, e in sorted(busy):
+        if e <= cur:
+            continue
+        if s >= hi:
+            break
+        if min(s, hi) - cur >= need:
+            out.append((cur, min(s, hi)))
+        cur = max(cur, e)
+    if hi - cur >= need:
+        out.append((cur, hi))
+    return out
+
+
+def _day(d: date, evs: list[dict], tz, hours: dict, usual: dict | None, prep: int) -> dict:
+    """One day's fixed parts, in UTC: work, meetings, the stream, gym on the calendar, the first thing that morning."""
+    mine = [e for e in evs if e["_d"] == d]
+    work = (_wall(d, hours["start"], tz), _wall(d, hours["end"], tz)) if d.weekday() < 5 else None
+    streams = [e for e in mine if e.get("profile") == "stream"]
+    gyms = [e for e in mine if e.get("profile") != "stream" and GYM.search(e["title"])]
+    meetings = [e for e in mine if e not in streams and e not in gyms and not e["title"].startswith("🔒")]
+    stream = None
+    if streams:
+        stream = {"title": streams[0]["title"], "s": streams[0]["_s"], "e": max(x["_e"] for x in streams),
+                  "source": "calendar"}
+    elif usual and d.weekday() in usual:
+        a, b = usual[d.weekday()]
+        s, e = _wall(d, a, tz), _night(d, b, tz)
+        stream = {"title": "Stream", "s": s, "e": e if e > s else s + timedelta(hours=3), "source": "usual"}
+    busy = [(e["_s"], e["_e"]) for e in mine] + ([work] if work else [])
+    if stream:
+        busy.append((stream["s"] - timedelta(minutes=prep), stream["e"]))
+    morning = [e["_s"] for e in mine if e["_s"].astimezone(tz).hour >= 5] + ([work[0]] if work else [])
+    return {"work": work, "meetings": meetings, "stream": stream, "gym": gyms[0] if gyms else None, "busy": busy,
+            "commit": min(morning) if morning else None,
+            "last": max([e["_e"] for e in mine] + ([stream["e"]] if stream else []), default=None)}
+
+
+def _sleep_words(bed: datetime, tz, hours: float) -> str:
+    b = bed.astimezone(tz)
+    at = f"bed at {_hm(b)}" if b.minute == 0 else f"bed after {_hm(b.replace(minute=0))}"
+    return f"{at} ({round(hours * 2) / 2:g} h sleep)"
+
+
+def build_week(events: list[dict], days: list[date], now: datetime, tz, *, hours: dict, usual: dict | None = None,
+               gym: dict | None = None, sleep: dict | None = None, prep: int = 30, gym_minutes: int = 75,
+               gym_window: str = "06:30-21:30") -> dict:
+    """J's week, worked out without a model: work and meetings (calendars), the stream (its calendar, else ``usual``:
+    {weekday: (start, end)}), gym (``gym``: {target, done}) and sleep (``sleep``: {hours, bedtime, wake, ready,
+    wind_down}); which days break, and one fix. Times are worked out in UTC, so a DST night is its real length."""
+    sl = {"hours": 7.5, "bedtime": "", "wake": "08:00", "ready": 60, "wind_down": 30, **(sleep or {})}
+    evs = []
+    for e in events:
+        try:
+            if not e.get("all_day"):
+                s, en = _u(e["start"]), _u(e["end"])
+                evs.append({**e, "_s": s, "_e": en, "_d": s.astimezone(tz).date()})
+        except (KeyError, TypeError, ValueError):
+            continue
+    if any(e.get("profile") == "stream" for e in evs):
+        usual = None  # a stream calendar says which nights: a night without one is a night off
+    one, ready = timedelta(days=1), timedelta(minutes=int(sl["ready"]))
+    info = {d: _day(d, evs, tz, hours, usual, prep) for d in [days[0] - one, *days, days[-1] + one]}
+    wind, rest = timedelta(minutes=int(sl["wind_down"])), timedelta(hours=float(sl["hours"]))
+    for d in [days[0] - one, *days]:  # each night: the latest bed that still leaves the sleep target
+        x, nxt = info[d], info[d + one]
+        up = _wall(d + one, sl["wake"], tz)  # the usual wake, or earlier for work or an early meeting
+        first = nxt["commit"] if nxt["commit"] and nxt["commit"] - ready <= up else None
+        up = first - ready if first else up
+        bed = max([_night(d, sl["bedtime"], tz) if sl["bedtime"] else up - rest] + ([x["last"] + wind] if x["last"] else []))
+        x.update(up=up, first=first, latest=up - rest, bed=bed, sleep_h=(up - bed).total_seconds() / 3600)
+        nxt["rested"] = bed + rest
+    # gym: the target, less what's done and what's on the calendar, spread out, nights off first
+    lo_hm, hi_hm = (str(gym_window).split("-") + ["21:30"])[:2]
+    start_at = now.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=(15 - now.minute % 15) % 15)
+
+    def slot(d: date, minutes: int) -> tuple | None:
+        x, need = info[d], timedelta(minutes=minutes)
+        busy = x["busy"] + ([(x["commit"] - ready, x["commit"])] if x["commit"] else [])
+        free = _gaps(busy, max(_wall(d, lo_hm, tz), x.get("rested") or start_at, start_at), _wall(d, hi_hm, tz), need)
+        pref = x["work"][1] if x["work"] else _wall(d, "10:00", tz)  # after work, or late morning on a day off
+        later = [max(a, pref) for a, b in free if b - max(a, pref) >= need]
+        s = later[0] if later else free[0][0] if free else None
+        return (s, s + need) if s else None
+
+    room = {d: slot(d, gym_minutes) for d in days}
+    booked = [d for d in days if info[d]["gym"] is not None]
+    want = max(0, int(gym["target"]) - int(gym.get("done") or 0) - len(booked)) if gym else 0
+    picked: list[date] = []
+    for spaced, off in ((True, True), (True, False), (False, False)):
+        for d in days:
+            if len(picked) < want and d not in picked + booked and room[d] and not (off and info[d]["stream"]) \
+                    and not (spaced and any(abs((d - o).days) <= 1 for o in picked + booked)):
+                picked.append(d)
+    picked.sort()
+    short = want - len(picked)
+
+    def loc(t: datetime) -> str:
+        return t.astimezone(tz).isoformat()
+
+    rows, breaks = [], []
+    for d in days:
+        x, st = info[d], info[d]["stream"]
+        issues, till = [], max((m["_e"] for m in x["meetings"]), default=None)
+        if st:
+            hit = [m["_e"] for m in x["meetings"] if m["_s"] < st["e"] and m["_e"] > st["s"] - timedelta(minutes=prep)]
+            if hit:
+                issues.append({"kind": "clash", "until": max(hit), "text": f"meeting till {_hm(max(hit).astimezone(tz))} "
+                               f"runs into {'the stream' if max(hit) > st['s'] else 'stream prep'}"})
+            elif x["work"] and x["work"][1] > st["s"]:
+                issues.append({"kind": "clash", "until": x["work"][1], "text": "the stream starts before work ends"})
+        if short > 0 and not room[d] and x["gym"] is None:
+            issues.append({"kind": "gym", "text": "no gym slot"})
+        if x["bed"] > x["latest"] + timedelta(minutes=15):  # a quarter of an hour short is a normal night
+            issues.append({"kind": "sleep", "text": _sleep_words(x["bed"], tz, x["sleep_h"])})
+        g = None
+        if x["gym"] is not None:
+            g = {"title": x["gym"]["title"], "start": loc(x["gym"]["_s"]), "end": loc(x["gym"]["_e"]), "booked": True}
+        elif d in picked:
+            g = {"title": "Gym", "start": loc(room[d][0]), "end": loc(room[d][1]), "booked": False}
+        parts = [i["text"] for i in issues if i["kind"] == "clash"]
+        if till and not parts and (not x["work"] or till > x["work"][1] - timedelta(minutes=30)):
+            parts.append(f"meeting till {_hm(till.astimezone(tz))}")
+        if st:
+            parts.append(f"stream at {_hm(st['s'].astimezone(tz))}")
+        if g:
+            parts.append(f"gym at {_hm(datetime.fromisoformat(g['start']))}")
+        parts += [i["text"] for i in issues if i["kind"] != "clash"]
+        if not parts:
+            parts = [f"work till {_hm(x['work'][1].astimezone(tz))}" if x["work"] else "free"]
+        row = {"date": d.isoformat(), "day": d.strftime("%A"), "workday": bool(x["work"]),
+               "work": {"start": loc(x["work"][0]), "end": loc(x["work"][1])} if x["work"] else None,
+               "meetings": len(x["meetings"]), "meetings_till": loc(till) if till else None,
+               "stream": {"title": st["title"], "start": loc(st["s"]), "end": loc(st["e"]), "source": st["source"]} if st else None,
+               "gym": g, "gym_room": bool(room[d]), "bed": loc(x["bed"]), "up": loc(x["up"]), "latest_bed": loc(x["latest"]),
+               "sleep_h": round(x["sleep_h"], 2), "issues": [{"kind": i["kind"], "text": i["text"]} for i in issues],
+               "line": f"{d.strftime('%A')}: " + ", ".join(parts)}
+        rows.append(row)
+        if issues:
+            breaks.append((d, x, issues))
+    fix = _fix(breaks, short, days, picked + booked, info, slot, tz, sl, prep)
+    nxt = next((r["gym"] for r in rows if r["gym"] and not r["gym"]["booked"]), None)
+    return {"ok": True, "from": days[0].isoformat(), "to": days[-1].isoformat(), "days": rows,
+            "breaks": [d.strftime("%A") for d, *_ in breaks], "fix": fix, "sleep_hours": float(sl["hours"]),
+            "gym": {"target": int(gym["target"]), "done": int(gym.get("done") or 0), "booked": len(booked),
+                    "planned": len(picked), "short": max(0, short), "minutes": gym_minutes} if gym else None,
+            "offer": (fix or {}).get("book") or ({"title": "Gym", "start": nxt["start"], "end": nxt["end"],
+                                                  "profile": "personal"} if nxt else None)}
+
+
+def _fix(breaks: list, short: int, days: list[date], taken: list[date], info: dict, slot, tz, sl: dict,
+         prep: int) -> dict | None:
+    """One concrete change, for the day that breaks worst (the most problems, then the earliest)."""
+    if not breaks:
+        return None
+    d, x, issues = max(breaks, key=lambda b: (len(b[2]), -b[0].toordinal()))
+    day, kinds, st = d.strftime("%A"), {i["kind"]: i for i in issues}, x["stream"]
+    if "clash" in kinds and st:
+        at = (kinds["clash"]["until"] + timedelta(minutes=prep)).astimezone(tz)
+        return {"kind": "stream_start", "day": day, "at": at.isoformat(),
+                "text": f"Start {day}'s stream at {_hm(at)}, after the {'meeting' if x['meetings'] else 'work day'} "
+                        f"and {prep} minutes of prep."}
+    if "sleep" in kinds:
+        wind = timedelta(minutes=int(sl["wind_down"]))
+        why = f"{float(sl['hours']):g} hours of sleep"
+        if x["first"]:
+            why += f" before your {_hm(x['first'].astimezone(tz))} start"
+        if st and st["e"] + wind > x["latest"]:
+            end = (x["latest"] - wind).astimezone(tz)
+            return {"kind": "stream_end", "day": day, "at": end.isoformat(),
+                    "text": f"End {day}'s stream by {_hm(end)} to get {why}."}
+        bed = x["latest"].astimezone(tz)
+        return {"kind": "bedtime", "day": day, "at": bed.isoformat(), "text": f"Be in bed by {_hm(bed)} on {day} to get {why}."}
+    if short > 0:
+        for dd in days:
+            s = slot(dd, 45) if dd not in taken else None
+            if s:
+                a, b = s[0].astimezone(tz), s[1].astimezone(tz)
+                return {"kind": "gym", "day": dd.strftime("%A"), "at": a.isoformat(),
+                        "text": f"Fit a 45-minute gym session in on {dd.strftime('%A')} at {_hm(a)}.",
+                        "book": {"title": "Gym", "start": a.isoformat(), "end": b.isoformat(), "profile": "personal"}}
+        return {"kind": "gym", "day": day, "text": f"There's no room for {short} more gym session{'s' if short != 1 else ''}: "
+                                                   "drop a stream night or move a meeting."}
+    return None
+
+
 class Planner(Skill):
     name, title = "planner", "Day plan"
     poll_s = 300
@@ -182,9 +400,12 @@ class Planner(Skill):
         self._order: tuple[str, list[int], str] | None = None  # (date, task ids, headline) from the model
         self.shutdown: dict | None = None
         self.review: dict | None = None
-        self.run_command = None
+        self.week: dict | None = None
+        self._previewed = ""
+        self.run_command = self.runtime = None
 
     def start(self, runtime) -> None:
+        self.runtime = runtime
         self.run_command = lambda text: runtime.command(text, source="planner")
 
     def now(self) -> datetime:
@@ -254,9 +475,113 @@ class Planner(Skill):
         nxt = next((b for b in plan["blocks"] if b["start"] >= (at or {}).get("end", now) and b["kind"] == "task"), None)
         return {"ok": True, "now": at, "next": nxt, "unplanned": plan["unplanned"][:3]}
 
-    def overbooked(self) -> dict:
+    def overbooked(self, period: str = "today") -> dict:
+        if "week" in str(period or ""):
+            return {**self.plan_week("next" if "next" in period else "this"), "period": "week"}
         p = self.current()
         return {"ok": True, **p["load"], "push": p["push"], "stream": p["stream"]}
+
+    # ---- the week: work, streams, gym, sleep ---------------------------------------------------------------------
+    def _rhythm(self) -> dict:
+        mem = self.svc.skills.get("memory") if self.svc.skills is not None else None
+        try:
+            r = mem.rhythm() if mem is not None else {}
+        except Exception:
+            r = {}
+        return r if isinstance(r, dict) and r.get("ok") else {}
+
+    def _usual_streams(self, r: dict) -> tuple[dict | None, str]:
+        """Stream nights for when no stream calendar has any: skills.planner.stream_nights, else the learned rhythm."""
+        mine = self.setting("stream_nights") or {}
+        src, where = (mine, "settings") if isinstance(mine, dict) and mine.get("days") else (r.get("stream") or {}, "rhythm")
+        days = [WEEKDAYS.index(str(x)[:3].title()) for x in src.get("days") or [] if str(x)[:3].title() in WEEKDAYS]
+        if not days or not src.get("start"):
+            return None, ""
+        return {d: (str(src["start"]), str(src.get("end") or "23:00")) for d in days}, where
+
+    def _gym(self, next_week: bool) -> dict | None:
+        """The weekly gym target from habits ("gym 3 times a week"), with what's logged this week."""
+        hab = self.svc.skills.get("habits") if self.svc.skills is not None else None
+        try:
+            v = next((v for v in hab.views() if v["period"] == "week" and GYM.search(v["name"])), None) if hab else None
+        except Exception:
+            v = None
+        return {"name": v["name"], "target": v["target"], "done": 0 if next_week else v["count"]} if v else None
+
+    def _sleep(self, r: dict) -> dict:
+        return {"hours": float(self.setting("sleep_hours", 7.5)),
+                "bedtime": str(self.setting("bedtime", "") or (r.get("bedtime") or {}).get("time") or ""),
+                "wake": str(self.setting("wake", "") or (r.get("wake") or {}).get("time") or "08:00"),
+                "ready": int(self.setting("ready_minutes", 60)), "wind_down": int(self.setting("wind_down_minutes", 30))}
+
+    def plan_week(self, week: str = "this") -> dict:
+        """The rest of this week (next week on a Sunday, or when asked), laid out by build_week."""
+        today = self.now().date()
+        nxt = str(week or "").lower().startswith("next") or today.weekday() == 6
+        first = today + timedelta(days=7 - today.weekday()) if nxt else today
+        days = [first + timedelta(days=i) for i in range(7 - first.weekday())]
+        try:
+            events = self.svc.calendars.agenda(len(days) + 2, start=datetime.combine(first - timedelta(days=1), dtime.min,
+                                                                                     tzinfo=self.svc.tz))
+            note = None if events or self.svc.calendars.status() else \
+                "No calendar connected (Setup → Google), so meetings and streams aren't in it."
+        except Exception as exc:
+            events, note = [], f"The calendar didn't load ({type(exc).__name__})."
+        r = self._rhythm()
+        usual, where = self._usual_streams(r)
+        gym, sleep = self._gym(nxt), self._sleep(r)
+        w = build_week(events, days, self.now(), self.svc.tz, hours=self._hours(), usual=usual, gym=gym, sleep=sleep,
+                       prep=int(self.setting("stream_prep_minutes", 30)), gym_minutes=int(self.setting("gym_minutes", 75)),
+                       gym_window=str(self.setting("gym_window", "06:30-21:30")))
+        notes = [note] if note else []
+        streams = [d["stream"]["source"] for d in w["days"] if d["stream"]]
+        if not streams:
+            notes.append("No stream nights found: put them on your stream calendar (calendars: in config.yaml, profile "
+                         "stream), or set skills.planner.stream_nights.")
+        elif "usual" in streams:
+            notes.append(f"Stream nights from your {'settings' if where == 'settings' else 'rhythm'} (no stream calendar).")
+        if gym is None:
+            notes.append("No gym target yet: say “gym 3 times a week”.")
+        if not sleep["bedtime"]:
+            notes.append(f"Bedtime: the latest that still gives {sleep['hours']:g} hours (no rhythm learned yet).")
+        w.update(notes=notes, next=nxt, generated=self.clock(),
+                 sources={"stream": "calendar" if "calendar" in streams else where if streams else None,
+                          "gym": f"{gym['name']} {gym['target']}x a week" if gym else None,
+                          "bedtime": sleep["bedtime"] or None})
+        self.week = w
+        self.publish()
+        return w
+
+    def _offer(self) -> dict | None:
+        """The block "book it" puts on the calendar: from the week J heard in the last half hour."""
+        w = self.week
+        return w["offer"] if w and w.get("offer") and self.clock() - w.get("generated", 0) < 1800 else None
+
+    def book(self) -> dict:
+        """The HUD's Book button: the same tier-2 focus block as "book it", so J still says yes to the exact time."""
+        offer = self._offer()
+        if offer is None:
+            return {"ok": False, "error": "Nothing to book: say “plan my week” first."}
+        a = getattr(self.runtime, "assistant", None)
+        if a is None:
+            return {"ok": False, "error": "Vesper is still starting."}
+        out = a.run_tool("protect_time", dict(offer))
+        if out.get("kind") == "error" or (out.get("data") or {}).get("ok") is False:
+            return {"ok": False, "error": (out.get("data") or {}).get("error") or out.get("reply")}
+        return {"ok": True, "pending": out.get("kind") == "pending", "reply": out.get("reply")}
+
+    def preview_line(self, w: dict) -> str:
+        """The Sunday-evening nudge."""
+        out = f"Next week: {_n(sum(1 for d in w['days'] if d['stream']), 'stream')}"
+        g = w.get("gym")
+        if g:
+            out += f", gym {g['done'] + g['booked'] + g['planned']} of {g['target']}"
+        if w["breaks"]:
+            bad = next(d for d in w["days"] if d["issues"])
+            out += f". {_n(len(w['breaks']), 'day')} won't fit, starting {bad['line']}"
+        else:
+            out += f", and {w['sleep_hours']:g} hours of sleep fits every night"
+        return out + ". Say “plan my week” for the rest."
 
     # ---- shut down for the day -------------------------------------------------------------------------------
     def _day_activity(self, d: date) -> dict:
@@ -355,6 +680,10 @@ class Planner(Skill):
                            action={"label": "Weekly review", "command": "weekly review"})
         except Exception as exc:
             self.plan = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "blocks": [], "date": ""}
+        try:
+            self._week_preview(self.now())
+        except Exception as exc:
+            self.week = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "days": [], "to": "9999"}
         self.publish()
 
     def status(self) -> dict:
@@ -365,12 +694,27 @@ class Planner(Skill):
             except Exception as exc:
                 plan = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "blocks": []}
         today = self.now().date().isoformat()
+        week = self.week if self.week and self.week["to"] >= today else None
         return {"plan": plan, "now": self.clock(), "shutdown": self.shutdown if (self.shutdown or {}).get("date") == today else None,
-                "review": self.review}
+                "review": self.review, "week": week, "can_book": bool(week and self._offer())}
+
+    def _week_preview(self, now: datetime) -> None:
+        """Sunday evening (skills.planner.week_preview, "" = off): next week in one nudge, through the nudge gate."""
+        at = str(self.setting("week_preview", "18:00") or "")
+        key = f"planner:week:{(now.date() + timedelta(days=1)).isoformat()}"
+        if not at or now.weekday() != 6 or now.strftime("%H:%M") < at or self._previewed == key:
+            return
+        self._previewed = key
+        w = self.plan_week("next")
+        self.nudge(self.preview_line(w), priority="normal", key=key, expires_in=3 * 3600,
+                   action={"label": "Plan my week", "command": "plan my week"},
+                   why={"rule": "Sunday evening week preview", "evidence": [d["line"] for d in w["days"] if d["issues"]][:3]
+                        or ["Calendar, stream nights, gym target and sleep: everything fits"]})
 
     def actions(self):
         return {"replan": lambda b: self.plan_day(polish=True), "shutdown": lambda b: self.shutdown_day(),
-                "review": lambda b: self.weekly_review(), "stream_mode": lambda b: self.stream_mode()}
+                "review": lambda b: self.weekly_review(), "stream_mode": lambda b: self.stream_mode(),
+                "week": lambda b: self.plan_week(str(b.get("week") or "this")), "book": lambda b: self.book()}
 
     def briefing(self):
         p = self.plan_day(polish=False)
@@ -387,8 +731,13 @@ class Planner(Skill):
                              "time, with an overbooked warning. day: today or tomorrow.",
                  obj({"day": {"type": "string", "enum": ["today", "tomorrow"]}}), self.plan_day),
             Tool("what_next", "What the user should be doing right now and next, from today's plan.", obj(), self.what_next),
-            Tool("am_i_overbooked", "Whether today's meetings plus must-do tasks fit the work hours, and what to push.",
-                 obj(), self.overbooked),
+            Tool("am_i_overbooked", "Whether today's meetings plus must-do tasks fit the work hours, and what to push; "
+                                    "period 'this week' / 'next week': which days break (work, stream, gym, sleep) and "
+                                    "one fix.",
+                 obj({"period": {"type": "string", "enum": ["today", "this week", "next week"]}}), self.overbooked),
+            Tool("plan_week", "Lay out the user's week: work and meetings, stream nights, gym sessions toward the weekly "
+                              "target, and bedtime against the sleep target; which days break and one fix. week: this "
+                              "or next.", obj({"week": {"type": "string", "enum": ["this", "next"]}}), self.plan_week),
             Tool("shutdown_day", "End the work day: recap what got done and focus time, roll open tasks due today to the "
                                  "next workday, and offer stream mode if a stream is on tonight.", obj(),
                  self.shutdown_day, tier=1),
@@ -412,7 +761,43 @@ class Planner(Skill):
         if re.fullmatch(r"(?:my |the |do (?:my|the) |run (?:my|the) |give me (?:my|the) )?(?:weekly|week'?s|week in) review|"
                         r"how did (?:my|this) week go|review (?:my|the|this) week", t):
             return Intent("tool", "weekly_review")
+        m = re.fullmatch(r"(?:plan|lay out|balance|map out) (?:out )?(?:my |the )?(this |next )?week(?: for me)?|"
+                         r"(?:preview|plan) (?:my |the )?(next |this )?week|week (?:plan|preview)", t)
+        if m:
+            return Intent("tool", "plan_week", {"week": "next" if "next" in t else "this"})
+        if re.fullmatch(r"am i (?:over ?booked|over ?committed|too busy) (this|next) week|is (?:my |this |next )?week "
+                        r"(?:too )?(?:full|packed|over ?booked)|(?:does|will) (?:my|this|next) week work", t):
+            return Intent("tool", "am_i_overbooked", {"period": "next week" if "next" in t else "this week"})
+        if re.fullmatch(r"book (?:it|that|the gym(?: slot| session| block)?|my gym(?: slot| session)?|that gym(?: slot)?)|"
+                        r"put (?:the |that )?gym (?:slot |session )?on (?:my|the) calendar", t) and self._offer() \
+                and self.svc.skills is not None and self.svc.skills.active("focusblocks"):
+            return Intent("tool", "protect_time", dict(self._offer()))
         return None
+
+    def _say_week(self, r: dict, live: bool, check: bool) -> str:
+        when, bad, g = "Next week" if r.get("next") else "This week", [d for d in r["days"] if d["issues"]], r.get("gym")
+        if live:
+            return f"{when}: {_n(len(bad), 'day')} won't fit. It's on the HUD." if bad else f"{when} fits. It's on the HUD."
+        gym = f"gym {g['done'] + g['booked'] + g['planned']} of {g['target']}" if g else ""
+        if check:
+            if not bad:
+                return f"{when} works: {gym + ', ' if gym else ''}{r['sleep_hours']:g} hours of sleep every night, around " \
+                       "work and the streams."
+            out = f"{_n(len(bad), 'day')} break{'s' if len(bad) == 1 else ''}. " + " ".join(d["line"] + "." for d in bad[:2])
+        else:
+            st = [d["day"] for d in r["days"] if d["stream"]]
+            out = f"{when}: {_n(sum(d['workday'] for d in r['days']), 'work day')}, {_n(len(st), 'stream')}"
+            out += f" ({', '.join(st)})" if st else ""
+            if gym:
+                out += f", {gym}" + "".join(f", {d['day']} at {_t(d['gym']['start'])}" for d in r["days"] if d["gym"])
+            out += f". {bad[0]['line']}." if bad else ". Sleep fits every night."
+        if r.get("fix"):
+            out += f" One fix: {r['fix']['text']}"
+        off = r.get("offer")
+        if off and self._offer() is off:
+            out += f" Say “book it” to put {datetime.fromisoformat(off['start']).strftime('%A')}'s gym at {_t(off['start'])} " \
+                   "on your calendar."
+        return out
 
     def say(self, tool, args, result):
         if result.get("ok") is False:
@@ -435,6 +820,8 @@ class Planner(Skill):
                 return "It's on the HUD plan." if live else "Nothing else planned. Say “plan my day” to lay out your tasks."
             return " ".join(([f"Right now: {at['title']} until {_t(at['end'])}."] if at else [])
                             + ([f"{'Then' if at else 'Next'}: {nxt['title']} at {_t(nxt['start'])}."] if nxt else []))
+        if tool == "plan_week" or (tool == "am_i_overbooked" and r.get("period") == "week"):
+            return self._say_week(r, live, check=tool == "am_i_overbooked")
         if tool == "am_i_overbooked":
             line = (f"{duration(r['meetings_min'] * 60) if r['meetings_min'] else 'No time'} in meetings and "
                     f"{duration(r['tasks_min'] * 60) if r['tasks_min'] else 'nothing'} of must-do tasks")

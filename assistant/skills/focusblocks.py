@@ -6,6 +6,7 @@
   one when the request says personal / gym / family / stream (skills.focusblocks.calendars picks others).
 - It writes to J's calendar, so it's tier 2: Vesper says the exact day and time first and waits for his yes.
 - The Day plan's blocks can go on the calendar too: "put my plan on my calendar", or the button under Day plan.
+- The week plan's gym slot ("book it", skills/planner.py) arrives with its time worked out; only the calendar is chosen.
 
 Needs the "Calendar events" box on Google's page (google.can); says which account and box when it's missing.
 """
@@ -197,6 +198,17 @@ class FocusBlocks(Skill):
         if cal is None:
             a["_error"] = why
             return False
+        if a.get("start") and a.get("end"):  # a time already worked out (the week plan's gym slot): keep it
+            try:
+                s, e = datetime.fromisoformat(a["start"]), datetime.fromisoformat(a["end"])
+                fine = s.tzinfo is not None and timedelta(0) < e - s <= timedelta(hours=12)
+            except (TypeError, ValueError):
+                fine = False
+            if not fine:
+                a["_error"] = "That time doesn't look right. Ask again and I'll find one."
+                return False
+            a.update(calendar=cal["id"], account=cal["account"], calendar_name=cal["name"])
+            return True
         slot = self.find_slot(a.get("minutes"), a.get("day") or "today", a.get("part") or "any")
         if not slot["ok"]:
             a["_error"] = slot["error"]

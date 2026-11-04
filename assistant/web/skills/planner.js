@@ -1,4 +1,4 @@
-/* Day plan: a vertical timeline of today (meetings, task blocks, stream, open time) with a live "now" line,
+/* Day plan: a vertical timeline of today (meetings, task blocks, stream, open time) with a live "now" line, the week (one line a day, the fix and a Book button),
    the overbooked warning, shutdown recap with the stream-mode offer, and the weekly review. */
 (() => {
   const { h, fill, empty, meta, panels, body, toast } = Vesper.ui;
@@ -67,6 +67,20 @@
         `${s.offer.label} · ${tm(s.stream.start)}`) : null);
   }
 
+  function week(w, canBook) {
+    if (w.ok === false) return h('div', { class: 'dp-card' }, h('div', { class: 't3 muted' }, w.error || 'No week plan.'));
+    const g = w.gym, o = w.offer;
+    const day = o ? new Date(o.start).toLocaleDateString([], { weekday: 'long' }) : '';
+    return h('div', { class: 'dp-card' },
+      h('div', { class: 't3 muted' }, `${w.next ? 'Next week' : 'This week'}${g ? ` · gym ${g.done + g.booked + g.planned} of ${g.target}` : ''}`
+        + ` · ${w.sleep_hours}h sleep`),
+      h('div', { class: 'dp-days' }, (w.days || []).map(x => h('div', { class: `dp-day${x.issues.length ? ' bad' : ''}` }, x.line))),
+      w.fix ? h('div', { class: 'dp-fix' }, h('b', {}, 'Fix'), w.fix.text) : null,
+      o && canBook ? h('button', { class: 'btn primary small dp-offer', onclick: () => run('book', r => r.reply || 'Asked.') },
+        `Book ${o.title} · ${day} ${tm(o.start)}`) : null,
+      (w.notes || []).length ? h('div', { class: 't3 muted' }, w.notes.join(' ')) : null);
+  }
+
   function render(d) {
     for (const p of panels('planner')) {
       const b = body(p);
@@ -88,7 +102,9 @@
         plan.unplanned?.length ? h('div', { class: 't3 muted dp-left' }, `Didn’t fit: ${plan.unplanned.map(x => `${x.title} (${dur(x.minutes)})`).join(', ')}`) : null,
         d.shutdown ? shutdown(d.shutdown) : null,
         d.review ? review(d.review) : null,
+        d.week ? week(d.week, d.can_book) : null,
         h('div', { class: 'controls dp-actions' },
+          h('button', { class: 'btn small', onclick: () => run('week', r => (r.breaks?.length ? `Won't fit: ${r.breaks.join(', ')}.` : 'The week fits.')) }, 'Plan week'),
           h('button', { class: 'btn small', onclick: () => run('shutdown', r => `Shut down: ${r.done.length} done, ${r.carried.length} rolled over.`) }, 'Shut down day'),
           h('button', { class: 'btn small', onclick: () => run('review', () => 'Weekly review ready.') }, 'Weekly review')));
       const y = tl.place();

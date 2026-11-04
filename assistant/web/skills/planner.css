@@ -40,6 +40,11 @@
 .dp-list b { font-size: 10.5px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); font-weight: 500; }
 .dp-list.good b { color: var(--good); } .dp-list.warn b { color: var(--warning); }
 .dp-offer { margin-top: 8px; }
+.dp-days { display: grid; gap: 3px; margin-top: 6px; }
+.dp-day { padding-left: 9px; border-left: 2px solid var(--line); }
+.dp-day.bad { border-left-color: var(--warning); color: var(--ink); }
+.dp-fix { margin-top: 8px; }
+.dp-fix b { font-size: 10.5px; text-transform: uppercase; letter-spacing: .14em; color: var(--warning); font-weight: 500; margin-right: 6px; }
 .dp-actions { margin: 10px 0 0; }
 @keyframes dp-in { from { opacity: 0; transform: translateX(-6px); } }
 @keyframes dp-pulse { 50% { box-shadow: 0 0 0 6px transparent; } }

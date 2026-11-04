@@ -85,10 +85,13 @@ def run(found: dict, tools: list[dict], vram_mb: float | None = None, system: st
         if on_progress:
             on_progress({"done": len(results), "total": len(models), "row": row})
 
+    def fresh(m: dict) -> dict:
+        return {"name": m["name"], "size_gb": round(m["bytes"] / local_llm.GIB, 1) if m.get("bytes") else None,
+                "strength": round(local_llm.strength(m), 1)}
+
     for m in models:
         name = m["name"]
-        row = {"name": name, "size_gb": round(m["bytes"] / local_llm.GIB, 1) if m.get("bytes") else None,
-               "strength": round(local_llm.strength(m), 1)}
+        row = fresh(m)
         if m.get("tools") is False:
             note({**row, "result": "no_actions", "note": "can't take actions (Ollama says so)"})
             continue
@@ -100,6 +103,17 @@ def run(found: dict, tools: list[dict], vram_mb: float | None = None, system: st
         if on_progress:
             on_progress({"done": len(results), "total": len(models), "testing": name})
         note(_test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_ctx, jobs))
+
+    # One sample never decides: Ollama busy or still loading, a cold disk, a game holding video memory for a moment,
+    # one slow first word. A model that failed or errored is tested once more after the others; passing then counts.
+    for i, r in enumerate(results):
+        if r["result"] not in ("fail", "error"):
+            continue
+        m = next(x for x in models if x["name"] == r["name"])
+        if on_progress:
+            on_progress({"done": len(results), "total": len(models), "testing": r["name"], "again": True})
+        again = _test(http, url, m, tools, system, first_word_s, timeout, fresh(m), vram_mb, num_ctx, jobs)
+        results[i] = again if again["result"] == "pass" else {**again, "note": f"{again['note']} (tested twice)"}
 
     passed = [r for r in results if r["result"] == "pass"]
     best = pick_best(passed)
@@ -186,6 +200,22 @@ def _test(http, url, m, tools, system, first_word_s, timeout, row, vram_mb, num_
     return {**row, "result": "fail" if problems else "pass", "note": "; ".join(problems) or "passed"}
 
 
+def settle(result: dict, previous: dict | None) -> dict:
+    """A test that fails last time's winner doesn't demote it straight away: the winner is kept and tested again in
+    an hour (``recheck``), and only a second test in a row that fails it hands over to another model. Earlier, one
+    bad moment swapped qwen3.6:35b for a smaller model for good, and Vesper got noticeably dumber. A model that's
+    gone, or that the test proved can't take actions or doesn't fit, is not kept."""
+    prev = (previous or {}).get("best")
+    if result.get("error") or not prev or prev == result.get("best") or prev not in (result.get("models") or []):
+        return result
+    row = next((r for r in result.get("results") or [] if r["name"] == prev), None)
+    if row is None or row["result"] not in ("fail", "error"):
+        return result
+    if (previous or {}).get("recheck") == prev:  # the second test in a row that failed it: hand over
+        return result
+    return {**result, "best": prev, "kept": prev, "recheck": prev}
+
+
 def save(result: dict, path: Path) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -199,6 +229,9 @@ def summary(result: dict) -> str:
     if not result.get("best"):
         return "None of your models passed: " + "; ".join(f"{r['name']} {r['note']}" for r in result["results"][:4])
     best = next(r for r in result["results"] if r["name"] == result["best"])
+    if result.get("kept") == best["name"]:
+        return (f"Keeping {best['name']}: it didn't pass this time ({best['note']}), which may just have been a busy moment. "
+                "I'll test it again in an hour before switching to another model.")
     jobs = f", got {best['jobs'].replace('/', ' of ')} everyday jobs right" if best.get("jobs") else ""
     line = f"Using {best['name']}: it took the right actions{jobs} and starts answering in {best['first_word_s']} seconds."
     if result.get("light") and result["light"] != result["best"]:

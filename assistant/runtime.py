@@ -37,6 +37,8 @@ from .watchdog import Supervisor
 
 log = logging.getLogger(__name__)
 
+UNWATCHED_SYSTEM_TICKS = 15  # with no HUD open, the system stats are sampled once per this many ticks
+
 
 class Runtime:
     def __init__(self, cfg: Config, services: Services | None = None, assistant: Assistant | None = None):
@@ -112,6 +114,7 @@ class Runtime:
                 models_dir=cfg.data_dir / "models",
             )
         self.supervisor = Supervisor(self.bus, low_power=self._low_power)
+        self.assistant.low_power = lambda: self._low_power()  # skills' model questions mid-game: never the big one
         self.started = time.time()
         self.timings["runtime_s"] = round(time.perf_counter() - t0, 2)
         if self.svc.skills is not None:  # Setup → Skills: the brain's tools follow; a skill turned on gets started
@@ -280,8 +283,15 @@ class Runtime:
 
     # ---- pollers -----------------------------------------------------
     _sys_ticks = 0
+    _sys_idle = UNWATCHED_SYSTEM_TICKS  # so the first tick samples
 
     def _poll_system(self) -> None:
+        # Nobody looking (no HUD open): a sample every 15th tick (30 s, 90 s in a game) keeps the pre-stream check
+        # and the history going without spawning nvidia-smi every few seconds, which games feel as frame-time spikes.
+        if not self.bus.client_count and self._sys_idle < UNWATCHED_SYSTEM_TICKS - 1:
+            self._sys_idle += 1
+            return
+        self._sys_idle = 0
         self._sys_ticks += 1
         # Walking every process is the expensive part; do it every third tick.
         snap = self.svc.system.snapshot(include_processes=self._sys_ticks % 3 == 1)
@@ -820,8 +830,9 @@ class Runtime:
                 "kept": current if keep_current and any(m["name"] == current for m in held) else None}
 
     def _auto_bench(self) -> None:
-        """Once by itself, and again when your list of models changes: unless you picked a model yourself, Claude
-        answers instead, or you're live (loading big models then would hurt the stream)."""
+        """Once by itself, again when your list of models changes, and an hour after a test that failed the winner
+        it kept (model_bench.settle): unless you picked a model yourself, Claude answers instead, or you're live
+        (loading big models then would hurt the stream)."""
         brain = self.cfg.get("brain") or {}
         lcfg = brain.get("local") or {}
         local = self.assistant.local
@@ -832,7 +843,8 @@ class Runtime:
         found = local.found or {}
         if found.get("kind") != "ollama" or len(found.get("models") or []) < 2:
             return
-        if sorted(local.bench.get("models") or []) == sorted(m["name"] for m in found["models"]):
+        bench = local.bench
+        if not bench.get("recheck") and sorted(bench.get("models") or []) == sorted(m["name"] for m in found["models"]):
             return
         self.bench_brain()
 

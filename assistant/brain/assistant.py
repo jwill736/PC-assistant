@@ -104,6 +104,7 @@ class Assistant:
         self.local = local_llm.LocalBrain((svc.cfg.get("brain") or {}).get("local") or {}, vram_mb=self.vram_mb,
                                           bench_path=svc.cfg.data_dir / BENCH_FILE)
         self.local_history: list[dict] = []  # OpenAI-style turns for the local model
+        self.low_power = lambda: ""  # "game" while a fullscreen game runs (set by the runtime)
         self._ctx: dict = {}  # the command being handled: source, utterance, turn, owner (for the audit log)
         self._tainted = False  # this command has read text other people wrote (see Tool.untrusted)
         self._untrusted_ids: dict[str, str] = {}  # tool results to scrub from history once the command ends
@@ -177,10 +178,13 @@ class Assistant:
         order = {"claude": ["claude", "local"], "local": ["local"]}.get(pref) or (
             ["local", "claude"] if private else ["claude", "local"])
         text = None
+        game = self.low_power() == "game"
         for which in order:
             try:
                 if which == "local" and self.local.ready:
-                    llm = self.local.refresh()
+                    llm = self.local.in_game() if game else self.local.refresh()
+                    if llm is None and game:
+                        break  # only the big model is left: wait for the game to end (and keep private text local)
                     if llm is not None:
                         text = llm.chat([{"role": "user", "content": prompt}], json_schema=schema, temperature=0.2,
                                         max_tokens=max_tokens)["content"]
@@ -746,6 +750,7 @@ class Assistant:
                                  system=f"{self.system_prompt}{LOCAL_ADDENDUM}", on_progress=on_progress,
                                  num_ctx=int(lcfg.get("context", 8192)))
         if not result.get("error"):
+            result = model_bench.settle(result, self.local.bench)  # one bad test doesn't demote the last winner
             model_bench.save(result, self.local.bench_path)
             llm = self.local.refresh(force=True)
             if isinstance(llm, local_llm.OllamaLLM) and not self.local.streaming:

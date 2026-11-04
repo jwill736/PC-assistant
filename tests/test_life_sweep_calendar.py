@@ -65,7 +65,7 @@ ICS = "\r\n".join(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:test",
 def test_agenda_doesnt_reexpand_the_feed_on_every_call(tmp_path, monkeypatch):
     """Expanding a busy feed is ~0.3 s of CPU, and nudges asks for today's agenda every 15 s, in games too."""
     p = tmp_path / "work.ics"
-    p.write_text(ICS, encoding="utf-8")
+    p.write_bytes(ICS.encode("utf-8"))
     clock = {"t": datetime(2026, 11, 4, 8, 0, tzinfo=NY).timestamp()}
     hub = CalendarHub([{"name": "Work", "url": str(p), "profile": "work"}], "America/New_York",
                       clock=lambda: clock["t"])

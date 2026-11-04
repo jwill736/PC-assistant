@@ -278,6 +278,20 @@ def list_windows() -> list[WindowInfo]:
         return []
 
 
+def is_hud(w, name: str = "Vesper") -> bool:
+    """Vesper's own HUD window (its title, "<name> HUD"), or a window of this process."""
+    return (getattr(w, "title", "") or "").startswith(f"{name} HUD") or getattr(w, "pid", 0) == os.getpid()
+
+
+def front_not_hud(name: str = "Vesper") -> WindowInfo | None:
+    """The window in front, looking past the HUD: a click on one of its buttons (Undo) brings it to the front, and
+    what J means is the window behind it. Windows lists them front-most first."""
+    w = active_window()
+    if w is None or not is_hud(w, name):
+        return w
+    return next((x for x in list_windows() if not is_hud(x, name)), None)
+
+
 def idle_seconds() -> float:
     try:
         return _idle_seconds()

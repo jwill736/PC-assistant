@@ -418,7 +418,11 @@ def test_say_is_short_and_keeps_chat_off_air(env, svc):
     line = cop.say("stream_stats_now", {}, cop.stats_now())
     assert line.startswith("Live 0 minutes, 12 watching, peak 12. 0 new follows")
     q = cop.say("chat_pulse", {"focus": "questions"}, cop.chat_pulse("questions"))
-    assert q == "1 open question. Latest from Kai. They're on the HUD." and "address" not in q
+    assert q == "1 open question. They're on the HUD." and "address" not in q  # on air: no chatter's name either
+    state["live"] = False  # off air (questions stay up a while): a Twitch login can be said
+    assert cop.say("chat_pulse", {"focus": "questions"}, cop.chat_pulse("questions")) == \
+        "1 open question. Latest from Kai. They're on the HUD."
+    state["live"] = True
     assert cop.say("chat_pulse", {}, cop.chat_pulse()).startswith("Chat's ")
     assert cop.say("stream_recap", {}, cop.stream_recap()).startswith("No finished stream yet")
     cop.recap = cop.build_recap(sc.new_session(3, clock.t - 5400, {}), clock.t)

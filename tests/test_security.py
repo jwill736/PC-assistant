@@ -458,6 +458,22 @@ def test_the_screen_isnt_looked_at_on_air_unless_asked(svc):
     assert s.look("what's this", explicit=False)["ok"] is False and shots == []
 
 
+def test_where_am_i_on_air_doesnt_read_the_window_title(svc, monkeypatch):
+    """INTEG-12: "what's open" while live read the front window's title (an email subject, a DM) on stream."""
+    from assistant.integrations import desktop
+
+    gmail = desktop.WindowInfo("Re: Salary review - j@acme.com - Gmail - Google Chrome", "chrome", 21, 600)
+    monkeypatch.setattr(desktop, "active_window", lambda: gmail)
+    monkeypatch.setattr(desktop, "list_windows", lambda: [gmail])
+    svc.live = lambda: True
+    a = Assistant(svc)
+    out = a.handle("what's open")
+    assert out["reply"] == "You're in chrome; the window titles are on the HUD. 1 windows open across 1 apps."
+    assert out["data"]["live"] and "never a window's title" in out["data"]["live_note"]  # Claude is told too
+    svc.live = lambda: False
+    assert "Salary review" in a.handle("what's open")["reply"]  # off air, as before
+
+
 # ---- secrets are never kept -----------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text", ["the wifi password is hunter2", "my api key is sk-ant-api03-" + "k" * 30,

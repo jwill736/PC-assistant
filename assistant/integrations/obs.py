@@ -148,6 +148,16 @@ class OBSController:
         self._inputs_cache = (time.time(), inputs)
         return inputs
 
+    def cached_inputs(self) -> list[dict]:
+        """The audio inputs as last read, without asking OBS (safe on the mic thread). A mute or unmute in OBS lands
+        here at once by event while the event connection is up, else within the 15 s re-read."""
+        return list(self._inputs_cache[1])
+
+    def _muted(self, name: str, muted: bool, fresh: bool = True) -> None:
+        ts, cached = self._inputs_cache
+        self._inputs_cache = (ts if fresh else 0.0, [{**i, "muted": bool(muted)} if i.get("name") == name else i
+                                                     for i in cached])
+
     # ---- write ----------------------------------------------------------
     def match_scene(self, spoken: str) -> str | None:
         key = spoken.lower().strip().removesuffix(" scene").removeprefix("the ").strip()
@@ -311,7 +321,7 @@ class OBSController:
             from obsws_python.subs import Subs
 
             ev = obs.EventClient(host=self.host, port=self.port, password=self.password, timeout=3,
-                                 subs=Subs.OUTPUTS | Subs.INPUTVOLUMEMETERS)
+                                 subs=Subs.OUTPUTS | Subs.INPUTS | Subs.INPUTVOLUMEMETERS)
         except Exception as exc:
             self._events = None
             self._events_next_try = time.time() + 15
@@ -327,7 +337,10 @@ class OBSController:
             self.last_replay_path = getattr(data, "saved_replay_path", None) or self.last_replay_path
             if on_replay_saved:
                 on_replay_saved(self.last_replay_path)
-        ev.callback.register([on_input_volume_meters, on_replay_buffer_saved])
+
+        def on_input_mute_state_changed(data):  # J muted or unmuted an input in OBS (captions stop at once)
+            self._muted(getattr(data, "input_name", ""), bool(getattr(data, "input_muted", False)))
+        ev.callback.register([on_input_volume_meters, on_replay_buffer_saved, on_input_mute_state_changed])
         self._events = ev
         return True
 
@@ -351,7 +364,7 @@ class OBSController:
             state = self._send("GetInputMute", {"inputName": target}).get("inputMuted")
         except Exception as exc:
             return {"ok": False, "error": _describe(exc)}
-        self._inputs_cache = (0.0, [])
+        self._muted(target, bool(state), fresh=False)  # read again next time, and known right now meanwhile
         return {"ok": True, "source": target, "muted": bool(state)}
 
     def set_text(self, source: str, text: str) -> dict:

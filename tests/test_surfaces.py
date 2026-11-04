@@ -481,6 +481,59 @@ def test_overlay_socket_sends_only_overlay_events(pc):
         assert got["mood"]["label"] == "restless" and "PRIVATE" not in json.dumps(got)
 
 
+def test_the_obs_overlay_is_not_a_hud_so_system_stats_stay_slow_with_only_obs_open(pc, monkeypatch):
+    """INTEG-6 / CORE-9: OBS keeps its Browser sources loaded whenever it's open, and the overlay's socket counted as an
+    open HUD: system stats (nvidia-smi, a process walk) every tick instead of every 15th, all stream."""
+    c, app, rt = pc
+    taken = []
+    monkeypatch.setattr(rt.svc.system, "snapshot",
+                        lambda include_processes=True: taken.append(include_processes) or {"cpu": {"percent": 5}})
+    key = c.get("/api/hud/overlay").json()["key"]
+    with c.websocket_connect(f"/overlay/ws?key={key}") as ws:
+        ws.receive_text()
+        assert len(rt.bus._clients) == 1 and rt.bus.client_count == 0  # the OBS Browser source, and no HUD
+        for _ in range(30):  # a minute of 2 s ticks: nobody is looking at the HUD
+            rt._poll_system()
+    assert len(taken) <= 2, f"{len(taken)} samples in a minute with no HUD open"
+    with c.websocket_connect(f"/ws?token={app.state.token}") as hud:
+        assert rt.bus.client_count == 1  # the HUD itself still counts
+        rt.bus.publish("ping", {})
+        hud.receive_text()
+        taken.clear()
+        for _ in range(3):
+            rt._poll_system()
+        assert len(taken) == 3  # someone's looking: every tick, as before
+
+
+def test_an_overlay_subscriber_doesnt_count_as_a_hud(cfg, svc):
+    rt = Runtime(cfg, services=svc)
+    calls = []
+    svc.system.snapshot = lambda include_processes=True: calls.append(include_processes) or {"cpu": {}, "gpus": []}
+    for _ in range(30):  # 60 s of ticks with nothing connected
+        rt._poll_system()
+    idle = len(calls)
+    calls.clear()
+    q = rt.bus.subscribe(kind="overlay")  # what /overlay/ws does for the OBS Browser source
+    for _ in range(30):
+        rt._poll_system()
+    rt.bus.unsubscribe(q)
+    assert idle == 2 and len(calls) == 2 and rt.bus.client_count == 0
+    hud = rt.bus.subscribe()
+    assert rt.bus.client_count == 1
+    rt.bus.unsubscribe(hud)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="needs node")
+@pytest.mark.real_subprocess  # node runs the overlay's script against a stand-in DOM (tests/overlay_ticker.js)
+@pytest.mark.parametrize("motion", ["full", "off"])
+def test_overlay_ticker_keeps_four_rows_through_a_burst_of_follows(motion):
+    """HUD-4: with motion on, a second follow inside one row's 300 ms fade marked the same row again, so a raid or a
+    follow-bot wave grew the on-stream "Latest" card for good (20 follows in 0.4 s left 22 rows)."""
+    out = subprocess.run([shutil.which("node"), str(Path(__file__).with_name("overlay_ticker.js")), str(WEB / "overlay.js"),
+                          motion], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=True)
+    assert json.loads(out.stdout.splitlines()[-1]) == {"spaced": 4, "burst": 4, "after": 4, "raid": 4}
+
+
 def test_overlay_new_link_retires_the_old_one(pc):
     c, _, rt = pc
     old = c.get("/api/hud/overlay").json()["key"]

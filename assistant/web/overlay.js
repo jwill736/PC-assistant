@@ -203,10 +203,12 @@
     const row = tickerRow(e);
     row.classList.add('new');
     p.list.prepend(row);
-    while (p.list.children.length > 4) {
-      const last = p.list.lastElementChild;
-      if (still()) last.remove();
-      else { last.classList.add('gone'); setTimeout(() => last.remove(), 300); break; }
+    // Four rows: every one past them goes, counting only rows not already on their way out (a burst of follows
+    // inside one fade would otherwise mark the same row twice and leave the rest for good).
+    const staying = [...p.list.children].filter(r => !r.classList.contains('gone'));
+    for (const r of staying.slice(4)) {
+      if (still()) r.remove();
+      else { r.classList.add('gone'); setTimeout(() => r.remove(), 300); }
     }
     setTimeout(() => row.classList.remove('new'), 2400);
   }

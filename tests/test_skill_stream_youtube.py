@@ -364,3 +364,155 @@ def test_routes_when_connected(env):
     assert route("set the description to new run", ctx).args == {"description": "new run", "where": "youtube"}
     assert route("both", ctx) is None  # only an answer while the question is open
     assert yt.title_tool() == "stream_title"
+
+
+# ---- sweep regressions (audit INTEG-1, -2, -10, -14) ---------------------------------------------------------------
+
+def test_youtube_chat_landing_after_a_twitch_message_still_reaches_copilot_and_moments(env):
+    """INTEG-2: a YouTube batch was stamped with the time before its own read, so a Twitch message that landed during
+    the read moved the co-pilot's and moments' "newest seen" past it and the whole batch was skipped."""
+    yt, fake, clock, state, opened = env
+    svc = yt.svc
+    svc.highlights = lambda: []
+    cop = cop_mod.StreamCopilot(svc, clock=clock, fullscreen=lambda: "")
+    mom = moments_mod.StreamMoments(svc, clock=clock)
+    svc.bus.publish("twitch", {"enabled": True, "live": True, "title": "t", "game": "ELDEN RING"}, sticky=True)
+    cop.tick()
+    yt.tick()  # finds the broadcast, first (empty) chat read
+    clock.t += 11
+    fake.pages = [{"items": [msg("Ana", "what boss is next?", cid="UCana", now=clock.t)]}]
+
+    def slow(req):  # the chat read takes 0.4 s; meanwhile a Twitch message arrives and both skills tick
+        if req.url.path.endswith("liveChat/messages"):
+            clock.t += 0.4
+            svc.twitch_feed.add({"kind": "chat", "user": "twitchy", "text": "hi", "detail": {"login": "twitchy"}})
+            cop.tick()
+            mom._read_chat()
+        return fake(req)
+    svc.google.http = httpx.Client(transport=httpx.MockTransport(slow))
+    yt.tick()
+    clock.t += 1
+    cop.tick()
+    mom._read_chat()
+    assert [m["text"] for m in svc.twitch_feed.recent_chat()][-1] == "what boss is next?"
+    assert cop.session["yt_messages"] == 1
+    assert [q["user"] for q in cop.open_questions()] == ["Ana"]
+    assert len(mom.spike.times) == 2
+
+
+def test_feed_chat_times_only_go_up_in_the_order_added():
+    clock = Clock(100.0)
+    feed = TwitchFeed(clock=clock)
+    feed.add({"kind": "chat", "user": "a", "text": "1"})
+    feed.add({"kind": "chat", "user": "b", "text": "2", "ts": 99.5})  # stamped a moment earlier by its producer
+    feed.add({"kind": "chat", "user": "c", "text": "3"})  # the same clock reading as the first
+    ts = [m["ts"] for m in feed.recent_chat()]
+    assert ts == sorted(ts) and len(set(ts)) == 3
+
+
+def test_chat_questions_on_air_never_read_a_youtube_viewers_free_text_name(env):
+    """INTEG-1: a YouTube channel name is any text a viewer types; "any questions in chat?" read it on stream."""
+    yt, fake, clock, state, opened = env
+    svc = yt.svc
+    svc.highlights = lambda: []
+    cop = cop_mod.StreamCopilot(svc, clock=clock, fullscreen=lambda: "")
+    svc.bus.publish("twitch", {"enabled": True, "live": True, "title": "t", "game": "ELDEN RING"}, sticky=True)
+    cop.tick()
+    name = "J lives at 12 Elm Street"
+    fake.pages = [{"items": [msg(name, "what rank are you?", cid="UCtroll")]}]
+    clock.t += 1
+    yt.tick()
+    clock.t += 1
+    cop.tick()
+    said = cop.say("chat_pulse", {"focus": "questions"}, cop.chat_pulse("questions"))
+    assert svc.live() and name not in said and said == "1 open question. They're on the HUD."
+    state["live"] = False  # off air the line can say who, but still never a YouTube name
+    said = cop.say("chat_pulse", {"focus": "questions"}, cop.chat_pulse("questions"))
+    assert said == "1 open question. Latest from a YouTube viewer. They're on the HUD."
+
+
+def test_routing_a_command_doesnt_wait_on_a_google_token_refresh(env):
+    """INTEG-10: route() asks which accounts allowed YouTube, and the account lock was held across a token refresh."""
+    import threading
+
+    yt, fake, clock, state, opened = env
+    g = yt.svc.google
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_token(req):
+        if req.url.host == "oauth2.googleapis.com":
+            entered.set()
+            release.wait(5)  # a token POST on a bad network
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+        return fake(req)
+    g.http = httpx.Client(transport=httpx.MockTransport(slow_token))
+    g._tokens[EMAIL]["expires_at"] = 0  # due for its hourly refresh
+    got = []
+    t = threading.Thread(target=lambda: got.append(g._access(EMAIL)), daemon=True)
+    t.start()
+    assert entered.wait(2)
+    done = threading.Event()
+    threading.Thread(target=lambda: (yt.route("what time is it"), done.set()), daemon=True).start()
+    assert done.wait(2), "routing waited on the refresh"  # it answers while the refresh is still out
+    assert not got
+    release.set()
+    t.join(5)
+    assert got == ["tok"] and g._tokens[EMAIL]["access_token"] == "tok"
+
+
+def test_two_threads_refresh_one_token_once(env):
+    import threading
+
+    yt, fake, clock, state, opened = env
+    g = yt.svc.google
+    posts, entered, release = [], threading.Event(), threading.Event()
+
+    def token(req):
+        if req.url.host == "oauth2.googleapis.com":
+            posts.append(1)
+            entered.set()
+            release.wait(5)
+            return httpx.Response(200, json={"access_token": "fresh", "expires_in": 3600})
+        return fake(req)
+    g.http = httpx.Client(transport=httpx.MockTransport(token))
+    g._tokens[EMAIL]["expires_at"] = 0
+    got = []
+    ts = [threading.Thread(target=lambda: got.append(g._access(EMAIL)), daemon=True) for _ in range(2)]
+    ts[0].start()
+    assert entered.wait(2)
+    ts[1].start()  # asks while the first refresh is still out
+    release.set()
+    for t in ts:
+        t.join(5)
+    assert got == ["fresh", "fresh"] and posts == [1]  # the second waited for the first, then used its token
+
+
+def test_a_late_stream_past_midnight_pacific_leaves_chat_for_that_evenings_stream(env):
+    """INTEG-14: 20:00-04:00 PT, then 19:00-22:00 PT the next evening, on the same Pacific quota day. After midnight the
+    new day's budget was spent as if the stream ended within the hour: that evening got a chat read every ~220 s."""
+    yt, fake, clock, state, opened = env
+    la = ZoneInfo("America/Los_Angeles")
+    clock.t = datetime(2026, 11, 3, 20, 0, tzinfo=la).timestamp()
+    midnight = datetime(2026, 11, 4, 0, 0, tzinfo=la).timestamp()
+    end = clock.t + 8 * 3600
+    late = 0
+    while clock.t < end:
+        n = len(reads(fake))
+        yt.tick()
+        late += (len(reads(fake)) - n) if clock.t >= midnight else 0
+        clock.t += 5
+    state["live"] = False
+    for _ in range(30):  # the stream ends (past the 90 s grace)
+        yt.tick()
+        clock.t += 5
+    clock.t = datetime(2026, 11, 4, 19, 0, tzinfo=la).timestamp()
+    state["live"] = True
+    n = len(reads(fake))
+    end = clock.t + 3 * 3600
+    while clock.t < end:
+        yt.tick()
+        clock.t += 5
+    evening = len(reads(fake)) - n
+    assert late >= 4 * 3600 / 30, f"the hours past midnight got {late} chat reads"  # still one every 30 s or better
+    assert evening >= 3 * 3600 / 20, f"the evening stream got {evening} chat reads"  # was 49: one every 220 s
+    assert yt.spent() <= yt.daily()

@@ -29,6 +29,7 @@ TEMPLATE = "**{name} is live!** {title}{game}\n{link}"
 MIN_GAP_S = 30
 DEDUPE_S = 600
 ONE_STREAM_S = 6 * 3600
+LOOKUP_RETRY_S, LOOKUP_MAX_S = 300.0, 3600.0  # the webhook's name, again after Discord didn't answer
 
 
 class Discord(Skill):
@@ -46,6 +47,8 @@ class Discord(Skill):
         self.state: dict = self._load()
         self.hook: dict | None = None  # the webhook's name and channel, from Discord
         self.error: str | None = None
+        self._gone = ""  # a webhook link Discord said is deleted
+        self._wait, self._retry_at = 0.0, 0.0  # looking the webhook up again after Discord didn't answer
 
     # ---- setup ---------------------------------------------------------------------------------------
     @property
@@ -86,7 +89,8 @@ class Discord(Skill):
         except httpx.HTTPError as exc:
             return {"ok": False, "error": f"Couldn't reach Discord ({type(exc).__name__})."}
         if r.status_code in (401, 404):
-            return {"ok": False, "error": "Discord doesn't know that webhook: it was deleted. Make a new one."}
+            return {"ok": False, "gone": True,
+                    "error": "Discord doesn't know that webhook: it was deleted. Make a new one."}
         if r.status_code != 200:
             return {"ok": False, "error": f"Discord said {r.status_code}."}
         d = r.json()
@@ -166,7 +170,8 @@ class Discord(Skill):
         return out
 
     def latest_clip(self) -> dict | None:
-        """The newest Twitch clip: from today's highlights, else Twitch's clip list for the past week."""
+        """The newest Twitch clip: from today's highlights, else J's own clips from Twitch's list for the past week.
+        That list also holds clips viewers made of the channel, titled by them: those never go out under J's name."""
         try:
             for x in (self.svc.highlights() if self.svc.highlights else []):
                 url = (x.get("detail") or {}).get("url") or ""
@@ -178,17 +183,37 @@ class Discord(Skill):
         if not (getattr(tw, "enabled", False) and hasattr(tw, "_get") and hasattr(tw, "broadcaster_id")):
             return None
         try:
+            bid = tw.broadcaster_id()
+            me = str((getattr(getattr(tw, "auth", None), "token", None) or {}).get("user_id") or "")
             since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            clips = tw._get("clips", {"broadcaster_id": tw.broadcaster_id(), "first": 20, "started_at": since})
+            clips = tw._get("clips", {"broadcaster_id": bid, "first": 20, "started_at": since})
         except Exception:
             return None
-        clips = sorted((c for c in clips if c.get("url")), key=lambda c: c.get("created_at", ""), reverse=True)
+        mine = {str(bid or ""), me} - {""}  # the channel, or the login J clips with (an editor's)
+        clips = sorted((c for c in clips if c.get("url") and str(c.get("creator_id") or "") in mine),
+                       key=lambda c: c.get("created_at", ""), reverse=True)
         return {"url": clips[0]["url"], "title": clips[0].get("title", "")} if clips else None
 
-    def post_clip(self) -> dict:
-        clip = self.latest_clip()
+    def _pin_clip(self, a: dict) -> str:
+        """Work out the clip when J is asked, and pin it into the call: the yes posts the one he was asked about, with
+        its title in the question (off air: on stream, the question stays plain)."""
+        if "url" not in a:
+            clip = self.latest_clip()
+            a.update({"url": clip["url"], "title": clip.get("title") or ""} if clip else {"url": ""})
+        live = bool(self.svc.live and self.svc.live())
+        if a["url"] and a.get("title") and not live:
+            return f"post your Twitch clip “{str(a['title'])[:80]}” to Discord"
+        return "post your latest Twitch clip to Discord"
+
+    def post_clip(self, url: str | None = None, title: str = "") -> dict:
+        """``url`` and ``title``: the clip pinned when J was asked ("" when there was none)."""
+        if url is None:
+            clip = self.latest_clip()
+        else:
+            clip = {"url": url, "title": title or ""} if url else None
         if clip is None:
-            return {"ok": False, "error": "I don't have a Twitch clip yet: say “make a clip” first (Twitch has to be connected)."}
+            return {"ok": False, "error": "I don't have a Twitch clip of yours yet: say “make a clip” first (Twitch has to "
+                                          "be connected)."}
         out = self.post(f"{clip['title']}\n{clip['url']}".strip(), "clip")
         return {**out, "clip": clip}
 
@@ -199,10 +224,18 @@ class Discord(Skill):
             up = self.stream_info()["uptime_s"]
             if up is None or up < 900:  # Vesper started mid-stream: too late for "going live"
                 self.announce_live()
-        if self.url and self.hook is None:
+        url = self.url
+        if url and self.hook is None and url != self._gone and self.clock() >= self._retry_at:
             out = self._lookup()
             if not out.get("ok"):
                 self.error = out["error"]
+                if out.get("gone"):  # deleted: not asked again until a new link is pasted
+                    self._gone = url
+                else:  # Discord or the network is down: 5 minutes, then longer, up to an hour
+                    self._wait = min(LOOKUP_MAX_S, self._wait * 2) if self._wait else LOOKUP_RETRY_S
+                    self._retry_at = self.clock() + self._wait
+            else:
+                self._wait, self._retry_at = 0.0, 0.0
         self.publish()
 
     def selftest(self) -> list[dict]:
@@ -242,7 +275,7 @@ class Discord(Skill):
                  obj({"text": {"type": "string"}}, ["text"]), self.announce, tier=2,
                  confirm_text=lambda a: f"post to Discord: “{a.get('text', '')}”"),
             Tool("discord_post_clip", "Post the user's latest Twitch clip to their Discord server (public).", obj(),
-                 self.post_clip, tier=2, confirm_text=lambda a: "post your latest Twitch clip to Discord"),
+                 self.post_clip, tier=2, confirm_text=self._pin_clip),
         ]
 
     def route(self, t: str):

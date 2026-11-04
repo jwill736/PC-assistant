@@ -168,9 +168,12 @@ def can(node: Node, action: str) -> bool:
     return bool(p & {"invoke", "toggle", "selection", "expand"}) or node.kind in CLICKABLE
 
 
-def match(nodes: list[Node], target: str, action: str = "click", kinds: set[str] | None = None) -> Found:
-    """The control J means, or the few he might mean, or why there's none."""
+def match(nodes: list[Node], target: str, action: str = "click", kinds: set[str] | None = None,
+          quiet: bool = False) -> Found:
+    """The control J means, or the few he might mean, or why there's none. ``quiet`` (live on stream): a reason names
+    the control by what J said, never by the window's own text (a link, a page title, an email subject)."""
     query, said_kinds = parse_target(target)
+    called = (lambda n: target) if quiet else (lambda n: n.name)
     kinds = kinds if kinds is not None else said_kinds
     if not query:
         return Found(problem="Which control? Say its name, like “click Export”.")
@@ -187,7 +190,7 @@ def match(nodes: list[Node], target: str, action: str = "click", kinds: set[str]
     scored.sort(key=lambda x: (-x[0], x[1]))
     fits = [x for x in scored if x[0] >= MATCH_AT]
     if not fits:
-        near = [n.name for s, _i, n in scored[:3] if s >= MATCH_AT - 0.1]
+        near = [] if quiet else [n.name for s, _i, n in scored[:3] if s >= MATCH_AT - 0.1]
         return Found(problem=f"I can't see anything called “{target}” there." +
                      (f" Closest: {', '.join(near)}." if near else ""))
     if fits[0][2].password:
@@ -196,11 +199,11 @@ def match(nodes: list[Node], target: str, action: str = "click", kinds: set[str]
     if not usable:
         n = fits[0][2]
         if not n.enabled:
-            return Found(problem=f"{n.name} is greyed out right now.")
-        return Found(problem=f"{n.name} isn't something I can {_verb(action)}.")
+            return Found(problem=f"{called(n)} is greyed out right now.")
+        return Found(problem=f"{called(n)} isn't something I can {_verb(action)}.")
     live = [x for x in usable if x[2].enabled]
     if not live:
-        return Found(problem=f"{usable[0][2].name} is greyed out right now.")
+        return Found(problem=f"{called(usable[0][2])} is greyed out right now.")
     best = live[0][0]
     close, seen = [], set()
     for s, _i, n in live:
@@ -393,7 +396,10 @@ class ComBackend:  # pragma: no cover - Windows only (the Windows CI job imports
         return [self._node(found.GetElement(i)) for i in range(found.Length)] if found else []
 
     def find(self, root, runtime_id: tuple, rect: tuple = ()) -> Node | None:
-        """The control with that runtime id: first at the middle of where it was (one call), then by a search."""
+        """The control with that runtime id, at the middle of where it was (one call). Not there (J went back to his
+        game, the HUD covers it, the window moved): None, and refind() walks the window within its time budget. No
+        FindFirst over all descendants: that's many calls inside UIA with no cap overall, on a huge tree (a web page,
+        Premiere) for many seconds, and the yes waits on it."""
         c = self._client()
         if len(rect) == 4:
             try:
@@ -403,12 +409,7 @@ class ComBackend:  # pragma: no cover - Windows only (the Windows CI job imports
                     return self._node(el)
             except Exception:
                 pass
-        try:
-            cond = c.CreatePropertyCondition(PROPS["runtime_id"], list(runtime_id))
-            el = root.FindFirstBuildCache(0x4, cond, self._local.cache)  # TreeScope_Descendants, one call
-            return self._node(el) if el else None
-        except Exception:
-            return None  # refind() walks the window instead
+        return None
 
     def at_point(self, x: int, y: int) -> list[tuple]:
         """The runtime ids of the control under that point and a few of its parents."""

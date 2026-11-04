@@ -193,17 +193,21 @@ def test_event_feed_registers_callbacks_by_name(monkeypatch):
     fake = ModuleType("obsws_python")
     fake.EventClient = EventClient
     subs = ModuleType("obsws_python.subs")
-    subs.Subs = SimpleNamespace(OUTPUTS=64, INPUTVOLUMEMETERS=65536)
+    subs.Subs = SimpleNamespace(OUTPUTS=64, INPUTS=8, INPUTVOLUMEMETERS=65536)
     monkeypatch.setitem(sys.modules, "obsws_python", fake)
     monkeypatch.setitem(sys.modules, "obsws_python.subs", subs)
     got, saved = [], []
     obs = OBSController()
+    obs._inputs_cache = (time.time(), [{"name": "Mic/Aux", "muted": False}, {"name": "Desktop Audio", "muted": False}])
     assert obs.ensure_events(on_meters=got.append, on_replay_saved=saved.append)
     names = {fn.__name__: fn for fn in registered}
-    assert set(names) == {"on_input_volume_meters", "on_replay_buffer_saved"}  # obsws matches on these names
+    assert set(names) == {"on_input_volume_meters", "on_replay_buffer_saved",  # obsws matches on these names
+                          "on_input_mute_state_changed"}
     names["on_input_volume_meters"](SimpleNamespace(inputs=[{"inputName": "Mic/Aux"}]))
     names["on_replay_buffer_saved"](SimpleNamespace(saved_replay_path="C:/clip.mkv"))
     assert got == [[{"inputName": "Mic/Aux"}]] and saved == ["C:/clip.mkv"] and obs.last_replay_path == "C:/clip.mkv"
+    names["on_input_mute_state_changed"](SimpleNamespace(input_name="Mic/Aux", input_muted=True))  # J hit mute in OBS
+    assert obs.cached_inputs() == [{"name": "Mic/Aux", "muted": True}, {"name": "Desktop Audio", "muted": False}]
     assert obs.ensure_events() is True  # the live connection is reused
 
 

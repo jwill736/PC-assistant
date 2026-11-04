@@ -95,7 +95,7 @@ class StreamCaptions(Skill):
             self.off_record = a.off_record
         self.listener = getattr(runtime, "listener", None)
         if self.listener is not None:
-            self.listener.hear_all = self.showing
+            self.hook(self.listener, "hear_all", self.showing)  # switched off: back to the listener's own
 
     # ---- state ------------------------------------------------------------------------------------------------
     @property
@@ -208,6 +208,13 @@ class StreamCaptions(Skill):
         self.publish()
         return {"ok": True, "on": bool(on), "live": self.live(), "voice": self._voice_note(),
                 "obs_source": str(self.setting("obs_source") or "")}
+
+    def stop(self) -> None:
+        """Switched off in Setup → Skills (or by the crash guard): no caption is left showing on stream."""
+        with self._llock:
+            self.lines.clear()
+        self._to_obs()
+        self.publish()
 
     def _voice_note(self) -> str | None:
         lst = self.listener

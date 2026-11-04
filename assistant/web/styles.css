@@ -912,15 +912,20 @@ table.t .act { width: 1%; max-width: none; white-space: nowrap; overflow: visibl
 
 /* ============================================================== on air: private panels (skills/stream_privacy) */
 /* <body class="live-private"> while live with the Stream tab's "Privacy while live" on (app.js). These panels and the
-   text of notifications blur; a click on the cover peeks at one panel for 10 s (.peek, set by stream_privacy.js). */
+   text of notifications blur; a click on the cover peeks at one panel for 10 s (.peek, set by stream_privacy.js).
+   The list is skills/stream_privacy.py's PANELS (tests/test_skill_stream_privacy.py checks they match). Phone and
+   Phone HUD hold a pairing code and a PIN: whoever reads those off the stream could take over Vesper. */
 body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
-  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body {
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"],
+  .panel[data-panel="phone"], .panel[data-panel="phone_hud"]):not(.peek) > .body {
   min-height: 96px; cursor: pointer; }
 body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
-  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body > * {
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"],
+  .panel[data-panel="phone"], .panel[data-panel="phone_hud"]):not(.peek) > .body > * {
   filter: blur(14px) saturate(.4); opacity: .55; pointer-events: none; user-select: none; }
 body.live-private :is(.panel[data-panel="inbox"], .panel[data-panel="inbox_zero"], .panel[data-panel="people"], .panel[data-panel="bills"],
-  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"]):not(.peek) > .body::after {
+  .panel[data-panel="journal"], .panel[data-panel="memory"], .panel[data-panel="clipboard"], .panel[data-panel="rewind"],
+  .panel[data-panel="phone"], .panel[data-panel="phone_hud"]):not(.peek) > .body::after {
   content: "Hidden while live · click to peek"; position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
   font: 500 10.5px/1.3 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--alert);
   border: 1px dashed oklch(from var(--alert) l c h / .45); border-radius: var(--radius); background: oklch(from var(--panel) l c h / .35); }

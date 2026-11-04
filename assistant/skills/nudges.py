@@ -154,7 +154,7 @@ class Nudges(Skill):
                             "useful INTEGER, ts REAL)")
         svc.storage.execute("CREATE TABLE IF NOT EXISTS nudges_once (key TEXT PRIMARY KEY, until REAL)")
         self._seen = self._load_seen()  # key -> until when it stays away (dismissed, or a once nudge already shown)
-        svc.nudge = self.add
+        self.hook(svc, "nudge", self.add)  # switched off: other skills' nudges are HUD cards (Skill.nudge)
         svc.bus.on(self._on_event)
 
     # ---- the queue ---------------------------------------------------------------------------------------

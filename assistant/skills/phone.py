@@ -4,7 +4,8 @@ Setup (HUD → Setup → Phone): make a bot with @BotFather in Telegram, paste i
 TELEGRAM_BOT_TOKEN), then send the bot ``/start <code>`` with the code the panel shows. The first chat to send the
 right code is paired (data/phone.json); every other chat is ignored.
 
-From the paired chat, any message runs as if you'd typed it on the PC and the reply comes back. Anything that needs
+From the paired chat, any message runs as if you'd typed it on the PC and the reply comes back; a forwarded message
+(someone else's words) never runs, Vesper asks what to do with it instead. Anything that needs
 a yes on the PC needs one here too: Vesper answers "Confirm: …? Reply yes or no" with Yes/No buttons, and the answer
 goes through the assistant's normal confirmation. /status, /mute [minutes], /unmute, /help; no screenshots.
 
@@ -53,6 +54,8 @@ VOICE_MAX_S, VOICE_MAX_BYTES = 120, 2_000_000  # Telegram's voice notes are ~30 
 VOICE_RATE = (6, 600)  # at most 6 voice messages fetched in 10 minutes
 NO_FFMPEG = ("I got your voice message, but the PC needs ffmpeg to play it. At the PC: Win+R, type cmd, run "
              "“winget install Gyan.FFmpeg”, then run Update Vesper from the Start menu. Typing works meanwhile.")
+FORWARDED = ("That's a forwarded message, so I didn't act on it: someone else's words aren't a command from you. "
+             "Tell me what to do with it in your own message (copy in the part that matters).")
 JOB_ACTIVE = ("queued", "planning", "running", "paused")
 SCREEN = re.compile(r"\bscreen ?shots?\b|\bscreen ?(?:capture|grab)\b|\bwhat'?s on (?:my|the) screen\b")
 
@@ -177,6 +180,8 @@ class Phone(Skill):
             self.bot = (self.api("getMe") or {}).get("username")
         updates = self.api("getUpdates", {"offset": self.state.get("offset", 0), "timeout": timeout,
                                           "allowed_updates": ["message", "callback_query"]}, timeout=timeout + 10)
+        if self._stop.is_set():  # switched off while it waited: they're left for the next poll after it's back on
+            return 0
         for u in updates or []:
             self.state["offset"] = int(u.get("update_id", 0)) + 1
             self._save()  # before running it: a crash must never run the same message twice
@@ -187,19 +192,27 @@ class Phone(Skill):
         self.last_poll, self.error = self.clock(), ""
         return len(updates or [])
 
-    def _loop(self) -> None:
+    def _loop(self, stop: threading.Event | None = None, before: threading.Thread | None = None) -> None:
+        """``stop``: this run's own (a loop from before a stop() never runs on). ``before``: that loop, when the phone
+        was switched off and on again within its long poll: it ends first, since one bot token takes one poll at a
+        time (Telegram answers a second with "409 Conflict")."""
+        stop = stop or self._stop
+        if before is not None and before is not threading.current_thread():
+            before.join(60)
         backoff = 5.0
-        while not self._stop.is_set():
+        while not stop.is_set():
             if not self.token():
-                self._stop.wait(5)
+                stop.wait(5)
                 continue
             try:
                 self.poll_once()
                 backoff = 5.0
             except Exception as exc:  # Telegram down, no internet, a bad token: wait and try again, never crash
+                if stop.is_set():
+                    break
                 self.error = str(exc) if isinstance(exc, PhoneError) else f"Polling failed ({type(exc).__name__})."
                 self.publish()
-                self._stop.wait(backoff)
+                stop.wait(backoff)
                 backoff = min(backoff * 2, 300)
 
     # ---- messages in -------------------------------------------------------------------------------------
@@ -227,6 +240,9 @@ class Phone(Skill):
         if cid != self.chat_id:
             return  # a stranger found the bot: say nothing
         self.last_message = self.clock()
+        if msg.get("forward_origin") or msg.get("forward_date") or msg.get("forward_from"):
+            self.send(FORWARDED)  # someone else's words (or J's from elsewhere): never run, nor learned, as his command
+            return
         if not text and msg.get("voice"):
             heard, why = self.hear(msg["voice"])
             if heard:
@@ -635,11 +651,12 @@ class Phone(Skill):
 
     def start(self, runtime) -> None:
         self.run_command = lambda text: runtime.command(text, source="phone")
-        self._stop.clear()  # turned back on in Setup → Skills after a stop()
+        self._stop.set()  # turned back on in Setup → Skills: the last loop ends after its poll, a new one takes over
+        before, self._stop = self._thread, threading.Event()
         self.pending = runtime.assistant.pending_view
         self._ctx = lambda: getattr(runtime.assistant, "_ctx", None) or {}
         self.listener = getattr(runtime, "listener", None)
-        self._thread = threading.Thread(target=self._loop, name="phone", daemon=True)
+        self._thread = threading.Thread(target=self._loop, args=(self._stop, before), name="phone", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:

@@ -129,6 +129,90 @@ def test_skill_learns_from_notes_and_quiet_conversations_but_not_on_air(svc):
     assert sk.learn_conversations(time.time() + 500) == 0
 
 
+MAYA = {"facts": [{"statement": "J's sister Maya's birthday is June 3", "kind": "fact", "subject": "Maya",
+                   "subject_kind": "person", "context": "birthday", "importance": 4}]}
+
+
+def said_at(svc, ts, text):
+    svc.storage.execute("INSERT INTO log(ts,role,source,text) VALUES (?,?,?,?)", (ts, "user", "voice", text))
+
+
+def test_what_j_said_before_a_game_is_learned_once_the_game_is_over(svc):
+    """In a game with only the big model left, think() gives no answer ("the question waits until the game is over"):
+    the conversation waits in line, the model isn't asked again mid-game, and it's learned after."""
+    clock, game, asked = Clock(), {"on": True}, []
+
+    def think(prompt, schema=None, **kw):
+        asked.append(prompt)
+        return None if game["on"] else MAYA
+    svc.think = think
+    sk = MemorySkill(svc, embedder=None, clock=clock)
+    sk._game = lambda: game["on"]
+    t = clock.t
+    said_at(svc, t, "oh and my sister Maya's birthday is June 3rd, remind me closer to it")
+    assert sk.learn_conversations(t + 300) == 0 and len(asked) == 1  # two quiet minutes later, mid-game: no answer
+    for minute in range(6, 120):  # the 60 s tick through a two-hour game
+        assert sk.learn_conversations(t + minute * 60) == 0
+    assert len(asked) == 1  # asked once: never again until the game is over
+    game["on"] = False
+    assert sk.learn_conversations(t + 7300) == 1
+    assert any("Maya" in f["statement"] for f in sk.memory.facts()), "what J said before the game was never learned"
+    assert sk.learn_conversations(t + 7400) == 0 and len(asked) == 2  # learned once
+
+
+def test_with_ollama_closed_it_asks_again_later_not_every_tick(svc):
+    clock, up, asked = Clock(), {"on": False}, []
+
+    def think(prompt, schema=None, **kw):
+        asked.append(prompt)
+        return MAYA if up["on"] else None
+    svc.think = think
+    sk = MemorySkill(svc, embedder=None, clock=clock)
+    t = clock.t
+    said_at(svc, t, "oh and my sister Maya's birthday is June 3rd, remind me closer to it")
+    sk.learn_conversations(t + 300)
+    for s in range(360, 900, 60):
+        sk.learn_conversations(t + s)
+    assert len(asked) == 1  # ten minutes before it asks again
+    sk.learn_conversations(t + 900)
+    assert len(asked) == 2
+    sk.learn_conversations(t + 900 + 600)
+    assert len(asked) == 2  # then twenty
+    up["on"] = True  # J opens Ollama again
+    assert sk.learn_conversations(t + 900 + 1200) == 1 and len(asked) == 3
+
+
+def test_the_line_is_bounded_kept_across_a_restart_and_a_forgotten_conversation_never_learned(svc):
+    from assistant.skills import memory as msk
+
+    clock, up, asked = Clock(), {"on": False}, []
+
+    def think(prompt, schema=None, **kw):
+        if not up["on"]:
+            return None
+        asked.append(prompt)
+        return {"facts": []}
+    svc.think = think
+    sk = MemorySkill(svc, embedder=None, clock=clock)
+    sk._game = lambda: True
+    t = clock.t
+    for i in range(msk.WAITING_MAX + 3):  # a long gaming day: a conversation every half hour, no model to ask
+        said_at(svc, t, f"so about the garden shed, plan number {i} is the one I like")
+        sk.learn_conversations(t + 300)
+        t += 1800
+    assert len(sk._waiting) == msk.WAITING_MAX  # the oldest three were let go
+    again = MemorySkill(svc, embedder=None, clock=clock)  # Vesper restarted meanwhile: the line is kept (log ids only)
+    assert len(again._waiting) == msk.WAITING_MAX
+    svc.storage.execute("DELETE FROM log WHERE text LIKE ?", ("%plan number 10 %",))  # "forget this conversation"
+    up["on"] = True
+    again.learn_conversations(t)
+    asked_about = "\n".join(asked)
+    assert "plan number 10 " not in asked_about and "plan number 2 " not in asked_about
+    assert "plan number 3 " in asked_about and f"plan number {msk.WAITING_MAX + 2} " in asked_about
+    assert len(asked) == msk.WAITING_MAX - 1 and again._waiting == []
+    assert asked.index(next(p for p in asked if "plan number 3 " in p)) == 0  # oldest first
+
+
 def test_assistant_answers_with_memory(svc):
     sk = Skills(svc, ["memory"])
     svc.memory.add("J's client Dana Ortiz works at Acme", subject="Dana Ortiz", context="client acme")

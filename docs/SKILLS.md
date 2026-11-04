@@ -41,7 +41,10 @@ class Thing(Skill):
 ```
 
 A skill whose tick, route or `say` raises 5 times in a row is switched off for the session (a notice says why;
-Setup → Skills turns it back on). Make the http client with `lazy_client(timeout=10)` (from `.`), not
+Setup → Skills turns it back on). Switched off either way, nothing of it may run on: register bus listeners as its
+own methods (`svc.bus.on(self._on_event)`), which come off the bus while it's off; plug into other parts with
+`self.hook(obj, "attr", value)` rather than `obj.attr = value`, which is put back while it's off; end its own threads
+in `stop()`. Switched on again, `start()` runs again, so it must be safe after a `stop()`. Make the http client with `lazy_client(timeout=10)` (from `.`), not
 `httpx.Client(...)`: building clients in `__init__` slowed startup. `selftest` must be quick, change nothing, and
 never put a secret or a message's text in `detail`.
 

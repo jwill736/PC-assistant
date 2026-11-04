@@ -158,6 +158,67 @@ def test_on_air_light_follows_the_stream(home, fake, svc):
     assert fake.puts[-1] == {"on": 0, "brightness": 20, "temperature": hm.k_to_mired(hm.mired_to_k(213))}  # as it was
 
 
+def test_on_air_calls_that_fail_are_tried_again_until_they_go_through(home, fake, svc):
+    """A Wi-Fi blip or Home Assistant restarting at the moment J goes live (or ends) must not leave the ON AIR light
+    wrong for the whole stream, or the Key Light at the stream preset all night."""
+    live = [False]
+    svc.live = lambda: live[0]
+    home.add_light("10.0.0.5")
+    home.set_ha(HA, TOKEN)
+    home.set_on_air_config({"entity": "light.on_air", "brightness": "40", "kelvin": "5600"})
+    home.tick()
+    fake.down = {"10.0.0.5", "ha.local"}
+    live[0] = True
+    home.tick()  # going live: nothing answers
+    assert not fake.services and fake.puts == []
+    home.tick()  # still down: asked again
+    fake.down = set()
+    home.tick()  # back: the light gets the preset, the sign goes on
+    assert fake.puts[-1] == {"on": 1, "brightness": 40, "temperature": hm.k_to_mired(5600)}
+    assert fake.services == [("homeassistant/turn_on", {"entity_id": "light.on_air"})]
+    home.tick()
+    assert len(fake.puts) == 1 and len(fake.services) == 1  # once it went through, never again
+    fake.down = {"10.0.0.5", "ha.local"}
+    live[0] = False
+    home.tick()  # the stream ends in a blip
+    home.tick()
+    fake.down = set()
+    home.tick()
+    assert fake.services[-1] == ("homeassistant/turn_off", {"entity_id": "light.on_air"})
+    assert fake.puts[-1] == {"on": 0, "brightness": 20, "temperature": hm.k_to_mired(hm.mired_to_k(213))}  # as it was
+    home.tick()
+    assert len(fake.puts) == 2 and len(fake.services) == 2
+
+
+def test_on_air_puts_the_light_back_only_to_how_it_was(home, fake, svc):
+    """Going live, reading how the Key Light was failed: the preset waits for that, so the stream's end puts back how
+    it really was, and never just turns the light off (it was on before)."""
+    live = [False]
+    svc.live = lambda: live[0]
+    home.add_light("10.0.0.5")
+    home.set_on_air_config({"brightness": "40", "kelvin": "5600"})
+    fake.light = {"on": 1, "brightness": 70, "temperature": 250}  # J's desk light, on
+    home.tick()
+    fake.down = {"10.0.0.5"}
+    live[0] = True
+    home.tick()  # going live: reading how it was fails
+    fake.down = set()
+    home.tick()
+    assert fake.light["brightness"] == 40
+    live[0] = False
+    home.tick()
+    assert fake.light == {"on": 1, "brightness": 70, "temperature": 250}, "the stream's end didn't put it back"
+    fake.down = {"10.0.0.5"}
+    live[0] = True
+    home.tick()
+    live[0] = False
+    home.tick()  # a short stream: it ended before the light answered at all
+    fake.down = set()
+    n = len(fake.puts)
+    home.tick()
+    assert len(fake.puts) == n and fake.light["on"] == 1  # never put on the preset: never turned off either
+
+
 @pytest.mark.parametrize("said,tool,args", [
     ("turn on my key light", "lights_on", {"target": "key light"}),
     ("turn off the living room lights", "lights_off", {"target": "living room lights"}),

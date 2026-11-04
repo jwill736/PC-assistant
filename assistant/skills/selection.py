@@ -4,7 +4,8 @@
 Vesper copies the selection (Ctrl+C, with your clipboard put back afterwards), asks the model, then either puts the
 result in place of the selection (rewrite, shorter, fix, translate, tone) or shows it on the HUD with a Copy button
 (explain, summarise, reply). A replacement longer than 400 characters is shown and its start read out first, and only
-goes in after your yes. The selected text is treated as untrusted: it's text to work on, never instructions.
+goes in after your yes, and only over the same text: selected something else since, and it isn't pasted.
+The selected text is treated as untrusted: it's text to work on, never instructions.
 Never in a password manager, a sign-in prompt or a password field.
 """
 
@@ -163,7 +164,7 @@ class Selection(Skill):
         rid = uuid.uuid4().hex[:8]
         self.result = {"id": rid, "action": action, "language": lang if action == "translate" else "", "source": source[:4000],
                        "text": text, "mode": mode, "at": self.clock(), "app": getattr(win, "app", "") or "",
-                       "replaced": False, "waiting": False, "_win": win}
+                       "replaced": False, "waiting": False, "_win": win, "_source": source}
         res = {"ok": True, "id": rid, "action": action, "mode": mode, "result": text, "chars": len(text),
                "app": self.result["app"], **({"language": lang} if action == "translate" else {})}
         if mode == "show":
@@ -177,7 +178,9 @@ class Selection(Skill):
         done = self._replace(win, text)
         return {**res, **done}
 
-    def _replace(self, win, text: str) -> dict:
+    def _replace(self, win, text: str, source: str | None = None) -> dict:
+        """``source``: what was selected when J asked. Replacing later (the HUD button, a yes), the selection must
+        still be that text: in the same window J may have selected something else since, or just left the caret."""
         front = self._front()
         if win is not None and not textio.same_window(front, win):
             self.focus(win)  # a HUD click took the focus: the selection is still there in its own window
@@ -188,7 +191,16 @@ class Selection(Skill):
         why = self._refused(front)
         if why:
             return {"replaced": False, "error": why}
-        if not textio.paste(self.board, self.keys, text, sleep=self.sleep):
+        already = False
+        if source is not None:
+            if not textio.wait_modifiers_released(self.keys, sleep=self.sleep):
+                return {"replaced": False, "error": "Let go of the keys first, then try again."}
+            now = textio.read_selection(self.board, self.keys, sleep=self.sleep) or ""
+            already = _same(now, text)  # a second click: it's in already
+            if not already and not _same(now, source):
+                return {"replaced": False, "error": "The selection changed since you asked, so I didn't paste over it. "
+                                                    "Select that text again and replace it, or copy the result from the HUD."}
+        if not already and not textio.paste(self.board, self.keys, text, sleep=self.sleep):
             return {"replaced": False, "error": "Windows blocked the paste (an app running as administrator?)."}
         if self.result is not None:
             self.result["replaced"], self.result["waiting"] = True, False
@@ -202,7 +214,7 @@ class Selection(Skill):
             return {"ok": False, "error": "That one is for reading, not for replacing your selection."}
         if self.clock() - r["at"] > 900:
             return {"ok": False, "error": "That was a while ago; select the text and ask again."}
-        out = self._replace(r.get("_win"), r["text"])
+        out = self._replace(r.get("_win"), r["text"], r.get("_source", r["source"]))
         self.publish()
         return {"ok": bool(out.get("replaced")), **out, "action": r["action"]}
 
@@ -296,3 +308,8 @@ def _strip(text: str) -> str:
 
 def _lower(s: str) -> str:
     return s[:1].lower() + s[1:]
+
+
+def _same(a: str, b: str) -> bool:
+    """The same text, line endings and spacing aside (an app may copy the same selection a little differently)."""
+    return bool(a.strip()) and a.split() == b.split()

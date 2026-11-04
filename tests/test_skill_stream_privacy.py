@@ -168,3 +168,20 @@ def test_twitch_live_streams_raid_and_marker_id(tmp_path):
     assert tw.create_marker("x")["id"] == "mk-9"
     tw.auth.token["scopes"] = ["channel:manage:broadcast"]
     assert "doesn't allow raids" in tw.start_raid("ana")["error"]  # an old login: reconnect to allow raids
+
+
+def test_the_phone_pairing_code_and_pin_hide_while_live_with_the_other_private_panels():
+    """The Telegram pairing code (the first chat to send it controls Vesper) and the Wi-Fi HUD's PIN blur on stream like
+    the inbox does. The list lives in three places: this skill (sent to the HUD), the blur rule and the peek labels."""
+    import re
+    from pathlib import Path
+
+    web = Path(sp.__file__).resolve().parent.parent / "web"
+    assert {"phone", "phone_hud"} <= set(sp.PANELS)
+    css = (web / "styles.css").read_text(encoding="utf-8")
+    rules = re.findall(r"body\.live-private :is\(([^)]*)\):not\(\.peek\) > \.body", css)
+    assert len(rules) == 3
+    for rule in rules:
+        assert re.findall(r'data-panel="(\w+)"', rule) == sp.PANELS
+    names = re.search(r"const NAMES = \{([^}]*)\}", (web / "skills" / "stream_privacy.js").read_text(encoding="utf-8"))
+    assert re.findall(r"(\w+): '", names.group(1)) == sp.PANELS

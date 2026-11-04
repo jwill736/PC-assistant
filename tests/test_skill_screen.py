@@ -129,6 +129,23 @@ def test_the_hud_in_front_means_the_whole_screen(env):
     assert captured[-1][1] is True
 
 
+def test_a_whole_screen_look_checks_every_window_on_screen_not_just_the_one_in_front(env):
+    """The HUD's Look button is a whole-screen look, and the HUD is in front: a bank window beside it is on the screen
+    too, and must not be captured."""
+    s, state, seen, captured, clock = env
+    state["win"] = SimpleNamespace(app="msedge", title="Vesper - Microsoft Edge", handle=3)
+    beside = [state["win"], SimpleNamespace(app="chrome", title="Chase Bank - Accounts - Google Chrome", handle=9)]
+    s.windows = lambda: beside
+    r = s.actions()["look"]({"question": "what's on my screen"})
+    assert r["ok"] is False and r.get("private") and captured == [] and seen == []
+    assert s.look("what's on my screen", whole_screen=True)["ok"] is False and captured == []
+    beside.pop()  # the bank window is closed (or minimised: not on the screen)
+    assert s.look("what's on my screen", whole_screen=True)["ok"] and captured[-1][1] is True
+    beside.append(SimpleNamespace(app="chrome", title="Chase Bank - Accounts - Google Chrome", handle=9))
+    state["win"] = SimpleNamespace(app="code", title="main.py - Visual Studio Code", handle=7)
+    assert s.look("read this error")["ok"]  # just the window in front: that's all that's captured
+
+
 def test_no_capture_says_so(env):
     s, state, seen, captured, clock = env
     s.capture = lambda win, whole: None

@@ -55,19 +55,56 @@ def find_repos(scan_dirs: list[str], max_depth: int = 2) -> list[Path]:
     return repos
 
 
-def repo_status(path: Path) -> dict:
-    head = _git(path, "log", "-1", "--format=%ct%x1f%s")
-    ts, msg = (head.split("\x1f", 1) + [""])[:2] if head else ("0", "")
-    midnight = datetime.combine(datetime.now().date(), dtime.min).isoformat()
-    dirty = [line for line in _git(path, "status", "--porcelain").splitlines() if line.strip()]
-    today = _git(path, "rev-list", "--count", f"--since={midnight}", "HEAD")
+def _ref_stamp(path: Path) -> tuple | None:
+    """What moves when a commit lands or the branch changes: HEAD, the branch's own ref and packed-refs (their
+    mtimes). None when it can't be told (.git is a file: a worktree or submodule), so the log is read every time."""
+    git = path / ".git"
+    if not git.is_dir():
+        return None
+    try:
+        head = (git / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    stamp = [head]
+    for f in [git / "HEAD", git / "packed-refs"] + ([git / head[5:]] if head.startswith("ref: ") else []):
+        try:
+            stamp.append(f.stat().st_mtime_ns)
+        except OSError:
+            stamp.append(0)
+    return tuple(stamp)
+
+
+def repo_status(path: Path, cache: dict | None = None) -> dict:
+    """Branch, uncommitted files, the last commit and today's count. Two git runs instead of four (PERF-7), and with
+    ``cache`` the log is read again only when a ref moved or the day changed: one git run a repo, normally."""
+    branch, dirty = "?", 0
+    for line in _git(path, "status", "--porcelain=v2", "--branch").splitlines():
+        if line.startswith("# branch.head "):
+            branch = line[len("# branch.head "):].strip()
+            branch = "HEAD" if branch == "(detached)" else branch  # as rev-parse --abbrev-ref says it
+        elif line.strip() and not line.startswith("#"):
+            dirty += 1
+    day = datetime.now().date()
+    stamp = _ref_stamp(path)
+    hit = cache.get(str(path)) if cache is not None and stamp is not None else None
+    if hit and hit[0] == (stamp, day):
+        last, today = hit[1], hit[2]
+    else:
+        midnight = datetime.combine(day, dtime.min).timestamp()
+        rows = [line.split("\x1f", 1) for line in _git(path, "log", "-n", "100", "--format=%ct%x1f%s").splitlines()
+                if "\x1f" in line]
+        rows = [(int(ts), msg) for ts, msg in rows if ts.isdigit()]
+        last = {"ts": rows[0][0], "message": rows[0][1]} if rows else {"ts": 0, "message": ""}
+        today = sum(1 for ts, _ in rows if ts >= midnight)
+        if cache is not None and stamp is not None:
+            cache[str(path)] = ((stamp, day), last, today)
     return {
         "name": path.name,
         "path": str(path),
-        "branch": _git(path, "rev-parse", "--abbrev-ref", "HEAD") or "?",
-        "last_commit": {"ts": int(ts) if ts.isdigit() else 0, "message": msg},
-        "dirty_files": len(dirty),
-        "commits_today": int(today) if today.isdigit() else 0,
+        "branch": branch or "?",
+        "last_commit": dict(last),
+        "dirty_files": dirty,
+        "commits_today": today,
     }
 
 
@@ -106,50 +143,75 @@ def _human_text(record: dict) -> str | None:
     return text
 
 
-def parse_session(path: Path) -> dict | None:
-    first = last = None
-    prompts = 0
-    cwd = branch = None
-    last_ts = None
+def _read_session(path: Path, seen: dict | None = None) -> dict | None:
+    """What a session file says so far: ``seen`` is what an earlier read found (with where it stopped), so only the
+    lines written since are read. The session J is working in grows all the time: re-reading it whole every two
+    minutes was 110 ms of CPU per 12 MB (PERF-7)."""
+    st = dict(seen) if seen else {"offset": 0, "prompts": 0, "first": None, "last": None, "cwd": None, "branch": None,
+                                  "last_ts": None}
+
+    def take(raw: bytes) -> bool:
+        """One line; True when it was a whole user record."""
+        line = raw.decode("utf-8", errors="replace")
+        if '"type":"user"' not in line and '"type": "user"' not in line:
+            return False
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        st["cwd"] = rec.get("cwd") or st["cwd"]
+        st["branch"] = rec.get("gitBranch") or st["branch"]
+        text = _human_text(rec)
+        if text:
+            st["prompts"] += 1
+            st["first"] = st["first"] or text
+            st["last"] = text
+            st["last_ts"] = rec.get("timestamp") or st["last_ts"]
+        return True
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if '"type":"user"' not in line and '"type": "user"' not in line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                cwd = rec.get("cwd") or cwd
-                branch = rec.get("gitBranch") or branch
-                text = _human_text(rec)
-                if text:
-                    prompts += 1
-                    first = first or text
-                    last = text
-                    last_ts = rec.get("timestamp") or last_ts
+        with path.open("rb") as fh:  # line by line: a session can be tens of MB, never all in memory at once
+            fh.seek(st["offset"])
+            for raw in fh:
+                if not raw.endswith(b"\n"):  # the last line, its newline not written yet
+                    if take(raw):  # a whole record: counted; a half-written one is read again next time
+                        st["offset"] += len(raw)
+                    break
+                take(raw)
+                st["offset"] += len(raw)
     except OSError:
         return None
-    if not prompts:
+    return st
+
+
+def _session_info(path: Path, st: dict | None) -> dict | None:
+    if not st or not st["prompts"]:
         return None
+    cwd = st["cwd"]
     return {
         "session_id": path.stem,
         "cwd": cwd,
         "project": Path(cwd).name if cwd else path.parent.name,
-        "branch": branch,
-        "prompts": prompts,
-        "first_prompt": first[:200],
-        "last_prompt": last[:200],
+        "branch": st["branch"],
+        "prompts": st["prompts"],
+        "first_prompt": st["first"][:200],
+        "last_prompt": st["last"][:200],
         "last_activity": path.stat().st_mtime,
-        "last_prompt_at": last_ts,
+        "last_prompt_at": st["last_ts"],
     }
+
+
+def parse_session(path: Path) -> dict | None:
+    try:
+        return _session_info(path, _read_session(path))
+    except OSError:
+        return None
 
 
 class ClaudeSessions:
     def __init__(self, claude_dir: str = "~/.claude", max_age_days: int = 30):
         self.root = Path(os.path.expandvars(claude_dir)).expanduser() / "projects"
         self.max_age = max_age_days * 86400
-        self._cache: dict[str, tuple[float, dict | None]] = {}
+        self._cache: dict[str, tuple[float, int, dict | None]] = {}  # file -> (mtime, size, what it said so far)
 
     def sessions(self) -> list[dict]:
         if not self.root.is_dir():
@@ -158,17 +220,23 @@ class ClaudeSessions:
         out = []
         for f in self.root.glob("*/*.jsonl"):
             try:
-                mtime = f.stat().st_mtime
+                stat = f.stat()
             except OSError:
                 continue
+            mtime, size = stat.st_mtime, stat.st_size
             if mtime < cutoff:
                 continue
             cached = self._cache.get(str(f))
-            if cached and cached[0] == mtime:
-                info = cached[1]
+            if cached and cached[0] == mtime and cached[1] == size:
+                st = cached[2]
             else:
-                info = parse_session(f)
-                self._cache[str(f)] = (mtime, info)
+                grew = cached is not None and cached[2] is not None and size >= cached[1]
+                st = _read_session(f, cached[2] if grew else None)  # only what was written since, if it grew
+                self._cache[str(f)] = (mtime, size, st)
+            try:
+                info = _session_info(f, st)
+            except OSError:
+                info = None
             if info:
                 out.append(info)
         return sorted(out, key=lambda s: s["last_activity"], reverse=True)
@@ -242,6 +310,7 @@ class ProjectTracker:
         self._repos: list[Path] = []
         self._repos_scanned = 0.0
         self._lock = threading.Lock()
+        self._logs: dict = {}  # repo path -> ((refs, day), last commit, commits today): see repo_status
 
     def repos(self) -> list[Path]:
         with self._lock:
@@ -256,7 +325,7 @@ class ProjectTracker:
             return self._repos
 
     def summary(self) -> dict:
-        repos = [repo_status(p) for p in self.repos()]
+        repos = [repo_status(p, self._logs) for p in self.repos()]
         repos.sort(key=lambda r: r["last_commit"]["ts"], reverse=True)
         return {
             "repos": repos,

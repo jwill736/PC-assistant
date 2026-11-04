@@ -1587,11 +1587,15 @@ class Recorder(Skill):
             self._update(row["id"], audio_gone=1)
         return gone
 
+    _retained_at = -1e18
+
     def tick(self) -> None:
-        try:
-            self.retention()
-        except Exception:
-            log.exception("recorder: retention failed")
+        if self.clock() - self._retained_at >= 3600:  # hourly: each pass commits to the database (PERF-14)
+            self._retained_at = self.clock()
+            try:
+                self.retention()
+            except Exception:
+                log.exception("recorder: retention failed")
         self._watch(force=True)
         try:
             self.autopilot()

@@ -65,13 +65,18 @@ DEFAULTS: dict[str, Any] = {
             "auto_test": True,     # test your models once by itself, and again when the list changes
             "context": 8192,       # Ollama context size: room for the instructions, the tool list and the chat
             "keep_alive": "15m",   # how long Ollama keeps the model loaded after a question
+            # In a fullscreen game (brain/local_llm.py): background work only uses a model already loaded, and it
+            # unloads this long after; J's own questions keep the model this long instead of keep_alive
+            "game_keep_alive": "30s",
+            "game_answer_keep_alive": "2m",
         },
     },
     "voice": {
         "enabled": True,
         # Speech-to-text: auto | parakeet | parakeet-large | moonshine | whisper (see voice/stt.py)
         "stt_engine": "auto",
-        "stt_threads": 2,
+        # 1 thread: 42 ms of CPU per second of speech; a second one cut the wait to 33 ms for 115 ms of CPU (PERF-2)
+        "stt_threads": 1,
         "stt_model": "base.en",  # whisper engine only
         "stt_device": "auto",    # whisper engine only: auto | cpu | cuda
         "input_device": None,

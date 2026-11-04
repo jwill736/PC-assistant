@@ -20,6 +20,7 @@ hooks go back once (never twice) and ``start()`` runs again, so a skill's ``star
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import re
 import threading
@@ -44,6 +45,7 @@ MODULES = ["conversation", "nudges", "ambient", "memory", "weather", "automation
 CRASH_LIMIT = 5  # this many failures in a row (of one kind: tick, route, say…) switches a skill off for the run
 ON, OFF, CRASHED, FAILED = "on", "off", "crashed", "failed"
 GAME_FACTOR = 4  # how much slower a non-essential skill ticks in low-power mode, unless it sets game_poll_s
+SAME_AGAIN_S = 60.0  # a panel whose data hasn't changed is sent again only this often (PERF-9)
 
 
 class Skill:
@@ -109,9 +111,20 @@ class Skill:
 
     # ---- helpers -------------------------------------------------------------------------------------
     def publish(self, data: dict | None = None) -> dict | None:
+        """Send the HUD panel's data. The same data as last time goes again only after SAME_AGAIN_S: seven skills
+        republished unchanged panels every 5-20 s, 55 messages a minute for the HUD to parse and repaint (PERF-9)."""
         data = data if data is not None else self.status()
         if data is not None:
             self.last_status = data
+            try:
+                key = json.dumps(data, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                key = None
+            now = time.monotonic()
+            sent = getattr(self, "_sent", None)
+            if key is not None and sent and sent[0] == key and now - sent[1] < SAME_AGAIN_S:
+                return data
+            self._sent = (key, now)
             self.svc.bus.publish(self.name, data, sticky=True)
         return data
 

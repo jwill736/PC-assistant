@@ -186,6 +186,12 @@ class MicWatch:
     def pick(self, names: list[str]) -> str | None:
         return pick_mic(names, self.source)
 
+    def reset(self) -> None:
+        """The meters start again (going live, a pre-stream check): levels from before are no guide to now."""
+        with self._lock:
+            self.peaks.clear()
+            self.clips.clear()
+
     def on_meters(self, inputs: list[dict]) -> None:
         """One InputVolumeMeters payload: [{"inputName": ..., "inputLevelsMul": [[mag, peak, input_peak], ...]}]."""
         if self.name is None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -19,7 +20,6 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-import anthropic
 import httpx
 
 from ..config import goal_lines
@@ -34,6 +34,20 @@ from .speech import clock, summarize
 from .tools import ToolBox, compact, urls
 
 log = logging.getLogger(__name__)
+
+
+class _LazySDK:
+    """The Anthropic SDK, imported on first use: it is a second of every start and ~60 MB that a PC running only its
+    own model never needs (PERF-5)."""
+
+    def __getattr__(self, name):
+        import anthropic as sdk
+
+        globals()["anthropic"] = sdk
+        return getattr(sdk, name)
+
+
+anthropic = _LazySDK()
 
 ADAPTIVE_THINKING_PREFIXES = ("claude-opus-5", "claude-fable-5", "claude-mythos-5", "claude-sonnet-5",
                               "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6")
@@ -74,9 +88,13 @@ sentence and that Setup > Brain can switch to a model that can."""
 BENCH_FILE = local_llm.BENCH_FILE
 OFFLINE = ("I can't answer that one without a model. Start Ollama or LM Studio with a Llama model, "
            "or add ANTHROPIC_API_KEY to the .env file.")
+# Commands Vesper runs by itself (a routine, the planner): mid-game they're background work, not J asking (see
+# local_llm.GAME_KEEP_ALIVE), so they never load a model onto the graphics card.
+BACKGROUND_SOURCES = ("automation", "planner")
+GAME_WAIT = "That needs the model, and you're in a game: it waits until the game is over."
 # A connection that stalls (Wi-Fi gone, the socket left open) gives up within a minute, and is tried once more: the
 # SDK's own default waits ten minutes, three times, while every voice command queues behind it.
-COMMAND_TIMEOUT, COMMAND_RETRIES = anthropic.Timeout(60.0, connect=5.0), 1
+COMMAND_TIMEOUT_S, COMMAND_RETRIES = 60.0, 1
 SKILL_READ_S = 180.0  # a skill's question (a job's summary: 2,500 words) runs in the background
 LONG_READ_S = 600.0  # the briefing and research write long answers with a lot of thinking first
 CHANGED = "That question has changed: {question}"  # a yes or no for a question that was since replaced
@@ -113,6 +131,9 @@ class Assistant:
                                           bench_path=svc.cfg.data_dir / BENCH_FILE)
         self.local_history: list[dict] = []  # OpenAI-style turns for the local model
         self.low_power = lambda: ""  # "game" while a fullscreen game runs (set by the runtime)
+        # a fullscreen game is running, live or not (the runtime sets it): background model work then never loads a
+        # model onto the graphics card (local_llm.GAME_KEEP_ALIVE)
+        self.gaming = lambda: self.low_power() == "game"
         self._ctx: dict = {}  # the command being handled: source, utterance, turn, owner (for the audit log)
         self._tainted = False  # this command has read text other people wrote (see Tool.untrusted)
         self._untrusted_ids: dict[str, str] = {}  # tool results to scrub from history once the command ends
@@ -120,6 +141,7 @@ class Assistant:
         self._known_urls: set[str] = set()  # links from J's own words or a search this command (see Tool.network)
         self.tools = toolbox or ToolBox(svc, context=lambda: self._ctx)
         svc.think = self.think  # skills ask the model through this
+        svc.model_waits = self.model_waits
         svc.off_record = self.set_off_record
         self.convo = convo_mod.Conversation(svc)  # conversation mode (brain/conversation.py)
         self.wait = time.sleep  # a macro's "wait" step (a test swaps this, not the process-wide time.sleep)
@@ -170,13 +192,16 @@ class Assistant:
         if not self.cfg.get("enabled", True):
             return None
         key = self.svc.cfg.secret(self.cfg.get("api_key_env"))
-        limits = {"timeout": COMMAND_TIMEOUT, "max_retries": COMMAND_RETRIES}
+        # No key, no token and no `ant auth login` profile means no brain; say so up front (without the SDK)
+        has_profile = (Path.home() / ".config" / "anthropic").exists()
+        if not (key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or has_profile):
+            log.warning("Claude API not configured; running on the local command router only")
+            return None
+        limits = {"timeout": anthropic.Timeout(COMMAND_TIMEOUT_S, connect=5.0), "max_retries": COMMAND_RETRIES}
         try:
             client = anthropic.Anthropic(api_key=key, **limits) if key else anthropic.Anthropic(**limits)
         except Exception:
             client = None
-        # No key, no token and no `ant auth login` profile means no brain; say so up front.
-        has_profile = (Path.home() / ".config" / "anthropic").exists()
         if client is not None and not (client.api_key or getattr(client, "auth_token", None) or has_profile):
             client = None
         if client is None:
@@ -200,13 +225,15 @@ class Assistant:
         order = {"claude": ["claude", "local"], "local": ["local"]}.get(pref) or (
             ["local", "claude"] if private else ["claude", "local"])
         text = None
-        game = self.low_power() == "game"
+        game = self.gaming()
         for which in order:
             try:
                 if which == "local" and self.local.ready:
-                    llm = self.local.in_game() if game else self.local.refresh()
+                    # mid-game a skill's question gets only a model already loaded (J's own: the usual choice), and
+                    # leaves it loaded briefly (local_llm.in_game)
+                    llm = self._game_llm() if game else self.local.refresh()
                     if llm is None and game:
-                        break  # only the big model is left: wait for the game to end (and keep private text local)
+                        break  # nothing it may use: wait for the game to end (and keep private text local)
                     if llm is not None:
                         text = llm.chat([{"role": "user", "content": prompt}], json_schema=schema, temperature=0.2,
                                         max_tokens=max_tokens)["content"]
@@ -336,7 +363,8 @@ class Assistant:
         text = (text or "").strip()
         if not text:
             return {"reply": "", "kind": "empty"}
-        with self._lock:
+        # a command J gave (said, typed, the phone): its model calls are his own request, even mid-game
+        with self._lock, local_llm.asking(source not in BACKGROUND_SOURCES):
             self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner, "pending_id": pending_id}
             asked_before = (self.pending_view() or {}).get("id")
             # the morning briefing (invite titles, email senders) stays in Claude's history for follow-ups
@@ -713,7 +741,9 @@ class Assistant:
         if own:  # who answered, for the action log and the skills watching what ran (a recording started by phone)
             self._ctx = {"source": source or via, "utterance": "yes"}
         try:
-            replies = [self.run_tool(name, args, confirmed=via, beside=beside)["reply"] for name, args in pending["calls"]]
+            with local_llm.asking((source or via) not in BACKGROUND_SOURCES):  # J said yes: it runs as his request
+                replies = [self.run_tool(name, args, confirmed=via, beside=beside)["reply"]
+                           for name, args in pending["calls"]]
         finally:
             if own:
                 self._ctx = {}
@@ -974,6 +1004,34 @@ class Assistant:
             return "Stopped. PC control is paused."
 
     # ---- a model on this PC -----------------------------------------------
+    def _game_llm(self):
+        """The local model for a question mid-game: J's own request, or background work (local_llm.in_game)."""
+        return self.local.in_game(asked=True) if local_llm.asked() else self.local.in_game()
+
+    def model_waits(self) -> bool:
+        """Would a skill's background question get no model now? Mid-game with the local model not loaded: think()
+        answers None rather than load it (and keeps private text off the cloud)."""
+        try:
+            if not self.gaming() or local_llm.asked():
+                return False
+            pref = (self.svc.cfg.get("brain") or {}).get("provider", "auto")
+            if pref == "claude" and self.claude_ready:
+                return False
+            return bool(self.local.ready) and self._game_llm() is None
+        except Exception:
+            return False
+
+    def gpu_keep_alive(self, held, usual):
+        """The keep_alive for a model call to Ollama that doesn't go through the brain (memory's embeddings, the
+        screen's vision model): ``usual`` at the desk; in a fullscreen game J's own request gets the short
+        game_answer_keep_alive, and background work the shorter game_keep_alive, only for a model already loaded
+        (``held()``). None: background work in a game with the model not loaded: it waits until the game is over."""
+        if not self.gaming():
+            return usual
+        if local_llm.asked():
+            return self.local.game_keep_alive(True)
+        return self.local.game_keep_alive(False) if held() else None
+
     def vram_mb(self) -> float | None:
         """The graphics card's memory (the biggest card, from nvidia-smi), or None when it can't be read."""
         system = getattr(self.svc, "system", None)
@@ -1010,7 +1068,14 @@ class Assistant:
         return out
 
     def _ask_local(self, text: str, convo: bool = False) -> str:
-        llm = self.local.refresh()
+        if not self.gaming():
+            llm = self.local.refresh()
+        elif self._ctx.get("source") in BACKGROUND_SOURCES:  # a routine's question mid-game: a loaded model or later
+            llm = self.local.in_game()
+            if llm is None and self.local.ready:
+                return GAME_WAIT
+        else:
+            llm = self.local.for_game_question()  # J asked: as at the desk, but it leaves the card soon after
         if llm is None:
             return OFFLINE
         lcfg = (self.svc.cfg.get("brain") or {}).get("local") or {}
@@ -1102,9 +1167,9 @@ class Assistant:
         return reply.strip() or "Done."
 
     def _local_briefing(self, prompt: str) -> dict | None:
-        # mid-game, as for think(): the model already loaded or the light one, never the big one onto the graphics
-        # card (None: the built-in summary)
-        llm = self.local.in_game() if self.low_power() == "game" else self.local.refresh()
+        # mid-game, as for think(): J's own "good morning" gets the loaded model or the light one; the pre-built one
+        # only a model already loaded (None: the built-in summary)
+        llm = self._game_llm() if self.gaming() else self.local.refresh()
         if llm is None:
             return None
         try:

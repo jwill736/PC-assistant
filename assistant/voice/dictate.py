@@ -97,7 +97,9 @@ def polish(text: str, think: Callable, timeout: float = 4.0) -> str | None:
             box["out"] = think(POLISH_PROMPT.format(text=text), max_tokens=min(1500, 60 + len(text)))
         except Exception:
             log.exception("dictation polish failed")
-    t = threading.Thread(target=ask, name="dictation-polish", daemon=True)
+    from ..brain.local_llm import carry
+
+    t = threading.Thread(target=carry(ask), name="dictation-polish", daemon=True)  # J's own request, on its thread
     t.start()
     t.join(timeout)
     out = box.get("out")

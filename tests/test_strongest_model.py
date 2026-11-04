@@ -426,8 +426,13 @@ def test_one_bad_test_keeps_last_times_winner_and_only_a_second_one_demotes_it(t
     assert no_act["best"] == "llama3.1:8b"
 
 
-def test_a_skills_question_mid_game_never_loads_the_big_model(svc, tmp_path):
-    # audit F12: inbox triage, bills, memory... keep asking while a fullscreen game runs
+def test_a_skills_question_mid_game_never_loads_a_model_or_keeps_one_loaded(svc, tmp_path):
+    # Inbox triage, bills, memory, Week in review... keep asking while a fullscreen game runs. Audit F12 let them load
+    # the light model mid-game, and ask the big one when it was still loaded "as it costs nothing more". It does: every
+    # question sent the usual keep_alive (15 minutes), so each kept the 35B's 23 GB on the card another 15 minutes, and
+    # the light one's load took more (PERF-1 measured both resident mid-game: 26.6 of the 5090's 32 GB). So now a
+    # background question only uses a model already loaded, and asks with a 30 s keep-alive; with none loaded it
+    # waits for the game to end. J's own request keeps F12's choice, kept loaded 2 minutes instead of 15.
     svc.cfg["brain"] = {"provider": "auto", "local": {**svc.cfg["brain"]["local"], "enabled": True}}
 
     def assistant(fake):
@@ -435,18 +440,31 @@ def test_a_skills_question_mid_game_never_loads_the_big_model(svc, tmp_path):
         a.client = None
         a.local = brain_on_js_pc(tmp_path, fake)
         return a
+
+    def asked(fake):
+        return [(b["model"], b["keep_alive"]) for b in fake.bodies]
     fake = JsPC(acts=set(J_MODELS))
     a = assistant(fake)
     a.low_power = lambda: "game"
-    assert a.think("Sort these emails.").startswith("So viewers")
-    assert [b["model"] for b in fake.bodies] == ["llama3.1:8b"] and "qwen3.6:35b-a3b" not in fake.loaded
-    # the big one already on the card costs nothing more: it answers
+    assert a.think("Sort these emails.") is None and fake.bodies == [] and fake.loaded == {}  # nothing loaded: waits
+    with local_llm.asking():  # J asked (said, typed, a button): the light model, as before, for 2 minutes
+        assert a.think("Sort these emails.").startswith("So viewers")
+    assert asked(fake) == [("llama3.1:8b", "2m")] and "qwen3.6:35b-a3b" not in fake.loaded
+    # the big one still loaded from before the game answers, but its keep-alive is cut to 30 s, not renewed
     fake = JsPC(acts=set(J_MODELS))
     fake.loaded = {"qwen3.6:35b-a3b": int(23e9)}
     a = assistant(fake)
     a.low_power = lambda: "game"
     a.think("Sort these emails.")
-    assert [b["model"] for b in fake.bodies] == ["qwen3.6:35b-a3b"]
+    assert asked(fake) == [("qwen3.6:35b-a3b", "30s")]
+    fake.loaded["llama3.1:8b"], fake.bodies = int(4.9e9), []  # both loaded: the light one answers
+    a.think("Sort these emails.")
+    assert asked(fake) == [("llama3.1:8b", "30s")]
+    # live and in a game (low power then says "live"): still the game's card
+    fake = JsPC(acts=set(J_MODELS))
+    a = assistant(fake)
+    a.low_power, a.gaming = (lambda: "live"), (lambda: True)
+    assert a.think("Sort these emails.") is None and fake.loaded == {}
     # no lighter model to use: the question waits for the game to end (and private text doesn't go to the cloud)
     fake = JsPC(acts=set(J_MODELS))
     fake.models = ["qwen3.6:35b-a3b"]
@@ -454,12 +472,59 @@ def test_a_skills_question_mid_game_never_loads_the_big_model(svc, tmp_path):
     a.local = local_llm.LocalBrain({"enabled": True}, http=http(fake), vram_mb=lambda: RTX_5090_MB)
     a.low_power = lambda: "game"
     assert a.think("Sort these emails.") is None and fake.bodies == [] and fake.loaded == {}
-    # no game: the strongest answers, as always
+    # no game: the strongest answers, as always, with the usual keep-alive
     fake = JsPC(acts=set(J_MODELS))
     a = assistant(fake)
     a.low_power = lambda: ""
     a.think("Sort these emails.")
-    assert [b["model"] for b in fake.bodies] == ["qwen3.6:35b-a3b"]
+    assert asked(fake) == [("qwen3.6:35b-a3b", "15m")]
+
+
+def test_js_own_question_mid_game_gets_the_big_model_and_frees_the_card_soon_after(svc, tmp_path):
+    svc.cfg["brain"] = {"provider": "auto", "local": {**svc.cfg["brain"]["local"], "enabled": True}}
+    fake = JsPC(acts=set(J_MODELS))
+    a = Assistant(svc)
+    a.client = None
+    a.local = brain_on_js_pc(tmp_path, fake)
+    a.low_power = lambda: "game"
+    assert a.handle("what should I stream this weekend")["reply"].startswith("So viewers")  # as at the desk: the 35B
+    assert [(b["model"], b["keep_alive"]) for b in fake.bodies] == [("qwen3.6:35b-a3b", "2m")]
+    # a routine's question mid-game is background work: with the model not loaded it waits
+    fake.loaded, fake.bodies = {}, []
+    out = a.handle("what should I stream this weekend", source="automation")
+    assert "game" in out["reply"] and fake.bodies == [] and fake.loaded == {}
+
+
+def test_a_game_starting_cuts_short_the_models_left_loaded_from_before_it(tmp_path):
+    t = [1_000_000.0]
+
+    class Ps(JsPC):
+        def __call__(self, req):
+            if req.url.path == "/api/ps":  # Ollama says when each model unloads
+                return httpx.Response(200, json={"models": [
+                    {"name": n, "size": b, "size_vram": b, "expires_at": time.strftime(
+                        "%Y-%m-%dT%H:%M:%S.123456789Z", time.gmtime(t[0] + self.left[n]))} for n, b in self.loaded.items()]})
+            return super().__call__(req)
+    fake = Ps(acts=set(J_MODELS))
+    fake.loaded = {"qwen3.6:35b-a3b": int(23e9), "llama3.1:8b": int(4.9e9), "gemma4:latest": int(9.6e9)}
+    fake.left = {"qwen3.6:35b-a3b": 14 * 60, "llama3.1:8b": 60, "gemma4:latest": 14 * 60}
+    brain = brain_on_js_pc(tmp_path, fake)
+    brain.clock = lambda: t[0]
+    brain.refresh()
+    sent = []
+    real = fake.__call__
+
+    def spy(req):
+        if req.url.path == "/api/generate":
+            sent.append(json.loads(req.content))
+        return real(req)
+    brain.http = http(spy)
+    # the 35B (14 minutes left) leaves 2 minutes from now; the light one goes in a minute anyway (asking it again could
+    # load it back); a model Vesper doesn't use (J's own, in another app) isn't touched
+    assert brain.game_started() == ["qwen3.6:35b-a3b"]
+    assert sent == [{"model": "qwen3.6:35b-a3b", "keep_alive": "2m"}]
+    # (Ollama writes expires_at to the nanosecond: read right)
+    assert local_llm.loaded(http(fake), "http://127.0.0.1:11434")[0]["expires_at"] == pytest.approx(t[0] + 14 * 60, abs=1)
 
 
 def test_the_runtime_tells_the_brain_about_the_game(runtime, monkeypatch):

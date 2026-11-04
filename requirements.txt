@@ -4,6 +4,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 pyyaml>=6.0
 psutil>=5.9
+nvidia-ml-py>=12.535,<14  # GPU readings in-process (integrations/nvml.py); optional: without it, nvidia-smi
 httpx>=0.27
 websockets>=13.0  # Twitch EventSub (live follows, subs, raids, chat)
 feedparser>=6.0

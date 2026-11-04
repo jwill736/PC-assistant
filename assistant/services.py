@@ -55,6 +55,9 @@ class Services:
     gmail: Any = None  # their Gmail, read-only (integrations/gmail.Gmail)
     skills: Any = None  # every skill (skills.Skills): one file per feature
     think: Callable[..., Any] = field(default=lambda prompt, schema=None, **kw: None)  # ask the model (brain/assistant)
+    # True while background model work would get no model: a fullscreen game, and the local model isn't loaded (it
+    # is never loaded mid-game). Work done once a day (Pulse) waits for the game to end instead of using its rules
+    model_waits: Callable[[], bool] = field(default=lambda: False)
     nudge: Callable[..., Any] | None = None
     memory: Any = None  # long-term memory (memory.Memory), set by the memory skill
     off_record: Callable[[float], float] | None = None  # stop logging/learning for N minutes (set by the assistant)  # say something first, at the right moment (skills/nudges.py)

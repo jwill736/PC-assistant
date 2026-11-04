@@ -25,6 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .brain import local_llm
 from .phone import PhoneAccess, is_lan, lan_guard, lan_socket_ok
 from .runtime import Runtime
 
@@ -217,7 +218,7 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def make_briefing(kind: str):
         if kind not in {"morning", "recap"}:
             raise HTTPException(404)
-        return await run_in_threadpool(assistant.briefing, kind)
+        return await run_in_threadpool(local_llm.by_j(assistant.briefing), kind)  # J clicked it: his own request
 
     @app.post("/api/briefing/{kind}/speak")
     async def speak_briefing(kind: str):
@@ -478,7 +479,8 @@ def create_app(runtime: Runtime, start_background: bool = True) -> FastAPI:
     async def skill_action(name: str, action: str, body: dict | None = None):
         if runtime.svc.skills is None:
             raise HTTPException(404, "skills are off")
-        return await run_in_threadpool(runtime.svc.skills.action, name, action, body or {})
+        # a click is J's own request, so a model call it makes mid-game is too (brain/local_llm.py: in_game)
+        return await run_in_threadpool(local_llm.by_j(runtime.svc.skills.action), name, action, body or {})
 
     @app.get("/api/gmail")
     async def gmail(fresh: bool = False):

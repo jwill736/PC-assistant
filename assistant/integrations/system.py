@@ -14,6 +14,7 @@ from typing import Callable
 
 import psutil
 
+from . import nvml
 from .desktop import ALWAYS_PROTECTED, normalize_app
 
 # The local model's server is supposed to hold gigabytes: never suggest closing it as a "memory hog"
@@ -53,11 +54,15 @@ class SystemMonitor:
 
     # ---- sampling -------------------------------------------------------
     def gpus(self) -> list[dict]:
-        if not self._nvidia_smi:
-            return []
         ts, cached = self._gpu_cache
         if self.clock() - ts < 4:
             return cached
+        rows = nvml.gpus()  # in this process, microseconds: no nvidia-smi launch every 4 s (PERF-6)
+        if rows is not None:
+            self._gpu_cache = (self.clock(), rows)
+            return rows
+        if not self._nvidia_smi:
+            return []
         fields = "name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,utilization.encoder"
         try:
             out = subprocess.run(

@@ -241,6 +241,18 @@ class Embedder:
         self.http = http or httpx.Client(timeout=30)
         self.available: bool | None = None
         self.error = ""
+        # the keep_alive to ask with now, given whether the model is loaded; None: not now (set by the memory skill
+        # to Assistant.gpu_keep_alive: mid-game, background embedding never loads the model onto the graphics card)
+        self.keep_alive = lambda held, usual: usual
+
+    def held(self) -> bool:
+        """Is the embedding model loaded in Ollama right now?"""
+        try:
+            r = self.http.get(f"{self.url}/api/ps", timeout=2)
+            names = {m.get("name") or m.get("model") for m in (r.json().get("models") or [])} if r.status_code == 200 else set()
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return False
+        return self.model in names or f"{self.model}:latest" in names
 
     def _prefix(self, query: bool) -> str:
         for name, (q, d) in self.PREFIX.items():
@@ -251,9 +263,12 @@ class Embedder:
     def embed(self, texts: list[str], query: bool = False) -> list[list[float]] | None:
         if not texts or self.available is False:
             return None
+        keep = self.keep_alive(self.held, "30m")
+        if keep is None:
+            return None  # mid-game and the model isn't loaded: made after the game (embed_missing tries again)
         try:
             r = self.http.post(f"{self.url}/api/embed", json={
-                "model": self.model, "input": [self._prefix(query) + t for t in texts], "keep_alive": "30m"})
+                "model": self.model, "input": [self._prefix(query) + t for t in texts], "keep_alive": keep})
             if r.status_code != 200:
                 raise ValueError(r.text[:200])
             vecs = r.json()["embeddings"]
@@ -262,6 +277,13 @@ class Embedder:
             log.info("memory: no embeddings (%s); words only", self.error)
             return None
         self.available = True
+        try:
+            from . import resources
+
+            load_ns = r.json().get("load_duration")
+            resources.model_call(self.model, keep, load_ns / 1e9 if isinstance(load_ns, (int, float)) else None)
+        except Exception:
+            pass
         return [_norm(v[: self.dims]) for v in vecs]
 
 

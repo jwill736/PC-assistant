@@ -354,6 +354,18 @@ class OBSController:
         self._inputs_cache = (0.0, [])
         return {"ok": True, "source": target, "muted": bool(state)}
 
+    def set_text(self, source: str, text: str) -> dict:
+        """The words in a Text (GDI+ / FreeType 2) source, e.g. live captions. Only ``text`` changes: font and size
+        stay as J set them in OBS."""
+        try:
+            self._send("SetInputSettings", {"inputName": source, "inputSettings": {"text": text}, "overlay": True})
+        except Exception as exc:
+            msg = _describe(exc)
+            if "600" in msg or "no source" in msg.lower() or "not found" in msg.lower():
+                msg = f"OBS has no source called “{source}”: add a Text source with that name, or fix the name."
+            return {"ok": False, "error": msg}
+        return {"ok": True, "source": source}
+
 
 def _describe(exc: Exception) -> str:
     text = str(exc) or type(exc).__name__

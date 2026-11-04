@@ -465,7 +465,7 @@ def test_overlay_socket_sends_only_overlay_events(pc):
     key = c.get("/api/hud/overlay").json()["key"]
     with c.websocket_connect(f"/overlay/ws?key={key}") as ws:
         first = json.loads(ws.receive_text())
-        assert first["type"] == "snapshot" and set(first["data"]) == {"nowplaying", "mood", "goals", "timers", "countdown", "followers"}
+        assert first["type"] == "snapshot" and set(first["data"]) == {"nowplaying", "mood", "goals", "timers", "countdown", "followers", "captions"}
         rt.bus.publish("assistant_said", {"text": "dana@acme.com said the contract is late"})
         rt.bus.publish("user_said", {"text": "Therapy appointment"})
         rt.bus.publish("twitch_event", {"kind": "chat", "user": "secretuser", "text": "viewer wrote this"})

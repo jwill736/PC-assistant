@@ -4,7 +4,10 @@
   pace, highlight moments and stream-health incidents, kept in SQLite.
 - Chat: questions aimed at you that are still open (saying the asker's name or the topic out loud answers them),
   a mood gauge from emotes and words, first-time chatters and regulars to greet.
-- After: a recap with VOD chapters ("00:12:30 Clutch round") and post drafts for X and Discord.
+- After: a recap with VOD chapters ("00:12:30 Clutch round") and post drafts for X and Discord, and how it compares
+  with your last 5 streams (viewers, follows, chat an hour, length, category), with what went with your better streams
+  (game, start time, length) once there are 5 to compare.
+- YouTube Live chat (skills/stream_youtube.py) comes through the same feed and counts like Twitch chat.
 - Before: 30 minutes ahead of a "stream" calendar event, the plan from its title and the pre-stream check.
 - Live in a game that isn't the Twitch category for a minute: a HUD card (never spoken) "Switch category to Hades II?";
   its Yes is your yes (the change runs as confirmed on the HUD). Going live with a stream block on the calendar: a
@@ -204,10 +207,109 @@ def fallback_titles(game: str, idea: str) -> list[str]:
     return [idea, f"LIVE: {idea}", f"{idea} | come hang out"]
 
 
+# ---- growth: this stream next to the last ones (from the recaps in stream_copilot_sessions) ----------------------
+
+MIN_STREAM_S = 600  # shorter than this (a test, a crash) isn't a stream to compare with
+COMPARE = 5  # streams to compare with, and how many there must be before comparing at all
+METRICS = [("avg_viewers", "average viewers"), ("peak_viewers", "peak viewers"), ("follows", "new follows"),
+           ("chat_per_hour", "chat messages an hour"), ("duration_s", "length")]
+STARTS = [("Afternoon starts (before 5 pm)", lambda h: 5 <= h < 17), ("Evening starts (5 to 9 pm)", lambda h: 17 <= h < 21),
+          ("Late starts (after 9 pm)", lambda h: h >= 21 or h < 5)]
+
+
+def stream_numbers(r: dict, tz) -> dict:
+    """One finished stream's recap, as the numbers the comparison uses."""
+    dur = float(r.get("duration_s") or 0)
+    start = datetime.fromtimestamp(float(r.get("start") or 0), tz)
+    return {"id": r.get("id"), "avg_viewers": r.get("avg_viewers"), "peak_viewers": r.get("peak_viewers"),
+            "follows": r.get("follows"), "duration_s": dur or None,
+            "chat_per_hour": round((r.get("messages") or 0) / (dur / 3600)) if dur >= 60 else None,
+            "game": (r.get("game") or "").strip(), "hour": start.hour + start.minute / 60}
+
+
+def _mean(vals) -> float | None:
+    vals = [float(v) for v in vals if v is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def _fmt(v: float, key: str) -> str:
+    return human(v) if key == "duration_s" else f"{round(v):,}"
+
+
+def growth(now: dict, past: list[dict], window: int = COMPARE) -> dict:
+    """This stream next to the last ``window`` (``past``: earlier streams, newest first): what was better or worse
+    and by how much, and what went with more viewers. With fewer than ``window`` earlier streams: just the numbers."""
+    last = past[:window]
+    out = {"streams": len(past), "window": window, "compared": len(last) >= window, "lines": [], "patterns": [],
+           "numbers": {k: now.get(k) for k, _ in METRICS}, "baseline": {}, "change": {}, "headline": "", "spoken": ""}
+    if not out["compared"]:
+        out["lines"] = [f"{label.capitalize()}: {_fmt(now[k], k)}." for k, label in METRICS if now.get(k) is not None]
+        out["note"] = out["spoken"] = (f"Comparisons start once there are {window} earlier streams "
+                                       f"({len(past)} so far).")
+        return out
+    moves = []
+    for k, label in METRICS:
+        base, v = _mean(x.get(k) for x in last), now.get(k)
+        if v is None or not base:
+            continue
+        out["baseline"][k] = round(base, 1)
+        pct = out["change"][k] = round((v - base) / base * 100)
+        if k == "duration_s":
+            diff = v - base
+            how = "about as long as usual" if abs(diff) < 600 else \
+                f"{human(abs(diff))} {'longer' if diff > 0 else 'shorter'} than usual"
+            out["lines"].append(f"Length {human(v)}: {how} ({human(base)}).")
+        elif abs(pct) < 5:
+            out["lines"].append(f"{label.capitalize()} {_fmt(v, k)}: about the same as your last {window} ({_fmt(base, k)}).")
+        else:
+            out["lines"].append(f"{label.capitalize()} {_fmt(v, k)}: {'better' if pct > 0 else 'worse'}, "
+                                f"{'up' if pct > 0 else 'down'} {abs(pct)}% on your last {window} ({_fmt(base, k)}).")
+            moves.append((abs(pct), label, pct))
+    if now["game"]:
+        same = sum(1 for x in last if same_game(x.get("game") or "", now["game"]))
+        out["lines"].append(f"Category {now['game']}: " + (f"{same} of your last {window} were too." if same
+                                                           else f"none of your last {window} were."))
+    out["patterns"] = patterns([now, *past])
+    top = sorted(moves, reverse=True)[:2]
+    out["headline"] = (" and ".join(f"{label} {'up' if pct > 0 else 'down'} {abs(pct)}%" for _, label, pct in top)
+                       + f" on your last {window}.").capitalize() if top else f"About the same as your last {window}."
+    out["spoken"] = out["headline"] + (f" {out['patterns'][0]}" if out["patterns"] else "")
+    return out
+
+
+def patterns(streams: list[dict], min_group: int = 2, min_diff: float = 0.2) -> list[str]:
+    """What went with more (or fewer) viewers across these streams: the game, the start time, the length. Group
+    averages, at most one per kind, only where both sides have ``min_group`` streams and differ by ``min_diff``."""
+    rows = [s for s in streams if s.get("avg_viewers") is not None]
+    if len(rows) < 2 * min_group:
+        return []
+
+    def split(name: str, inside) -> tuple[float, str] | None:
+        a, b = [s for s in rows if inside(s)], [s for s in rows if not inside(s)]
+        if len(a) < min_group or len(b) < min_group:
+            return None
+        ma, mb = _mean(s["avg_viewers"] for s in a), _mean(s["avg_viewers"] for s in b)
+        if not mb or abs(ma - mb) < 2 or abs(ma - mb) / mb < min_diff:
+            return None
+        rel = (ma - mb) / mb
+        return abs(rel), (f"{name} averaged {round(ma)} viewers, {abs(round(rel * 100))}% {'more' if rel > 0 else 'fewer'} "
+                          f"than the rest ({round(mb)}), over {len(a)} and {len(b)} streams.")
+
+    kinds = [[split(f"{g} streams", lambda s, g=g: same_game(s.get("game") or "", g))
+              for g in {s["game"] for s in rows if s.get("game")}],
+             [split(name, lambda s, f=f: f(s.get("hour") or 0)) for name, f in STARTS]]
+    lengths = sorted(s["duration_s"] for s in rows if s.get("duration_s"))
+    if lengths:
+        mid = lengths[len(lengths) // 2]
+        kinds.append([split(f"Streams of {human(mid)} or more", lambda s: (s.get("duration_s") or 0) >= mid)])
+    best = [max(found) for found in ([x for x in k if x] for k in kinds) if found]
+    return [text for _, text in sorted(best, reverse=True)]
+
+
 def new_session(sid: int, start: float, tw: dict) -> dict:
     return {"id": sid, "start": start, "saved": start, "title": tw.get("title") or "", "game": tw.get("game") or "",
             "viewers": [], "follows": [], "subs": 0, "gifts": 0, "raids": [], "bits": 0, "hype_trains": 0, "messages": 0,
-            "minutes": {}, "new_chatters": [], "incidents": [], "highlights": [], "mood": [0.0, 0]}
+            "minutes": {}, "new_chatters": [], "incidents": [], "highlights": [], "mood": [0.0, 0], "yt_messages": 0}
 
 
 # ---- the skill --------------------------------------------------------------------------------------------------
@@ -335,9 +437,24 @@ class StreamCopilot(Skill):
              "messages": s["messages"], "avg_rate": round(s["messages"] / max(1.0, dur / 60), 1),
              "peak_rate": max(s["minutes"].values(), default=0), "new_chatters": len(s["new_chatters"]),
              "mood": round(s["mood"][0] / s["mood"][1], 2) if s["mood"][1] else 0.0, "chapters": chapters,
-             "health": health_summary(s["incidents"])}
+             "health": health_summary(s["incidents"]), "youtube_messages": s.get("yt_messages", 0)}
+        r["growth"] = growth(stream_numbers(r, self.svc.tz), self.past_numbers(s["id"]))
         r["posts"] = self._posts(r)
         return r
+
+    def past_numbers(self, sid: int | None = None, limit: int = 20) -> list[dict]:
+        """The finished streams before this one, newest first (from their recaps), for the comparison."""
+        rows = self.svc.storage.query("SELECT id, data FROM stream_copilot_sessions WHERE end IS NOT NULL AND id <> ? "
+                                      "ORDER BY end DESC LIMIT ?", (sid if sid is not None else -1, limit * 2))
+        out = []
+        for row in rows:
+            try:
+                r = json.loads(row["data"]).get("recap")
+            except (TypeError, ValueError):
+                continue
+            if r and (r.get("duration_s") or 0) >= MIN_STREAM_S:  # a 2-minute test stream isn't one to compare with
+                out.append(stream_numbers(r, self.svc.tz))
+        return out[:limit]
 
     def _posts(self, r: dict) -> dict:
         facts = {k: r[k] for k in ("duration", "title", "game", "peak_viewers", "follows", "subs", "bits", "chapters")}
@@ -361,7 +478,7 @@ class StreamCopilot(Skill):
         with self._lock:
             for m in msgs:
                 self._last_chat = max(self._last_chat, m["ts"])
-                login = (m.get("user") or "").lower()
+                login = (m.get("login") or m.get("user") or "").lower()  # YouTube's: yt:<channel id>
                 if login in BOTS or not login:
                     continue
                 self.chat_times.append(m["ts"])
@@ -371,6 +488,8 @@ class StreamCopilot(Skill):
                 s = self.session
                 if s is not None:
                     s["messages"] += 1
+                    if m.get("platform") == "youtube":
+                        s["yt_messages"] = s.get("yt_messages", 0) + 1
                     minute = str(int((m["ts"] - s["start"]) // 60))
                     s["minutes"][minute] = s["minutes"].get(minute, 0) + 1
                     if score is not None:
@@ -378,8 +497,8 @@ class StreamCopilot(Skill):
                 if login == me:
                     continue
                 if is_question(m["text"], me):
-                    self.questions = ([{"id": f"{m['ts']:.3f}", "user": m["user"], "text": m["text"][:300], "ts": m["ts"],
-                                        "done": False}] + self.questions)[:40]
+                    self.questions = ([{"id": f"{m['ts']:.6f}", "user": m["user"], "text": m["text"][:300], "ts": m["ts"],
+                                        "done": False, "platform": m.get("platform") or "twitch"}] + self.questions)[:40]
                 if s is not None and login not in self._seen:
                     self._seen.add(login)
                     self._chatter(login, m["user"], m["ts"], s)
@@ -518,7 +637,9 @@ class StreamCopilot(Skill):
         if card["kind"] == "category":
             return self.switch_category(d["game"])
         if card["kind"] == "title":
-            out = run_on_click(self.run_tool, self.svc.bus, "twitch_set_channel", {"title": d["title"]},
+            yt = self.svc.skills.get("stream_youtube") if self.svc.skills is not None else None
+            tool = yt.title_tool() if yt is not None else "twitch_set_channel"  # Twitch and YouTube, if J chose both
+            out = run_on_click(self.run_tool, self.svc.bus, tool, {"title": d["title"]},
                                f"set the stream title to {d['title']}")
             if out.get("ok") and self.session is not None:
                 self.session["title"] = d["title"]
@@ -607,6 +728,8 @@ class StreamCopilot(Skill):
             r = json.loads(row[0]["data"]).get("recap") if row else None
         if not r:
             return {"ok": False, "error": "No finished stream yet. The recap shows up on the HUD when you go offline."}
+        if not r.get("growth"):  # a recap from before 2.3: compare it now
+            r = {**r, "growth": growth(stream_numbers(r, self.svc.tz), self.past_numbers(r.get("id")))}
         return {"ok": True, "part": part, **r}
 
     def status(self) -> dict:
@@ -653,8 +776,9 @@ class StreamCopilot(Skill):
                                "that are still unanswered, first-time chatters and regulars to greet. focus: mood or "
                                "questions.", obj({"focus": {"type": "string"}}), self.chat_pulse, untrusted=True),
             Tool("stream_recap", "The recap of a finished stream (session: 'last' or an id): duration, viewers, follows, "
-                                 "subs, raids, VOD chapters, stream health, and drafts for X and Discord. part: all or "
-                                 "chapters.", obj({"session": {"type": "string"}, "part": {"type": "string"}}),
+                                 "subs, raids, VOD chapters, stream health, drafts for X and Discord, and growth: how it "
+                                 "compares with the last 5 streams and what went with better ones. part: all, chapters "
+                                 "or growth.", obj({"session": {"type": "string"}, "part": {"type": "string"}}),
                  self.stream_recap),
             Tool("suggest_title", "Suggest stream titles for a game and plan (defaults to the next stream on the "
                                   "calendar).", obj({"game": {"type": "string"}, "idea": {"type": "string"}}),
@@ -674,6 +798,10 @@ class StreamCopilot(Skill):
         if re.fullmatch(r"(?:give me |show me |make |what are )?(?:the |my )?vod chapters(?: for (?:the |my )?(?:last )?"
                         r"(?:stream|vod))?", t):
             return Intent("tool", "stream_recap", {"session": "last", "part": "chapters"})
+        if re.fullmatch(r"how did (?:the|my|that) (?:last )?stream compare|compare (?:the |my |that )?(?:last )?stream"
+                        r"(?: to (?:the |my )?(?:last|other|previous) (?:ones|streams))?|(?:my )?stream growth|how(?:'s| is) "
+                        r"(?:my |the )?(?:stream|channel) growing|am i growing(?: on twitch)?", t):
+            return Intent("tool", "stream_recap", {"session": "last", "part": "growth"})
         if re.fullmatch(r"(?:give me |show me |show |read )?(?:the |a |my )?(?:last )?(?:post-?stream|stream) recap"
                         r"|recap (?:the |my )?(?:last )?stream|how did (?:the|my|that) (?:last )?stream go", t):
             return Intent("tool", "stream_recap", {"session": "last"})
@@ -703,12 +831,16 @@ class StreamCopilot(Skill):
                         if late else "") + f". Latest from {qs[0]['user']}. They're on the HUD.")
             return f"Chat's {m['label']}, {m['rate']} messages a minute."
         if tool == "stream_recap":
+            g = result.get("growth") or {}
+            if args.get("part") == "growth" or result.get("part") == "growth":
+                return g.get("spoken") or "No comparison yet."
             if args.get("part") == "chapters" or result.get("part") == "chapters":
                 ch = result["chapters"]
                 return f"{len(ch)} chapter{'s' if len(ch) != 1 else ''} on the HUD" + (f", first at {ch[1]}." if len(ch) > 1 else ".")
             raid = f", raid from {result['raids'][0]['user']}" if result["raids"] else ""
+            vs = f" {g['headline']}" if g.get("headline") else ""
             return (f"Last stream: {result['duration']}, peak {result['peak_viewers'] or 'unknown'}, "
-                    f"{result['follows']} new follows{raid}. Chapters and post drafts are on the HUD.")
+                    f"{result['follows']} new follows{raid}.{vs} Chapters and post drafts are on the HUD.")
         if tool == "suggest_title":
             return f"How about: {result['titles'][0]}. More on the HUD."
         return None

@@ -856,6 +856,7 @@ render.voice = function voice() {
       onclick: () => post('/api/voice/speaker_check', { mode: m }).then(() => refreshVoice()),
     }, m)));
     const last = v.last_calibration;
+    const silero = (v.pipeline?.vad || '').startsWith('silero');
     fill(b,
       prof.enrolled
         ? h('div', {}, status('good', 'Voice enrolled'), h('span', { class: 'muted' }, ` · ${prof.clips} samples · ${ago(prof.created)}`),
@@ -866,10 +867,14 @@ render.voice = function voice() {
         h('span', { class: 'k' }, 'Only answer me'), h('span', {}, modes),
         h('span', { class: 'k' }, 'Match threshold'), h('span', {}, prof.threshold != null ? `${prof.threshold}${prof.enrolled_threshold != null && prof.enrolled_threshold !== prof.threshold ? ` (calibrated ${prof.enrolled_threshold})` : ''}${prof.last_score != null ? ` · last voice ${prof.last_score}` : ''}` : '—'),
         h('span', { class: 'k' }, 'Speech engine'), h('span', {}, v.pipeline?.engine
-          ? `${v.pipeline.engine} · ${v.pipeline.vad === 'silero' ? 'Silero' : 'energy'} voice detection${v.pipeline.latency_ms != null ? ` · ${v.pipeline.latency_ms} ms median` : ''}`
+          ? `${v.pipeline.engine} · ${silero ? 'Silero' : 'energy'} voice detection${v.pipeline.latency_ms != null ? ` · ${v.pipeline.latency_ms} ms median` : ''}`
           : 'loads with the listener'),
-        v.pipeline?.vad === 'silero' ? null : h('span', { class: 'k' }, 'Speech threshold'),
-        v.pipeline?.vad === 'silero' ? null : h('span', {}, `min_rms ${v.min_rms}`)),
+        silero ? null : h('span', { class: 'k' }, 'Speech threshold'),
+        silero ? null : h('span', {}, `min_rms ${v.min_rms}`),
+        v.pipeline ? h('span', { class: 'k' }, 'End of a sentence') : null,  // voice/turn.py; names: voice/stt.py hotwords
+        v.pipeline ? h('span', { title: v.pipeline.turn_error || '' }, (v.pipeline.vad || '').endsWith('+turn') ? 'natural (Smart Turn)'
+          : v.pipeline.end_of_turn === 'smart' ? `silence (Smart Turn unavailable${v.pipeline.turn_error ? `: ${v.pipeline.turn_error}` : ''})` : 'after a silence',
+          v.pipeline.hotwords ? ` · names ${v.pipeline.hotwords.on ? `expected (${v.pipeline.hotwords.words})` : 'not expected'}` : '') : null),
       last && last.step === 'done' && last.summary ? h('div', { class: 't2', style: { marginBottom: '8px' } },
         `Last run heard the name as: ${(last.summary.wake_heard || []).join(' · ') || '—'}`) : null,
       last && last.step === 'error' ? h('div', { class: 'empty' }, status('critical', `Calibration failed: ${last.error}`)) : null,
@@ -931,7 +936,7 @@ render.triggers = function triggers() {
 
 const TTS_ENGINES = [
   ['supertonic', 'Supertonic', 'fast · 85 MB'],
-  ['kokoro', 'Kokoro', 'British voices · 320 MB · slower'],
+  ['kokoro', 'Kokoro', 'British voices · 350 MB · slower, ~6× the CPU a sentence'],  // measured: PERF-11
   ['pyttsx3', 'Windows', 'built-in, robotic'],
   ['none', 'Off', 'replies on screen only'],
 ];
@@ -2345,6 +2350,10 @@ function onEvent(ev) {
   pulse(type, data);
   if (Vesper._hooks[type]) Vesper.emit(type, data, ev);
   if (sticky.has(type)) {
+    if (type === 'system' && data && data.history_add) {  // the newest sample: keep the last 90 here (runtime._poll_system)
+      const had = S.data.system?.history || [], last = had.length ? had[had.length - 1].ts : -Infinity;
+      data.history = had.concat(data.history_add.filter(x => x.ts > last)).slice(-90);
+    }
     S.data[type] = data;
     if (type === 'obs' || type === 'twitch') paintPrivacy();
     const fns = { system: ['vitals', 'stats'], obs: ['obs', 'stats'], twitch: ['twitch', 'stats'], activity: ['activity', 'stats'],
@@ -2356,6 +2365,7 @@ function onEvent(ev) {
   }
   switch (type) {
     case 'user_said': S.log.push({ role: 'user', text: data.text, source: data.source, ts: ev.ts }); strip.you(data.text); render.log(); break;
+    case 'log_forgotten': S.log = S.log.filter(m => !(m.ts >= data.start && m.ts <= data.end)); render.log(); break;  // "forget this conversation"
     case 'assistant_said':
       if (data.text) { S.log.push({ role: 'assistant', text: data.text, source: data.source, ms: data.ms, ts: ev.ts }); render.log(); }
       strip.reply(data.text || '');

@@ -158,6 +158,15 @@ class StreamHealth:
                 "alerts": list(self.recent)}
 
 
+def pick_mic(names: list[str], source: str = "") -> str | None:
+    """J's mic among OBS's inputs: the configured source (``obs.mic_source``), else OBS's default "Mic/Aux", else the
+    first name with "mic" in it."""
+    low, source = {n.lower(): n for n in names}, (source or "").lower()
+    if source:
+        return low.get(source) or next((n for k, n in low.items() if source in k), None)
+    return low.get("mic/aux") or next((n for k, n in low.items() if "mic" in k or "microphone" in k), None)
+
+
 class MicWatch:
     """Levels from OBS's InputVolumeMeters event (every 50 ms) for the mic input, cross-checked against
     what the assistant's own microphone heard."""
@@ -175,11 +184,13 @@ class MicWatch:
         self._lock = threading.Lock()  # OBS's event thread writes 20x a second; the poll thread reads
 
     def pick(self, names: list[str]) -> str | None:
-        """The configured source, else OBS's default "Mic/Aux", else the first name with "mic" in it."""
-        low = {n.lower(): n for n in names}
-        if self.source:
-            return low.get(self.source) or next((n for k, n in low.items() if self.source in k), None)
-        return low.get("mic/aux") or next((n for k, n in low.items() if "mic" in k or "microphone" in k), None)
+        return pick_mic(names, self.source)
+
+    def reset(self) -> None:
+        """The meters start again (going live, a pre-stream check): levels from before are no guide to now."""
+        with self._lock:
+            self.peaks.clear()
+            self.clips.clear()
 
     def on_meters(self, inputs: list[dict]) -> None:
         """One InputVolumeMeters payload: [{"inputName": ..., "inputLevelsMul": [[mag, peak, input_peak], ...]}]."""

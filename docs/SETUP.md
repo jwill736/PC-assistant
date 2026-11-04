@@ -235,6 +235,8 @@ Discord and tool servers: [docs/VESPER-2.md](VESPER-2.md) walks through each one
   means the app isn't a **Public** client: register a new one (the type can't be changed).
 - **Voice sounds wrong or starts late:** **Setup → Speaking voice**; the Health check's "Speaking voice" row
   times it on your PC.
+- **A game stutters, or you want to see what Vesper costs:** **Setup → What Vesper is using → Measure 30 s**;
+  [docs/VESPER-2.3-performance.md](VESPER-2.3-performance.md) walks through it and what to send back.
 - **Colab "GPU not available" / disconnected:** try again later; finished models are already in Drive.
 - **Install says Python was installed but can't be found:** close PowerShell, open a new one, paste the line
   again.

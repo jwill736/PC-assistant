@@ -388,6 +388,14 @@ def run(cfg, svc=None, runtime=None, *, timeout: float = 15.0, write: bool = Tru
     ]
     if sk is not None:
         jobs.append(("selftests", lambda: sk.selftests(min(timeout, 10.0))))
+    snap = None
+    if runtime is not None:  # what Vesper is using: the last 30 s measurement, or what it used while this report ran
+        from . import resources
+
+        try:
+            snap = resources.begin()
+        except Exception:
+            snap = None
     results = run_parallel(jobs, timeout + 2)  # the health check inside has its own limit: a little longer
 
     def got(key: str, default: Any) -> Any:
@@ -452,11 +460,21 @@ def run(cfg, svc=None, runtime=None, *, timeout: float = 15.0, write: bool = Tru
         "system": got("system", {}), "gpu": got("gpu", {}), "models": models,
         "checks": checks, "skills": skills, "connections": connections, "startup": startup,
         "watchdog": watchdog, "voice": voice_report(runtime), "log": recent_log_lines(cfg.data_dir),
+        "resources": _resources(snap, runtime) if runtime is not None else None,
     }
     report = Redactor.for_cfg(cfg).deep(report)
     if write:
         report["files"] = write_report(report, Path(cfg.data_dir), now)
     return report
+
+
+def _resources(snap, runtime) -> dict | None:
+    from . import resources
+
+    try:
+        return resources.recent(snap, runtime)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"[:200]}
 
 
 def write_report(report: dict, data_dir: Path, now: datetime) -> dict:
@@ -517,7 +535,7 @@ def to_markdown(r: dict) -> str:
              f"**{MARK.get(s.get('verdict'), '?')}** · {s.get(PASS, 0)} passed · {s.get(WARN, 0)} warnings · "
              f"{s.get(FAIL, 0)} failed · {s.get(SKIP, 0)} not set up · made in {r.get('ran_s')} s ({r.get('mode')})", "",
              "Safe to send as it is: secrets and tokens are taken out, email addresses are partly hidden, and no "
-             "message text is included.", ""]
+             "message text is included (the voice table shows the words of commands you gave Vesper only).", ""]
     attention = [c for c in r.get("checks") or [] if c.get("status") in (FAIL, WARN)]
     lines += ["## Needs attention", ""]
     if attention:
@@ -591,6 +609,15 @@ def to_markdown(r: dict) -> str:
                 lines += [f"{label}: " + ", ".join(f"{k} {v2:.0f}" for k, v2 in top), ""]
     else:
         lines += ["Not measured (Vesper hasn't started since this was added).", ""]
+    res = r.get("resources")
+    lines += ["## What Vesper is using", ""]
+    if res and not res.get("error"):
+        from .resources import markdown
+
+        lines += markdown(res) + [""]
+    else:
+        lines += [f"Not measured ({res['error']})." if res else
+                  "Vesper wasn't running in this process: Setup → Diagnostics → What Vesper is using measures it.", ""]
     wd = r.get("watchdog")
     lines += ["## Watchdog · running parts", ""]
     if wd:
@@ -609,6 +636,14 @@ def to_markdown(r: dict) -> str:
                   f"Voice check: {prof.get('mode') or 'off'}, threshold {prof.get('threshold', '—')}"
                   f" (calibrated {prof.get('enrolled_threshold', '—')}), last score {prof.get('last_score', '—')}, "
                   f"learned {prof.get('learned', 0)}. Wake words: {', '.join(v.get('wake_words') or []) or '—'}.", ""]
+        pipe = v.get("pipeline") or {}
+        if pipe:
+            hot = pipe.get("hotwords") or {}
+            turn_note = f" (unavailable: {pipe['turn_error']})" if pipe.get("turn_error") else ""
+            names = (f"expected ({hot.get('words')})" if hot.get("on") else
+                     "not expected" + (f" ({hot['error']})" if hot.get("error") else ""))
+            lines += [f"Hearing: {pipe.get('engine') or '—'}, {pipe.get('vad') or '—'} voice detection, end of turn "
+                      f"{pipe.get('end_of_turn') or 'silence'}{turn_note}, names {names}.", ""]
         rows = [[datetime.fromtimestamp(h["ts"]).strftime("%H:%M:%S"), h.get("text") or "",
                  "ran" if (h.get("wake") or h.get("armed")) and not h.get("ignored") else
                  h.get("ignored") or ("no name" if h.get("wake") is False else "—"),
@@ -638,10 +673,31 @@ def voice_report(runtime) -> dict | None:
     except Exception:
         prof = {}
     out = getattr(sp, "out", None)
-    return {"heard": list(getattr(lst, "recent_heard", []) or []), "wake_words": list(getattr(lst, "wake_words", []) or []),
+    return {"heard": [_heard_line(h) for h in list(getattr(lst, "recent_heard", []) or [])],
+            "wake_words": list(getattr(lst, "wake_words", []) or []),
             "speaker": {k: tts.get(k) for k in ("engine", "first_audio_ms", "underruns")},
             "output_latency": getattr(out, "latency", None),
-            "profile": {k: prof.get(k) for k in ("mode", "threshold", "enrolled_threshold", "last_score", "learned")}}
+            "profile": {k: prof.get(k) for k in ("mode", "threshold", "enrolled_threshold", "last_score", "learned")},
+            "pipeline": _pipeline(lst)}
+
+
+def _heard_line(h: dict) -> dict:
+    """One sentence the mic caught, as the report shows it. Only a command J gave Vesper keeps its words: what it
+    overheard (someone else in the room, the TV), what it ignored, and a journal entry show as a word count."""
+    h = dict(h)
+    ran = (h.get("wake") or h.get("armed") or h.get("trigger")) and not h.get("ignored")
+    if not ran or h.pop("private", False):
+        n = len(str(h.get("text") or "").split())
+        h["text"] = f"({n} word{'s' if n != 1 else ''})"
+    return h
+
+
+def _pipeline(lst) -> dict:
+    try:
+        st = lst.status()
+    except Exception:
+        return {}
+    return {k: st.get(k) for k in ("engine", "vad", "end_of_turn", "turn_error", "hotwords")}
 
 
 # ---- python -m assistant --diagnose ---------------------------------------------------------------------------------

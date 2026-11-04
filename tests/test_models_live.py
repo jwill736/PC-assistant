@@ -106,3 +106,17 @@ def test_local_voice_says_words_parakeet_can_hear_back(models_dir, engine, voice
     heard = re.sub(r"[^a-z ]", "", text).strip()
     score = difflib.SequenceMatcher(None, "switched to the gameplay scene", heard).ratio()
     assert score >= 0.75, (text, round(score, 2))
+
+
+def test_names_as_hotwords_and_natural_end_of_turn_on_real_speech(models_dir):
+    """Parakeet with hotwords (beam search, the bpe vocab built from tokens.txt) still hears a real sentence, and
+    Smart Turn (downloaded from Hugging Face, hash-checked) calls that finished sentence finished."""
+    from assistant.voice import stt, turn
+
+    wav = models_dir / "sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8" / "test_wavs" / "0.wav"
+    audio = read_wav(wav).astype(np.float32) / 32768
+    engine = stt.load({"stt_engine": "parakeet", "hotwords_score": 2.0}, models_dir)
+    assert engine.hotwords, engine.hotwords_error
+    text = engine.transcribe(audio, ["Phoebe", "Balatro"]).lower()
+    assert "phoebe" in text and "portrait" in text, text
+    assert turn.load(models_dir)(audio) > 0.5

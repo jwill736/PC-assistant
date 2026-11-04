@@ -15,18 +15,74 @@ tool calls as to Claude's.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 import httpx
 
 log = logging.getLogger(__name__)
+
+# While a fullscreen game runs the graphics card is the game's. A skill's background question (inbox triage, a
+# summary, memory) only uses a model that is already loaded, asked with GAME_KEEP_ALIVE so it leaves the card soon
+# after; with none loaded it waits until the game is over. J's own request (said, typed, the phone, a HUD button)
+# gets the model it would get at the desk, loaded if need be, but kept GAME_ASKED_KEEP_ALIVE (a follow-up) instead
+# of the usual 15 minutes. brain.local.game_keep_alive / game_answer_keep_alive change them.
+GAME_KEEP_ALIVE = "30s"
+GAME_ASKED_KEEP_ALIVE = "2m"
+_ASKED = threading.local()
+
+
+@contextlib.contextmanager
+def asking(by_j: bool = True):
+    """Model calls made on this thread inside are J's own request (``by_j``), not background work."""
+    before = getattr(_ASKED, "on", False)
+    _ASKED.on = bool(by_j)
+    try:
+        yield
+    finally:
+        _ASKED.on = before
+
+
+def asked() -> bool:
+    """Is the model call being made on this thread part of a request J made himself?"""
+    return bool(getattr(_ASKED, "on", False))
+
+
+def by_j(fn: Callable) -> Callable:
+    """``fn``, run as J's own request wherever it runs (a HUD button's handler)."""
+    def run(*a, **kw):
+        with asking():
+            return fn(*a, **kw)
+    return run
+
+
+def carry(fn: Callable) -> Callable:
+    """``fn``, to run on another thread, with this thread's "J asked" mark (a request's own helper thread)."""
+    mark = asked()
+
+    def run(*a, **kw):
+        with asking(mark):
+            return fn(*a, **kw)
+    return run
+
+
+def keep_alive_s(value) -> float | None:
+    """Ollama's keep_alive ("30s", "15m", "1h", 300, -1) in seconds; None when unreadable, inf for "forever"."""
+    if isinstance(value, (int, float)):
+        return float("inf") if value < 0 else float(value)
+    m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*(ms|s|m|h)?\s*", str(value or ""))
+    if not m:
+        return None
+    n = float(m[1])
+    return float("inf") if n < 0 else n * {"ms": 0.001, "s": 1, "m": 60, "h": 3600, None: 1}[m[2]]
 
 # (kind, base URL): the default ports. Anything else goes in brain.local.url.
 SERVERS = (("ollama", "http://127.0.0.1:11434"), ("lmstudio", "http://127.0.0.1:1234"),
@@ -179,8 +235,20 @@ def loaded(http: httpx.Client, url: str) -> list[dict]:
     for m in rows:
         size, vram = m.get("size") or 0, m.get("size_vram") or 0
         out.append({"name": m.get("name") or m.get("model"), "size_gb": round(size / GIB, 1),
-                    "vram_gb": round(vram / GIB, 1), "ram_gb": round(max(size - vram, 0) / GIB, 1)})
+                    "vram_gb": round(vram / GIB, 1), "ram_gb": round(max(size - vram, 0) / GIB, 1),
+                    "expires_at": _when(m.get("expires_at"))})
     return out
+
+
+def _when(stamp) -> float | None:
+    """Ollama's expires_at (RFC 3339, nanoseconds and all) as a Unix time, or None."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    s = re.sub(r"(\.\d{6})\d+", r"\1", stamp.strip()).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        return None
 
 
 def unload(http: httpx.Client, url: str, model: str) -> bool:
@@ -326,7 +394,9 @@ class OllamaLLM(LocalLLM):
         if on_text is None:
             r = self.http.post(endpoint, json=body)
             r.raise_for_status()
-            msg = r.json().get("message") or {}
+            data = r.json()
+            msg = data.get("message") or {}
+            self._noted(data)
             return _finish(msg.get("content") or "", _ollama_calls(msg), acting)
         text, calls, emitted = [], [], 0
         with self.http.stream("POST", endpoint, json=body) as r:
@@ -348,8 +418,19 @@ class OllamaLLM(LocalLLM):
                     emitted = _emit("".join(text), emitted, on_text)
                 calls += _ollama_calls(msg)
                 if chunk.get("done"):
+                    self._noted(chunk)
                     break
         return _finish("".join(text), calls, acting)
+
+    def _noted(self, done: dict) -> None:
+        """For the resource report: who asked which model, and whether it had to load (Ollama says how long)."""
+        try:
+            from .. import resources
+
+            load_ns = done.get("load_duration")
+            resources.model_call(self.model, self.keep_alive, load_ns / 1e9 if isinstance(load_ns, (int, float)) else None)
+        except Exception:
+            pass
 
 
 def to_ollama(messages: list[dict]) -> list[dict]:
@@ -443,7 +524,7 @@ class LocalBrain:
         self.bench_path = bench_path
         self.found: dict | None = None
         self.llm: LocalLLM | None = None
-        self._game_llm: LocalLLM | None = None  # the light model for skills' questions mid-game (in_game)
+        self._game_llms: dict[tuple, LocalLLM] = {}  # (model, url, keep-alive): the clients used mid-game (in_game)
         self.streaming = False
         self._probed = -1e9
         self._lock = threading.Lock()
@@ -524,24 +605,89 @@ class LocalBrain:
                 log.info("local model: %s", self.llm.label)
             return self.llm
 
-    def in_game(self) -> LocalLLM | None:
-        """The model for a skill's question while a fullscreen game runs, without loading the big one onto the
-        graphics card mid-game: the one already loaded, else the light model (as on stream nights). None when the
-        only choice would load the big one: the question waits until the game is over."""
+    def game_keep_alive(self, asked: bool) -> str:
+        """How long a model stays loaded after a question asked mid-game: J's own, or a skill's (see GAME_KEEP_ALIVE)."""
+        key, default = ("game_answer_keep_alive", GAME_ASKED_KEEP_ALIVE) if asked else ("game_keep_alive", GAME_KEEP_ALIVE)
+        return str(self.cfg.get(key) or default)
+
+    def _light(self) -> str | None:
+        models = (self.found or {}).get("models") or []
+        light = self.bench.get("light")
+        return light if any(m["name"] == light for m in models) else pick_light_model(models)
+
+    def _game_client(self, model: str, keep: str) -> LocalLLM:
+        found = self.found or {}
+        key = (model, found.get("url"), keep)
+        llm = self._game_llms.get(key)
+        if llm is None:
+            llm = self._make(found, model)
+            llm.keep_alive = keep
+            self._game_llms = {**{k: v for k, v in self._game_llms.items() if k[1] == key[1]}, key: llm}
+        return llm
+
+    def in_game(self, asked: bool = False) -> LocalLLM | None:
+        """The model for a question while a fullscreen game runs (None: it waits until the game is over).
+
+        A skill's background question (``asked`` False) never loads a model onto the graphics card mid-game: only one
+        already loaded answers (the light one first), asked with the short game keep-alive, so the question doesn't
+        keep it there either. J's own request (``asked``) gets what it always got: the main model if it's loaded,
+        else the light one, loaded if need be; it stays only game_answer_keep_alive after the answer."""
         main = self.refresh()
         if main is None or main.kind != "ollama":
             return main  # another server (LM Studio) holds whatever model it holds
-        if any(m["name"] == main.model for m in loaded(main.http, main.url)):
-            return main
-        found = self.found or {}
-        models = found.get("models") or []
-        light = self.bench.get("light")
-        light = light if any(m["name"] == light for m in models) else pick_light_model(models)
-        if not light or light == main.model:
+        held = {m["name"] for m in loaded(main.http, main.url)}
+        light = self._light()
+        if asked:  # live, the main one already is the light one (set_streaming): it loads as on any stream night
+            pick = main.model if main.model in held or self.streaming else \
+                light if light and light != main.model else None
+        else:
+            pick = light if light and light in held else main.model if main.model in held else None
+        if pick is None:
             return None
-        if self._game_llm is None or self._game_llm.model != light or self._game_llm.url != main.url:
-            self._game_llm = self._make(found, light)
-        return self._game_llm
+        return self._game_client(pick, self.game_keep_alive(asked))
+
+    def for_game_question(self) -> LocalLLM | None:
+        """J's own question to the brain mid-game: the model he'd get at the desk (loaded if need be), kept only
+        game_answer_keep_alive after the answer instead of 15 minutes, so the game gets its video memory back."""
+        main = self.refresh()
+        if main is None or main.kind != "ollama":
+            return main
+        return self._game_client(main.model, self.game_keep_alive(True))
+
+    def holds(self, model: str) -> bool:
+        """Is ``model`` loaded in Ollama right now? (a name without a tag means its :latest)"""
+        f = self.found or {}
+        if f.get("kind") != "ollama" or not model:
+            return False
+        http = self.http or (self.llm.http if self.llm else None) or httpx.Client(timeout=3, trust_env=False)
+        names = {m["name"] for m in loaded(http, f["url"])}
+        return model in names or f"{model}:latest" in names
+
+    def game_started(self) -> list[str]:
+        """A fullscreen game just started: Vesper's models still loaded from before it (the main one and the light
+        one, up to 15 minutes each) leave the graphics card game_answer_keep_alive from now, instead of holding it
+        well into the game. Only a model already loaded is touched, and only to shorten its time: never a load.
+        Returns the models cut short."""
+        f = self.found or {}
+        if f.get("kind") != "ollama":
+            return []
+        ours = {n for n in ((self.llm.model if self.llm else None), self._light()) if n}
+        keep = self.game_keep_alive(True)
+        secs = keep_alive_s(keep) or 120.0
+        now, cut = self.clock(), []
+        http = self.http or (self.llm.http if self.llm else None) or httpx.Client(timeout=15, trust_env=False)
+        for m in loaded(http, f["url"]):
+            left = (m.get("expires_at") or now + 1e9) - now
+            if m["name"] in ours and left > 2 * secs:  # never one about to go anyway: asking it again would reload it
+                try:
+                    r = http.post(f"{f['url']}/api/generate", json={"model": m["name"], "keep_alive": keep}, timeout=15)
+                    if r.status_code == 200:
+                        cut.append(m["name"])
+                except httpx.HTTPError:
+                    pass
+        if cut:
+            log.info("game started: %s leave the graphics card in %s", ", ".join(cut), keep)
+        return cut
 
     @property
     def ready(self) -> bool:

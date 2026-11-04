@@ -418,7 +418,11 @@ def test_say_is_short_and_keeps_chat_off_air(env, svc):
     line = cop.say("stream_stats_now", {}, cop.stats_now())
     assert line.startswith("Live 0 minutes, 12 watching, peak 12. 0 new follows")
     q = cop.say("chat_pulse", {"focus": "questions"}, cop.chat_pulse("questions"))
-    assert q == "1 open question. Latest from Kai. They're on the HUD." and "address" not in q
+    assert q == "1 open question. They're on the HUD." and "address" not in q  # on air: no chatter's name either
+    state["live"] = False  # off air (questions stay up a while): a Twitch login can be said
+    assert cop.say("chat_pulse", {"focus": "questions"}, cop.chat_pulse("questions")) == \
+        "1 open question. Latest from Kai. They're on the HUD."
+    state["live"] = True
     assert cop.say("chat_pulse", {}, cop.chat_pulse()).startswith("Chat's ")
     assert cop.say("stream_recap", {}, cop.stream_recap()).startswith("No finished stream yet")
     cop.recap = cop.build_recap(sc.new_session(3, clock.t - 5400, {}), clock.t)
@@ -427,3 +431,77 @@ def test_say_is_short_and_keeps_chat_off_air(env, svc):
         "Last stream: 1h 30m, peak unknown, 0 new follows, raid from Tenz. Chapters and post drafts are on the HUD."
     assert cop.say("stream_recap", {"part": "chapters"}, cop.stream_recap(part="chapters")) == "1 chapter on the HUD."
     assert cop.say("suggest_title", {}, {"ok": True, "titles": ["A", "B"]}) == "How about: A. More on the HUD."
+
+
+# ---- growth: next to the last 5 streams -------------------------------------------------------------------------
+
+def nums(avg, follows=4, hours=2.0, game="VALORANT", hour=19, peak=None, messages=None):
+    return {"id": None, "avg_viewers": avg, "peak_viewers": peak or avg + 10, "follows": follows,
+            "duration_s": hours * 3600, "chat_per_hour": messages if messages is not None else 300, "game": game,
+            "hour": hour}
+
+
+def test_growth_with_fewer_than_five_streams_is_just_the_numbers():
+    g = sc.growth(nums(30), [nums(20), nums(25)])
+    assert not g["compared"] and g["streams"] == 2 and g["patterns"] == [] and g["change"] == {}
+    assert "Average viewers: 30." in g["lines"]
+    assert g["spoken"] == "Comparisons start once there are 5 earlier streams (2 so far)."
+
+
+def test_growth_says_what_was_better_or_worse_and_by_how_much():
+    past = [nums(20, follows=5), nums(25, follows=5), nums(20, follows=5), nums(25, follows=5),
+            nums(35, follows=5, game="ELDEN RING"), nums(99, game="old")]
+    g = sc.growth(nums(30, follows=3, hours=3), past)
+    assert g["compared"] and g["baseline"]["avg_viewers"] == 25 and g["change"]["avg_viewers"] == 20
+    lines = "\n".join(g["lines"])
+    assert "Average viewers 30: better, up 20% on your last 5 (25)." in lines
+    assert "New follows 3: worse, down 40% on your last 5 (5)." in lines
+    assert "Chat messages an hour 300: about the same as your last 5 (300)." in lines
+    assert "Length 3h 00m: 1h 00m longer than usual (2h 00m)." in lines
+    assert "Category VALORANT: 4 of your last 5 were too." in lines
+    assert g["headline"] == "New follows down 40% and average viewers up 20% on your last 5."
+
+
+def test_patterns_name_what_went_with_more_viewers():
+    streams = [nums(40, game="ELDEN RING", hour=20), nums(44, game="ELDEN RING", hour=19),
+               nums(42, game="Elden Ring", hour=20), nums(20, hour=15), nums(22, hour=14), nums(21, hour=16)]
+    out = sc.patterns(streams)
+    assert "ELDEN RING streams averaged 42 viewers, 100% more than the rest (21), over 3 and 3 streams." in out \
+        or "Elden Ring streams averaged 42 viewers, 100% more than the rest (21), over 3 and 3 streams." in out
+    assert any(p.startswith("Evening starts (5 to 9 pm) averaged 42 viewers") for p in out)
+    assert not any(p.startswith("Streams of") for p in out)  # every stream was 2 h: length says nothing
+    assert sc.patterns(streams[:3]) == []  # too few to split
+    assert sc.patterns([nums(20), nums(21), nums(20), nums(21)]) == []  # no difference worth saying
+
+
+def finished(svc, sid, avg, start, game="VALORANT", minutes=120):
+    r = {"id": sid, "start": start, "end": start + minutes * 60, "duration_s": minutes * 60, "avg_viewers": avg,
+         "peak_viewers": avg + 5, "follows": 2, "messages": 600, "game": game}
+    svc.storage.execute("INSERT INTO stream_copilot_sessions (id, start, end, data) VALUES (?, ?, ?, ?)",
+                        (sid, start, start + minutes * 60, json.dumps({"recap": r})))
+
+
+def test_the_recap_compares_with_the_stored_streams(env, svc):
+    cop, clock, state, nudges = env
+    day = 86400
+    for i, avg in enumerate([20, 22, 18, 20, 20]):
+        finished(svc, 100 + i, avg, clock.t - (10 - i) * day)
+    finished(svc, 120, 500, clock.t - 2 * day, minutes=3)  # a 3-minute test: not a stream to compare with
+    s = sc.new_session(200, clock.t - 7200, {"game": "VALORANT"})
+    s["viewers"] = [[clock.t - 60, 30]]
+    s["messages"] = 900
+    r = cop.build_recap(s, clock.t)
+    assert r["growth"]["compared"] and r["growth"]["baseline"]["avg_viewers"] == 20
+    assert r["growth"]["change"]["avg_viewers"] == 50
+    assert cop.say("stream_recap", {}, {"ok": True, **r}).startswith("Last stream: 2h 00m, peak 30, 0 new follows. ")
+    cop.recap = r
+    assert cop.say("stream_recap", {"part": "growth"}, cop.stream_recap(part="growth")) == r["growth"]["spoken"]
+    cop.recap = {k: v for k, v in r.items() if k != "growth"}  # a recap made before 2.3 is compared when asked
+    assert cop.stream_recap()["growth"]["compared"]
+
+
+@pytest.mark.parametrize("text", ["how did that stream compare", "compare my last stream", "stream growth",
+                                  "am i growing", "how is my channel growing"])
+def test_growth_routes(svc, text):
+    intent = route(text, RouterContext(skill_route=Skills(svc, ["stream_copilot"]).route))
+    assert (intent.tool, intent.args) == ("stream_recap", {"session": "last", "part": "growth"})

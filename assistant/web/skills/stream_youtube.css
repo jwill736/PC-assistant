@@ -1,0 +1,9 @@
+/* YouTube Live: the live badge (on air: --alert), the quota bar (a reading: mono numbers, neutral fill) */
+.yl-badge { color: var(--alert); font-weight: 600; letter-spacing: .08em; font-size: 11px; }
+.yl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.yl-ask { padding: 8px 10px; border-left: 2px solid var(--amber); background: var(--inset); border-radius: 4px; margin-bottom: 8px; }
+.yl-quota { margin: 8px 0; }
+.yl-bar { height: 4px; border-radius: 2px; background: var(--inset); overflow: hidden; margin-top: 4px; }
+.yl-bar > i { display: block; height: 100%; background: var(--ink-2); transform-origin: left; transition: transform var(--dur-base) var(--ease-out); }
+.yl-warn { color: var(--amber); margin: 6px 0; }
+@media (prefers-reduced-motion: reduce) { .yl-bar > i { transition: none; } }

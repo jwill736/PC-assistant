@@ -17,6 +17,8 @@ import psutil
 import pytest
 
 from assistant import library as _library
+from assistant import resources as _resources
+from assistant.integrations import nvml as _nvml
 from assistant.bus import EventBus
 from assistant.config import DEFAULTS, Config, deep_merge
 from assistant.integrations.activity import ActivityTracker
@@ -51,6 +53,8 @@ from assistant.watchdog import Supervisor
 #   libraries a test makes are stopped when it ends, so nothing it started runs on into the next test. (So make them
 #   in function-scoped fixtures.) A blocked call from a thread an earlier test left running says so.
 # - The PC's own File Explorer pins (library.quick_access, read with powershell) are always empty.
+# - The graphics card's driver is never read: NVML (integrations/nvml.py) acts as if absent, so a GPU reading
+#   takes the nvidia-smi path tests already fake, on a PC with an NVIDIA card as on CI.
 #
 # tests/test_guards.py tests these.
 
@@ -316,6 +320,8 @@ _track(Phone, "start", Phone.stop)
 _track(MCP, "_submit", _stop_mcp)
 _track(ActivityTracker, "restart", ActivityTracker.stop)
 _track(_library.Library, "__init__", _library.Library.stop)
+_nvml.DISABLED = True  # (and per test, below): even a thread left over from collection never reads the driver
+_resources._HOOKED[0] = True  # the resource report's launch counter never wraps Popen here: the guard does
 
 
 @pytest.fixture(autouse=True)
@@ -328,6 +334,7 @@ def _guards(request, monkeypatch):
         for var in _PROXY_VARS:
             monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(_library, "quick_access", list)  # the PC's own Explorer pins (read by powershell)
+    monkeypatch.setattr(_nvml, "DISABLED", True)  # the real graphics driver: never in a test
     yield
     started = {id(o): (o, s) for o, s in _STARTED}
     for obj, stop in reversed(list(started.values())):

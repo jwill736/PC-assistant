@@ -154,8 +154,12 @@ def test_post_latest_clip(dc, fake, svc):
 
         def _get(self, path, params):
             assert path == "clips" and params["broadcaster_id"] == "77"
-            return [{"url": "https://clips.twitch.tv/Old", "title": "old", "created_at": "2026-10-01T00:00:00Z"},
-                    {"url": "https://clips.twitch.tv/New", "title": "huge play", "created_at": "2026-10-12T00:00:00Z"}]
+            return [{"url": "https://clips.twitch.tv/Old", "title": "old", "created_at": "2026-10-01T00:00:00Z",
+                     "creator_id": "77"},
+                    {"url": "https://clips.twitch.tv/New", "title": "huge play", "created_at": "2026-10-12T00:00:00Z",
+                     "creator_id": "77"},
+                    {"url": "https://clips.twitch.tv/Troll", "title": "a viewer's words", "creator_id": "666",
+                     "created_at": "2026-10-13T00:00:00Z"}]  # a viewer's clip of the channel: never posted
     svc.twitch = Twitch()
     out = dc.post_clip()
     assert out["ok"] and fake.posts[-1]["content"] == "huge play\nhttps://clips.twitch.tv/New"
@@ -173,6 +177,69 @@ def test_discord_down_never_crashes(svc, monkeypatch):
     assert "Couldn't reach Discord" in d.post("hi")["error"]
     d.tick()
     assert "Couldn't reach Discord" in d.status()["error"]
+
+
+def test_post_my_clip_never_posts_a_viewer_written_title(dc, fake, svc):
+    """INTEG-4: with no Vesper clip today, "post my clip" took the newest clip of the channel, which anyone can make
+    and title, and the yes never showed it. Only J's own clips go, and the yes names the one it will post."""
+    from types import SimpleNamespace
+
+    from assistant.brain.assistant import Assistant
+
+    dc.set_webhook(HOOK)
+    svc.highlights = lambda: []  # no clip made through Vesper today
+    clips = [{"url": "https://clips.twitch.tv/troll1", "title": "viewer wrote this", "creator_id": "666",
+              "created_at": "2026-11-04T20:00:00Z"},
+             {"url": "https://clips.twitch.tv/Mine", "title": "the comeback", "creator_id": "42",
+              "created_at": "2026-11-04T19:00:00Z"}]
+    svc.twitch = SimpleNamespace(enabled=True, broadcaster_id=lambda: "42", _get=lambda path, params: list(clips))
+    sk = Skills(svc, [])
+    sk.all["discord"] = dc
+    svc.skills = sk
+    a = Assistant(svc)
+    svc.live = lambda: False
+    out = a.handle("post my clip")
+    assert out["reply"] == "Post your Twitch clip “the comeback” to Discord? Say yes or no."
+    clips.insert(0, {"url": "https://clips.twitch.tv/New", "title": "made later", "creator_id": "42",
+                     "created_at": "2026-11-04T21:00:00Z"})  # another clip shows up before J answers
+    a.handle("yes")
+    assert fake.posts[-1]["content"] == "the comeback\nhttps://clips.twitch.tv/Mine"  # the one he said yes to
+    assert not any("viewer wrote this" in p["content"] for p in fake.posts)
+    clips[:] = clips[1:2]  # only the viewer's clip
+    clips[0] = {**clips[0], "creator_id": "666"}
+    assert dc.latest_clip() is None
+    svc.live = lambda: True
+    dc.now_[0] += 60
+    clips[0]["creator_id"] = "42"
+    assert dc.tools()[1].describe({}) == "post your latest Twitch clip to Discord"  # on air: the title stays off
+
+
+def test_a_dead_discord_webhook_isnt_asked_again_every_tick(svc, monkeypatch):
+    """INTEG-15: a failed lookup left the webhook unknown, so every 20 s tick (in games too) asked Discord again."""
+    gets, status = [], [404]
+
+    def hook(req):
+        gets.append(req.method)
+        return httpx.Response(status[0], json={"message": "Unknown Webhook"} if status[0] == 404 else {})
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", HOOK)
+    now = [1_760_000_000.0]
+    svc.live = lambda: False
+    d = make(svc, Fake(), now)
+    d.http = httpx.Client(transport=httpx.MockTransport(hook))
+    for _ in range(180):  # an hour of 20 s ticks
+        d.tick()
+        now[0] += 20
+    assert len(gets) == 1 and "deleted" in d.status()["error"]  # deleted: not asked again until a new link
+    status[0], gets[:] = 503, []
+    d._gone = ""  # a new link pasted (same address here), and Discord is having a bad hour
+    for _ in range(180):
+        d.tick()
+        now[0] += 20
+    assert len(gets) == 4  # 0, 5, 15 and 35 minutes: then once an hour at most
+    status[0] = 200
+    now[0] += 3600
+    d.tick()
+    assert d.hook is not None and d.error is None
 
 
 def test_announcing_by_voice_waits_for_a_yes(dc, fake, svc):

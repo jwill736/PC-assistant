@@ -29,6 +29,8 @@ import psutil
 
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
+from ..brain.undo import Undo
+from ..integrations import nvml
 from . import Skill, check
 
 IS_WINDOWS = sys.platform == "win32"
@@ -80,10 +82,14 @@ def parse_gpus(out: str) -> list[dict]:
             bits = int(p[3], 16) if p[3].lower().startswith("0x") else int(p[3])
         except ValueError:
             bits = 0
-        gpus.append({"name": p[5] if len(p) > 5 and p[5] else "GPU", "temp_c": _num(p[0]), "power_w": _num(p[1]),
-                     "limit_w": _num(p[2]), "util": _num(p[4]), "throttle": [v for k, v in THROTTLE.items() if bits & k],
-                     "power_capped": bool(bits & 0x4), "thermal": bool(bits & 0x60)})
+        gpus.append(gpu_row(p[5] if len(p) > 5 else "", _num(p[0]), _num(p[1]), _num(p[2]), _num(p[4]), bits))
     return gpus
+
+
+def gpu_row(name: str, temp_c, power_w, limit_w, util, bits: int) -> dict:
+    return {"name": name or "GPU", "temp_c": temp_c, "power_w": power_w, "limit_w": limit_w, "util": util,
+            "throttle": [v for k, v in THROTTLE.items() if bits & k], "power_capped": bool(bits & 0x4),
+            "thermal": bool(bits & 0x60)}
 
 
 def drives() -> list[dict]:
@@ -307,6 +313,10 @@ class Janitor(Skill):
 
     # ---- health -------------------------------------------------------------------------------------------
     def gpus(self) -> list[dict]:
+        if self.runner is run_smi:  # read in-process through NVML when it's there: no nvidia-smi launch a minute
+            rows = nvml.health()
+            if rows is not None:
+                return [gpu_row(r["name"], r["temp_c"], r["power_w"], r["limit_w"], r["util"], r["bits"]) for r in rows]
         for reasons in dict.fromkeys([self._reasons, "clocks_event_reasons.active"]):
             out = self.runner([f"--query-gpu=temperature.gpu,power.draw,power.limit,{reasons},utilization.gpu,name",
                                "--format=csv,noheader,nounits"])
@@ -481,12 +491,24 @@ class Janitor(Skill):
         self._save_undo(log)
         return {"ok": True, "restored": back, "of": len(last["moves"])}
 
+    def _undo_last_tidy(self, result: dict) -> Undo | None:
+        """"Undo that" after a tidy: the same as "undo the downloads tidy", while this tidy is still the last one."""
+        if not result.get("moved"):
+            return None
+        stamp = (self._undo_log() or [{}])[-1].get("at")
+        return Undo("your Downloads files put back", self.undo_tidy, what="the Downloads tidy",
+                    now=lambda: (self._undo_log() or [{}])[-1].get("at"), left=stamp,
+                    show=lambda at: "still the last one" if at == stamp else "already undone, or there's a newer one")
+
     def _confirm(self, a: dict) -> str:
         p = self.tidy_downloads(dry_run=True)
         return f"move {p.get('count', 0)} files in Downloads into {_folders(p.get('by_folder') or {})} (nothing is deleted)"
 
     # ---- skill surface ------------------------------------------------------------------------------------
     def selftest(self) -> list[dict]:
+        card = nvml.driver() if self.runner is run_smi else None
+        if card:
+            return [check("NVIDIA driver", "pass", f"{card} (read through NVML)")]
         out = self.runner(["--query-gpu=name,driver_version", "--format=csv,noheader"])
         if not out:
             return [check("nvidia-smi", "warn", "didn't answer: no GPU temperature or throttling alerts",
@@ -522,7 +544,8 @@ class Janitor(Skill):
             Tool("tidy_downloads", "Sort the Downloads folder into Images/Documents/Installers/Archives/Video subfolders. "
                                    "dry_run=true (default) only returns the plan; dry_run=false moves the files (never "
                                    "deletes; can be undone).", obj({"dry_run": {"type": "boolean"}}), self.tidy_downloads,
-                 tier=lambda a: 2 if a.get("dry_run") is False else 0, confirm_text=self._confirm),
+                 tier=lambda a: 2 if a.get("dry_run") is False else 0, confirm_text=self._confirm,
+                 undo=lambda a: self._undo_last_tidy),
             Tool("undo_downloads_tidy", "Put the files from the last Downloads tidy back where they were.", obj(),
                  self.undo_tidy, tier=1),
         ]

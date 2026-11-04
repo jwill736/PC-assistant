@@ -78,7 +78,7 @@
     const qs = d.questions || [];
     return h('section', { class: 'sc-col' }, h('h3', {}, 'Questions in chat', h('span', { class: 'muted' }, qs.length ? ` · ${qs.length}` : '')),
       qs.length ? h('div', { class: 'list' }, qs.map(q => h('div', { class: `item sc-q ${q.late ? 'late' : ''}` },
-        h('div', { class: 'main' }, h('div', { class: 't2' }, `${q.user} · ${age(q.age_s)} ago${q.late ? ' · waiting' : ''}`), h('div', { class: 't1' }, q.text)),
+        h('div', { class: 'main' }, h('div', { class: 't2' }, `${q.user}${q.platform === 'youtube' ? ' · YouTube' : ''} · ${age(q.age_s)} ago${q.late ? ' · waiting' : ''}`), h('div', { class: 't1' }, q.text)),
         h('button', { class: 'btn small icon', title: 'Answered / not for me', 'aria-label': 'Dismiss question', onclick: () => act('dismiss', { id: q.id }) }, '✕'))))
         : empty('No open questions. Say the asker’s name or the topic out loud and they clear themselves.'));
   }
@@ -102,13 +102,25 @@
       d.titles.map(t => h('div', { class: 'sc-copyrow' }, h('span', { class: 't3' }, t), copyBtn(t, 'Title')))));
     return h('section', { class: 'sc-col' }, h('h3', {}, 'Heads-up'), out.length ? out : empty('Category hints and the go-live plan land here.'));
   }
+  /* Next to the last 5 streams: better or worse and by how much; what went with more viewers once there are enough. */
+  function growth(g) {
+    if (!g) return null;
+    const list = items => h('ul', { class: 'sc-glist' }, items.map(l => h('li', { class: 't3' }, l)));
+    return h('div', { class: 'sc-card sc-growth' },
+      h('div', { class: 't2' }, g.compared ? `Next to your last ${g.window} streams` : 'This stream'), list(g.lines || []),
+      g.note ? h('div', { class: 't3 muted' }, g.note) : null,
+      (g.patterns || []).length ? [h('div', { class: 't2' }, 'What went with more viewers'), list(g.patterns),
+        h('div', { class: 't3 muted' }, 'Patterns across your streams so far, not proof.')] : null);
+  }
   function recap(r) {
     if (!r) return empty('After you go offline, the recap shows up here: chapters for the VOD and posts ready to copy.');
     const posts = r.posts || {};
     return h('div', { class: 'sc-recap' },
       h('div', { class: 'sc-stats' }, stat('length', r.duration), stat('peak viewers', r.peak_viewers), stat('avg viewers', r.avg_viewers),
-        stat('new follows', r.follows), stat('subs', r.subs), stat('bits', r.bits), stat('raids', (r.raids || []).length), stat('msgs / min', r.avg_rate)),
+        stat('new follows', r.follows), stat('subs', r.subs), stat('bits', r.bits), stat('raids', (r.raids || []).length), stat('msgs / min', r.avg_rate),
+        r.youtube_messages ? stat('YouTube msgs', r.youtube_messages) : null),
       h('div', { class: `t3 sc-health ${r.health?.clean ? 'ok' : 'bad'}` }, r.health?.text || ''),
+      growth(r.growth),
       h('div', { class: 'sc-recap-grid' },
         h('div', { class: 'sc-card' }, h('div', { class: 'sc-row' }, h('span', { class: 't2' }, 'VOD chapters'), h('span', { class: 'spacer' }), copyBtn((r.chapters || []).join('\n'), 'Chapters')),
           h('pre', { class: 'sc-pre' }, (r.chapters || []).join('\n'))),

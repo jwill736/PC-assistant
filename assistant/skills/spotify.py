@@ -23,6 +23,7 @@ import httpx
 
 from ..brain.router import NUMBER, Intent, number
 from ..brain.tools import Tool, obj
+from ..brain.undo import checked, restore
 from . import Skill, check, lazy_client
 from ._kit import LiveEdge, callback_url, pkce, save_secret, save_setting
 
@@ -345,7 +346,9 @@ class Spotify(Skill):
             Tool("spotify_control", "Spotify playback: play (resume), pause, next or previous track.",
                  obj({"action": {"type": "string", "enum": list(COMMANDS)}}, ["action"]), self.control, tier=1),
             Tool("spotify_volume", "Spotify's own volume: level 0-100, or change (e.g. -15 for 'turn the music down').",
-                 obj({"level": {"type": "integer"}, "change": {"type": "integer"}}), self.volume, tier=1),
+                 obj({"level": {"type": "integer"}, "change": {"type": "integer"}}), self.volume, tier=1,
+                 undo=restore(lambda a: int(checked(self.now_playing())["volume"]), lambda a, v: self.volume(level=v),
+                              "Spotify's volume", lambda v: f"{v}%", left=lambda r: int(r["level"]))),
             Tool("spotify_shuffle", "Turn Spotify shuffle on or off.", obj({"on": {"type": "boolean"}}, ["on"]),
                  self.shuffle, tier=1),
             Tool("spotify_play", "Search Spotify and play the best match: a song, playlist, artist or album "

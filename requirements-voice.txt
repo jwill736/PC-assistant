@@ -7,3 +7,4 @@ pynput>=1.7                  # push-to-talk hotkey (keyboard, the old choice, is
 pywin32>=306; sys_platform == "win32"
 sherpa-onnx>=1.13,<2          # speech-to-text, voice detection, speaker check, speaking voices (no PyTorch)
 livekit-wakeword>=0.2,<1      # trained wake words / hard triggers (Apache-2.0; numpy + onnxruntime)
+onnxruntime>=1.17,<2          # natural end of turn (Smart Turn, MIT); livekit-wakeword needs it too

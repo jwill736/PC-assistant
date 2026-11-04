@@ -172,9 +172,12 @@ def test_load_downloads_the_sherpa_model(monkeypatch, tmp_path):
     fetched = []
     monkeypatch.setattr(models, "ensure", lambda key, d, cb=None: fetched.append(key) or tmp_path / key)
     built = []
-    monkeypatch.setattr(stt, "SherpaSTT", lambda engine, path, threads: built.append((engine, path, threads)) or "engine")
+    monkeypatch.setattr(stt, "SherpaSTT", lambda engine, path, threads, hotwords_score:
+                        built.append((engine, path, threads, hotwords_score)) or "engine")
     assert stt.load({"stt_engine": "auto", "stt_threads": 4}, tmp_path) == "engine"
-    assert fetched == ["parakeet"] and built == [("parakeet", tmp_path / "parakeet", 4)]
+    assert fetched == ["parakeet"] and built == [("parakeet", tmp_path / "parakeet", 4, 2.0)]  # names expected
+    stt.load({"stt_engine": "parakeet", "hotwords_score": 0}, tmp_path)
+    assert built[-1][3] == 0.0
 
 
 # ---- model download ------------------------------------------------------------

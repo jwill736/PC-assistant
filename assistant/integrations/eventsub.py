@@ -108,7 +108,9 @@ def callout(ev: dict, cfg: dict) -> str | None:
 
 
 class TwitchFeed:
-    """Recent events and chat for the HUD, Claude and the highlight detector."""
+    """Recent events and chat for the HUD, Claude and the highlight detector. YouTube Live chat joins it too
+    (skills/stream_youtube.py): ``platform: "youtube"`` and a ``login`` of ``yt:<channel id>``; those names are never
+    offered for a Twitch shoutout or raid."""
 
     def __init__(self, keep_events: int = 100, keep_chat: int = 300, clock=time.time):
         self.events: deque = deque(maxlen=keep_events)
@@ -121,11 +123,15 @@ class TwitchFeed:
         ev = {**ev, "ts": ev.get("ts") or self.clock()}
         with self._lock:
             if ev["kind"] == "chat":
+                # Chat's times only go up in the order it's added: the co-pilot and moments read "newer than the last
+                # one I saw", so a message stamped a moment before one already there would never reach them.
+                if self.chat and ev["ts"] <= self.chat[-1]["ts"]:
+                    ev["ts"] = self.chat[-1]["ts"] + 1e-6
                 self.chat.append(ev)
             else:
                 self.events.appendleft(ev)
             login = (ev.get("detail") or {}).get("login") or (ev.get("user") or "").lower()
-            if login:
+            if login and ev.get("platform", "twitch") == "twitch":
                 for key in (_squash(ev.get("user") or login), _squash(login)):
                     self.names.pop(key, None)  # to the end: heard just now
                     self.names[key] = login
@@ -139,7 +145,9 @@ class TwitchFeed:
 
     def recent_chat(self, limit: int = 50) -> list[dict]:
         with self._lock:
-            return [{"user": m["user"], "text": m["text"][:300], "ts": m["ts"]} for m in list(self.chat)[-limit:]]
+            return [{"user": m["user"], "text": m["text"][:300], "ts": m["ts"],
+                     **({"platform": m["platform"], "login": m.get("login") or ""} if m.get("platform") else {})}
+                    for m in list(self.chat)[-limit:]]
 
     def resolve(self, spoken: str) -> str:
         """A name as heard ("john doe", "tenz") -> the login of someone seen recently, else the squashed name."""
@@ -182,6 +190,7 @@ class EventSub:
         self.failed: dict[str, str] = {}
         self.heartbeat: Callable[[], None] = lambda: None
         self._stop = threading.Event()
+        self._up = False  # this connection got a message after subscribing
         self._thread: threading.Thread | None = None
         self._seen: deque = deque(maxlen=200)  # message ids: Twitch may resend one
 
@@ -208,10 +217,18 @@ class EventSub:
         self.on_state(self.status())
 
     # ---- the loop --------------------------------------------------------
+    def _logged_in(self) -> bool:
+        auth = getattr(self.twitch, "auth", None)
+        return bool(auth.connected) if auth is not None else True
+
     def _loop(self) -> None:
         backoff = 2.0
         while not self._stop.is_set():
+            if not self._logged_in():  # nothing to subscribe with: a login starts it again (runtime, watchdog)
+                self._set("stopped", "Twitch isn't logged in: say “connect Twitch”.")
+                return
             self._set("connecting")
+            self._up = False
             try:
                 self._session()
                 backoff = 2.0
@@ -219,6 +236,8 @@ class EventSub:
             except Exception as exc:  # network drop, Twitch closing with an error code, bad token
                 log.info("EventSub connection ended: %s", exc)
                 self._set("reconnecting", str(exc)[:200])
+            if self._up:  # it was working until now: a fresh drop, not one more failure in a row
+                backoff = 2.0
             if self._stop.wait(backoff):
                 break
             backoff = min(backoff * 2, 60.0)
@@ -246,6 +265,7 @@ class EventSub:
             while not self._stop.is_set():
                 msg = self._recv(ws, float(session.get("keepalive_timeout_seconds") or 30) + 5)
                 self.heartbeat()
+                self._up = True  # subscribed, and Twitch is talking to it
                 meta = msg.get("metadata") or {}
                 kind = meta.get("message_type")
                 if meta.get("message_id") in self._seen:

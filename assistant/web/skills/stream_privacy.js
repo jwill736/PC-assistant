@@ -2,7 +2,7 @@
    the live-private class on <body> (app.js sets it from the live state) and the shared rule in styles.css. */
 (() => {
   const { h, fill, empty, meta, panels, body, toast } = Vesper.ui;
-  const NAMES = { inbox: 'Inbox', inbox_zero: 'Replies', people: 'People', bills: 'Money', journal: 'Journal', memory: 'Memory', clipboard: 'Clipboard', rewind: 'Rewind' };
+  const NAMES = { inbox: 'Inbox', inbox_zero: 'Replies', people: 'People', bills: 'Money', journal: 'Journal', memory: 'Memory', clipboard: 'Clipboard', rewind: 'Rewind', phone: 'Phone', phone_hud: 'Phone HUD' };
   let PRIVATE = Object.keys(NAMES);
   const PEEK_MS = 10000;
   const isPrivate = p => PRIVATE.includes(p?.dataset.panel);

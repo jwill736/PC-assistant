@@ -10,11 +10,17 @@ Turn one off with ``skills: {<name>: {enabled: false}}`` in config.yaml, or Setu
 data/settings.yaml). A skill that fails to start is left out and logged; it never takes Vesper down. A skill that keeps
 failing (its tick, route or spoken reply raising ``crash_limit`` times in a row) is switched off for this run, with a
 notice saying why and how to turn it back on.
+
+Switched off (either way), nothing of a skill runs on: its tick stops, every bus listener that is one of its own methods
+(``svc.bus.on(self._on_event)``) is taken off the bus, every hook it plugged in with ``self.hook(obj, attr, value)``
+is put back as it was, and its ``stop()`` / ``close()`` end its own threads. Switched on again, the same listeners and
+hooks go back once (never twice) and ``start()`` runs again, so a skill's ``start`` must be safe to call after ``stop``.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import re
 import threading
@@ -32,12 +38,14 @@ log = logging.getLogger(__name__)
 MODULES = ["conversation", "nudges", "ambient", "memory", "weather", "automations", "tasks_agent", "inbox_zero",
            "drafts", "meetings", "debrief", "recorder", "people", "planner", "focusblocks", "focus", "habits",
            "journal", "bills", "travel", "review", "pulse", "screen", "selection", "dictation", "clipboard",
-           "rewind", "janitor", "mcp", "phone", "spotify", "home", "youtube", "discord", "stream_copilot",
-           "stream_moments", "stream_raid", "stream_privacy", "gtasks", "diagnostics"]
+           "rewind", "janitor", "undo", "click", "mcp", "phone", "spotify", "home", "youtube", "discord",
+           "stream_copilot", "stream_moments", "stream_raid", "stream_privacy", "stream_youtube", "stream_captions",
+           "gtasks", "hearing", "diagnostics"]
 
 CRASH_LIMIT = 5  # this many failures in a row (of one kind: tick, route, say…) switches a skill off for the run
 ON, OFF, CRASHED, FAILED = "on", "off", "crashed", "failed"
 GAME_FACTOR = 4  # how much slower a non-essential skill ticks in low-power mode, unless it sets game_poll_s
+SAME_AGAIN_S = 60.0  # a panel whose data hasn't changed is sent again only this often (PERF-9)
 
 
 class Skill:
@@ -103,9 +111,20 @@ class Skill:
 
     # ---- helpers -------------------------------------------------------------------------------------
     def publish(self, data: dict | None = None) -> dict | None:
+        """Send the HUD panel's data. The same data as last time goes again only after SAME_AGAIN_S: seven skills
+        republished unchanged panels every 5-20 s, 55 messages a minute for the HUD to parse and repaint (PERF-9)."""
         data = data if data is not None else self.status()
         if data is not None:
             self.last_status = data
+            try:
+                key = json.dumps(data, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                key = None
+            now = time.monotonic()
+            sent = getattr(self, "_sent", None)
+            if key is not None and sent and sent[0] == key and now - sent[1] < SAME_AGAIN_S:
+                return data
+            self._sent = (key, now)
             self.svc.bus.publish(self.name, data, sticky=True)
         return data
 
@@ -125,6 +144,14 @@ class Skill:
 
     def setting(self, key: str, default: Any = None) -> Any:
         return self.cfg.get(key, default)
+
+    def hook(self, obj: Any, attr: str, value: Any) -> None:
+        """Plug into another part of Vesper (``obj.attr = value``: ``svc.memory``, the listener's ``hear_all``) for as
+        long as this skill is on. Switched off, it's put back as it was; switched on again, it's plugged in again."""
+        hooks = self.__dict__.setdefault("_hooks", {})
+        old = hooks.get((id(obj), attr))
+        hooks[(id(obj), attr)] = (obj, attr, value, old[3] if old is not None else getattr(obj, attr, None))
+        setattr(obj, attr, value)
 
 
 class Health:
@@ -161,6 +188,7 @@ class Skills:
         self.starter: Callable[[Skill], None] | None = None  # the runtime: start a skill turned on after startup
         self._lock = threading.RLock()
         self._tool_owner: dict[str, Skill] = {}
+        self._unplugged: dict[str, tuple[Any, list]] = {}  # switched off: (the bus, the listeners taken off it)
         conf = svc.cfg.get("skills") or {}
         for mod in self.modules:
             if (conf.get(mod) or {}).get("enabled", True) is False:
@@ -291,6 +319,7 @@ class Skills:
         if persist:
             self._persist(name, False)
         if skill is not None and not already:
+            self._unplug(skill)
             for hook in ("stop", "close"):  # its own threads (the phone's long poll, MCP servers)
                 fn = getattr(skill, hook, None)
                 if callable(fn):
@@ -329,6 +358,8 @@ class Skills:
         h = self.health.get(name)
         if h is not None:
             h.in_row.clear()
+        if was is not None and not reload:
+            self._plug(skill)
         if (reload or was is not None) and self.starter is not None:
             # a new skill, or one whose threads were stopped: start it (again), with its poller
             try:
@@ -338,6 +369,30 @@ class Skills:
                 self._failed(skill, "start", exc)
         self._changed()
         return {"ok": True, "name": name, "state": ON, "reload": reload}
+
+    def _unplug(self, skill: Skill) -> None:
+        """Switched off: its own listeners come off the bus and its hooks are put back, so nothing of it runs on."""
+        with self._lock:
+            bus = getattr(self.svc, "bus", None)
+            mine = [cb for cb in (bus.listeners() if hasattr(bus, "listeners") else [])
+                    if getattr(cb, "__self__", None) is skill]
+            for cb in mine:
+                bus.off(cb)
+            self._unplugged[skill.name] = (bus, mine)
+            for obj, attr, value, before in list(getattr(skill, "_hooks", {}).values()):
+                if getattr(obj, attr, None) is value:  # still its own: nobody plugged in over it since
+                    setattr(obj, attr, before)
+
+    def _plug(self, skill: Skill) -> None:
+        """Switched back on: what ``_unplug`` took out goes back, once."""
+        with self._lock:
+            bus, mine = self._unplugged.pop(skill.name, (None, []))
+            have = bus.listeners() if hasattr(bus, "listeners") else []
+            for cb in mine:
+                if cb not in have:
+                    bus.on(cb)
+            for obj, attr, value, _before in list(getattr(skill, "_hooks", {}).values()):
+                setattr(obj, attr, value)
 
     def set_enabled(self, name: str, on: bool) -> dict:
         """Setup → Skills: the toggle (saved to data/settings.yaml skills.<name>.enabled)."""

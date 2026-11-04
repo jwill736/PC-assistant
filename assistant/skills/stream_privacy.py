@@ -23,7 +23,8 @@ from ._kit import save_setting
 
 log = logging.getLogger(__name__)
 
-PANELS = ["inbox", "inbox_zero", "people", "bills", "journal", "memory", "clipboard", "rewind"]
+PANELS = ["inbox", "inbox_zero", "people", "bills", "journal", "memory", "clipboard", "rewind",
+          "phone", "phone_hud"]  # the last two: a pairing code and a PIN, which let whoever reads them in
 BROWSERS = re.compile(r"(?:chrome|msedge|firefox|brave|opera|vivaldi|arc)\.exe$", re.I)
 
 
@@ -128,7 +129,8 @@ class StreamPrivacy(Skill):
 
     def tools(self):
         return [Tool("privacy_while_live", "Turn the HUD's on-air privacy on or off: while live, private panels (email, "
-                                           "people, money, journal, memory, clipboard, rewind, notification text) blur.",
+                                           "people, money, journal, memory, clipboard, rewind, phone pairing, notification "
+                                           "text) blur.",
                      obj({"on": {"type": "boolean"}}, ["on"]), lambda on=True: self.toggle(bool(on)), tier=1)]
 
     def route(self, t: str):

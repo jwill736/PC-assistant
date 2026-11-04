@@ -88,7 +88,10 @@ class SherpaEmbedder:
         cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(model_path), num_threads=threads, provider="cpu")
         if not cfg.validate():
             raise RuntimeError(f"invalid speaker model config: {model_path}")
-        self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
+        from .. import resources
+
+        with resources.loading("speaker check"):
+            self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
         self.name = MODEL_NAME
 
     def embed(self, samples) -> list[float]:
@@ -277,6 +280,18 @@ class SpeakerVerifier:
             save_profile(self.profile, self.data_dir)
             return {"threshold_before": before, "threshold": self.profile.threshold,
                     "enrolled_threshold": self.profile.enrolled_threshold, "learned": len(self.profile.adaptive)}
+
+    def set_threshold(self, threshold: float) -> dict | None:
+        """A threshold measured on J's own commands and background audio (the voice test's Apply): it replaces the
+        calibrated one, so "That was me" learning works from it. Kept inside the model's sane band."""
+        with self._lock:
+            if self.profile is None:
+                return None
+            t = round(min(MAX_THRESHOLD, max(MIN_THRESHOLD, float(threshold))), 3)
+            before = self.profile.threshold
+            self.profile.threshold = self.profile.enrolled_threshold = t
+            save_profile(self.profile, self.data_dir)
+            return {"threshold_before": before, "threshold": t}
 
     def status(self) -> dict:
         base = self.profile.summary() if self.profile else {"enrolled": False}

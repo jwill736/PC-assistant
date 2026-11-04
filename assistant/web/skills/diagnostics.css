@@ -37,6 +37,17 @@
 .dg-toggle input:focus-visible + .dg-switch { outline: 2px solid var(--ember); outline-offset: 2px; }
 .dg-toggle input:disabled + .dg-switch { opacity: .45; }
 .dg-toggle:has(input:disabled) { cursor: default; }
+/* What Vesper is using */
+.rs-head { font-size: 13px; line-height: 1.4; color: var(--ink); }
+.rs-bar { height: 4px; border-radius: 2px; background: var(--inset); overflow: hidden; margin: 6px 0 10px; }
+.rs-bar span { display: block; height: 100%; background: var(--phosphor); transition: width .9s linear; }
+.rs-block { display: grid; gap: 3px; margin-top: 10px; }
+.rs-h { letter-spacing: .06em; text-transform: uppercase; }
+.rs-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: baseline;
+  padding: 2px 0; border-bottom: 1px solid var(--grid); }
+.rs-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-v { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.rs-sub { grid-column: 1 / -1; }
 @keyframes dg-in { from { opacity: 0; transform: translateY(4px); } }
 @keyframes dg-pulse { 50% { opacity: .3; } }
-@media (prefers-reduced-motion: reduce) { .dg-chip, .dg-skill { animation: none; } .dg-switch::after { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .dg-chip, .dg-skill { animation: none; } .dg-switch::after, .rs-bar span { transition: none; } }

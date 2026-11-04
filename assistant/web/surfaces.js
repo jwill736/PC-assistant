@@ -4,7 +4,7 @@
 (() => {
   const PHONE = document.documentElement.dataset.remote === 'phone';  // this page is open on J's phone
   const OV_PANELS = [['nowplaying', 'Now playing'], ['goals', 'Stream goals'], ['mood', 'Chat mood'], ['countdown', 'Countdown'],
-    ['followers', 'Follower ticker'], ['timers', 'Timers']];
+    ['followers', 'Follower ticker'], ['timers', 'Timers'], ['captions', 'Captions']];
   const OV_THEMES = [['transparent', 'Glass', 'Dark glass plates on a see-through page (best over gameplay)'],
     ['bare', 'Bare', 'No plates: outlined text only'], ['dark', 'Solid', 'A solid dark page (for previewing)']];
   const GOAL_KINDS = [['subs', 'Sub goal'], ['follows', 'Follower goal'], ['bits', 'Bits goal']];

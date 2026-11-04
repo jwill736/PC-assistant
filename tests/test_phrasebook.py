@@ -32,6 +32,22 @@ BOOK = [
     ("switch to discord", "focus_window", {"query": "discord"}),
     ("focus on chrome", "focus_window", {"query": "chrome"}),
     ("bring chrome to the front", "focus_window", {"query": "chrome"}),
+    ("minimise discord", "window_control", {"query": "discord", "action": "minimize"}),
+    ("maximize chrome", "window_control", {"query": "chrome", "action": "maximize"}),
+    ("restore the obs window", "window_control", {"query": "obs", "action": "restore"}),
+    # ---- clicking by name (skills/click.py) and "undo that" (skills/undo.py)
+    ("click export", "ui_control", {"target": "export", "action": "click"}),
+    ("press the join button", "ui_control", {"target": "join button", "action": "click"}),
+    ("turn on the dark mode toggle in settings", "ui_control",
+     {"target": "dark mode toggle", "app": "settings", "action": "on"}),
+    ("type hello into the search box", "ui_control", {"target": "search box", "action": "type", "text": "hello"}),
+    ("what can i click here", "ui_list", {}),
+    ("undo that", "undo", {"count": 1}),
+    ("undo the last 3", "undo", {"count": 3}),
+    ("undo the last two changes", "undo", {"count": 2}),
+    ("what can you undo", "undo_history", {}),
+    ("press play", MODEL),  # a media key word, not a control called "play"
+    ("click sign in in chrome", "ui_control", {"target": "sign in", "app": "chrome", "action": "click"}),
     ("go to youtube.com", "open_urls", {"targets": ["youtube.com"]}),
     ("open github.com", "open_urls", {"targets": ["github.com"]}),
     ("take me to twitch", "open_urls", {"targets": ["twitch"]}),
@@ -127,6 +143,8 @@ BOOK = [
     ("take notes of this meeting", "recording_start", {"system_audio": True}),
     ("record this", "recording_start", {}),
     ("record on stream", "recording_start", {"on_stream": True}),
+    ("always record the weekly sync", "recording_always", {"meeting": "weekly sync", "on": True}),
+    ("stop always recording the weekly sync", "recording_always", {"meeting": "weekly sync", "on": False}),
     ("stop recording", "obs_control", {"action": "stop_recording"}),  # nothing being recorded: OBS's
     ("pause recording", "obs_control", {"action": "pause_recording"}),
     ("clip that", "obs_control", {"action": "save_replay"}),
@@ -408,6 +426,13 @@ BOOK = [
     ("replan", "plan_day", {"day": "today"}),
     ("am i overbooked", "am_i_overbooked", {}),
     ("is my day too full", "am_i_overbooked", {}),
+    # ---- the week: work, streams, gym, sleep
+    ("plan my week", "plan_week", {"week": "this"}),
+    ("plan next week", "plan_week", {"week": "next"}),
+    ("am i overbooked this week", "am_i_overbooked", {"period": "this week"}),
+    ("gym 3 times a week", "habit_add", {"name": "gym", "target": 3, "period": "week"}),
+    ("book it", MODEL),  # only right after a week plan with a gym slot in it
+    ("what's on my calendar this week", "calendar", {"days": 7, "when": "this week"}),
     ("shut down for the day", "shutdown_day", {}),  # the work day, not the PC
     ("i'm done for the day", "shutdown_day", {}),
     ("wrap up for the day", "shutdown_day", {}),

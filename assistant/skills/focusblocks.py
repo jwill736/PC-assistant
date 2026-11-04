@@ -6,6 +6,7 @@
   one when the request says personal / gym / family / stream (skills.focusblocks.calendars picks others).
 - It writes to J's calendar, so it's tier 2: Vesper says the exact day and time first and waits for his yes.
 - The Day plan's blocks can go on the calendar too: "put my plan on my calendar", or the button under Day plan.
+- The week plan's gym slot ("book it", skills/planner.py) arrives with its time worked out; only the calendar is chosen.
 
 Needs the "Calendar events" box on Google's page (google.can); says which account and box when it's missing.
 """
@@ -18,6 +19,7 @@ from datetime import date, datetime, time as dtime, timedelta
 
 from ..brain.router import Intent, number
 from ..brain.tools import Tool, obj
+from ..brain.undo import Undo
 from ..integrations.calendars import free_blocks
 from ..integrations.google import EVENTS_SCOPE, GoogleError
 from . import Skill
@@ -197,6 +199,17 @@ class FocusBlocks(Skill):
         if cal is None:
             a["_error"] = why
             return False
+        if a.get("start") and a.get("end"):  # a time already worked out (the week plan's gym slot): keep it
+            try:
+                s, e = datetime.fromisoformat(a["start"]), datetime.fromisoformat(a["end"])
+                fine = s.tzinfo is not None and timedelta(0) < e - s <= timedelta(hours=12)
+            except (TypeError, ValueError):
+                fine = False
+            if not fine:
+                a["_error"] = "That time doesn't look right. Ask again and I'll find one."
+                return False
+            a.update(calendar=cal["id"], account=cal["account"], calendar_name=cal["name"])
+            return True
         slot = self.find_slot(a.get("minutes"), a.get("day") or "today", a.get("part") or "any")
         if not slot["ok"]:
             a["_error"] = slot["error"]
@@ -255,6 +268,34 @@ class FocusBlocks(Skill):
         self.publish()
         return {"ok": True, "title": f"{LOCK} {name}", "start": start, "end": end, "account": account_kind(account),
                 "calendar": calendar, "link": ev.get("htmlLink") or "", "id": ev.get("id")}
+
+    def _undo_blocks(self, result: dict) -> Undo | None:
+        """"Undo that": take the block(s) just made off the calendar again. It writes to J's calendar, so tier 2."""
+        ids = [b["id"] for b in (result.get("made") or [result]) if b.get("id")]
+        if not ids:
+            return None
+        n = len(ids)
+        return Undo(f"{'the focus block' if n == 1 else f'the {n} focus blocks'} taken off your calendar",
+                    lambda: self._remove(ids), tier=2)
+
+    def _remove(self, event_ids: list[str]) -> dict:
+        errors = []
+        for eid in event_ids:
+            rows = self.svc.storage.query("SELECT * FROM focusblocks_made WHERE event_id=?", (eid,))
+            if not rows:
+                continue
+            try:
+                self.svc.google.delete_event(rows[0]["account"], rows[0]["calendar"], eid)
+            except GoogleError as exc:
+                errors.append(str(exc))
+                continue
+            self.svc.storage.execute("DELETE FROM focusblocks_made WHERE event_id=?", (eid,))
+        try:
+            self.svc.calendars.refresh(force=True)
+        except Exception:
+            pass
+        self.publish()
+        return {"ok": not errors, **({"error": "; ".join(errors)} if errors else {})}
 
     def _events(self, d: date) -> list[dict]:
         try:
@@ -329,10 +370,11 @@ class FocusBlocks(Skill):
                  obj({"minutes": {"type": "integer"}, "day": {"type": "string"}, "title": {"type": "string"},
                       "part": {"type": "string", "enum": ["morning", "afternoon", "evening", "any"]},
                       "profile": {"type": "string", "enum": ["work", "personal"]}}),
-                 self.protect_time, tier=self._tier, confirm_text=self._describe),
+                 self.protect_time, tier=self._tier, confirm_text=self._describe, undo=lambda a: self._undo_blocks),
             Tool("calendar_plan_blocks", "Put today's Day plan task blocks on J's Google calendar as busy focus "
                                          "blocks (J confirms the list first).", obj(), self.calendar_plan,
-                 tier=lambda a: 2 if self._resolve_plan(a) else 0, confirm_text=self._describe_plan),
+                 tier=lambda a: 2 if self._resolve_plan(a) else 0, confirm_text=self._describe_plan,
+                 undo=lambda a: self._undo_blocks),
         ]
 
     def route(self, t: str):

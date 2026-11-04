@@ -6,9 +6,18 @@ switch apps, come back from being away, a game or the stream ends) and the gate 
 - live on stream: nothing is spoken (it would go out on air); the HUD feed still gets it;
 - a fullscreen game or presentation: held until you're out of it (urgent ones show on the HUD);
 - a focus session or quiet hours: only urgent ones;
+- in a call (recording a meeting or its audio, or a call app up during a calendar meeting): held, urgent ones on the
+  HUD only, never a voice into the call;
 - away from the PC: held until you're back, then "while you were away".
 
+A timer or reminder J set himself (``ring=True``, skills/automations.py) is not a nudge to hold: it always rings (a
+chime) and is said out loud whatever the gate says (away, a game, focus, quiet hours, the budget), except where others
+would hear its words: live on stream, presenting, or in a call, where it's the chime and the HUD card (and the phone
+when away) only.
+
 A budget caps spoken nudges per hour, each kind has a cooldown, and a kind you keep dismissing goes quiet (HUD only).
+A dismissed (or cleared) nudge stays away for the rest of its time, and one raised with ``once`` comes once however
+often its skill asks again, restarts included (data in the nudges_once table).
 Built in: a meeting starting soon, a break after a long stretch, tasks due today, and the welcome-back summary.
 
 Every nudge carries a ``why``: the rule that raised it and the evidence it saw ("Calendar: Client sync at 2:00 PM",
@@ -30,6 +39,7 @@ from ..brain.tools import Tool, obj
 from . import Skill
 
 PRIORITY = {"urgent": 0, "normal": 1, "low": 2}
+ONCE_S = 8 * 86400  # once=True: remembered this long after it was shown
 RULE_NAMES = {"calendar": "Meeting starting soon", "break": "Long stretch without a break", "tasks": "Tasks due today",
               "welcome": "Welcome back after time away", "ambient": "Look-around (AI)", "inbox_zero": "Email follow-up"}
 
@@ -48,6 +58,8 @@ class Nudge:
     action: dict | None = None  # {"label": "Open", "url": ...} or {"label": ..., "command": "..."}
     held: str = ""  # why it's still waiting
     why: dict | None = None  # {"rule": "Meeting starting soon", "evidence": ["Calendar: Client sync at 2:00 PM"]}
+    ring: bool = False  # a timer or reminder J set: it always sounds (see the module doc)
+    once: float = 0.0  # shown once for this many seconds, restarts included (0: the queue and feed check only)
 
     def expired(self, now: float) -> bool:
         return now > (self.expires or self.created + 3600)
@@ -95,6 +107,22 @@ def fullscreen_state() -> str:
         return ""
 
 
+def ring_sound() -> None:
+    """The ring of a timer or reminder: three short tones on the PC's speakers (Windows), never blocking."""
+    if sys.platform != "win32":
+        return
+
+    def play():
+        try:
+            import winsound
+
+            for hz in (880, 1175, 880):
+                winsound.Beep(hz, 140)
+        except Exception:
+            pass
+    threading.Thread(target=play, name="ring", daemon=True).start()
+
+
 class Nudges(Skill):
     name, title = "nudges", "Nudges"
     poll_s = 15
@@ -120,25 +148,35 @@ class Nudges(Skill):
         self._last_break = 0.0
         self.last_spoken: Nudge | None = None
         self.focus = lambda: False  # set by the focus skill
+        self.chime = ring_sound  # () -> None: how a timer rings (tests: a fake)
         self.stats = self._load_stats()
         svc.storage.execute("CREATE TABLE IF NOT EXISTS nudges_feedback (key TEXT, source TEXT, text TEXT, "
                             "useful INTEGER, ts REAL)")
-        svc.nudge = self.add
+        svc.storage.execute("CREATE TABLE IF NOT EXISTS nudges_once (key TEXT PRIMARY KEY, until REAL)")
+        self._seen = self._load_seen()  # key -> until when it stays away (dismissed, or a once nudge already shown)
+        self.hook(svc, "nudge", self.add)  # switched off: other skills' nudges are HUD cards (Skill.nudge)
         svc.bus.on(self._on_event)
 
     # ---- the queue ---------------------------------------------------------------------------------------
     def add(self, text: str, *, source: str = "vesper", priority: str = "normal", key: str = "", speak: bool = True,
-            expires_in: float = 3600, action: dict | None = None, cooldown: float = 0, why=None) -> Nudge | None:
+            expires_in: float = 3600, action: dict | None = None, cooldown: float = 0, why=None, ring: bool = False,
+            once: bool | float = False) -> Nudge | None:
+        """``ring``: a timer or reminder J set (always sounds; see the module doc). ``once``: shown once, even if its
+        skill asks again every tick or after a restart (True: for ONCE_S; a number: for that many seconds)."""
         now = self.clock()
         key = key or f"{source}:{re.sub(r'[^a-z0-9]+', '-', text.lower())[:40]}"
         with self._lock:
-            if self._cooldown.get(key, 0) > now or any(n.key == key for n in self.queue + self.feed[:30]):
+            if self._cooldown.get(key, 0) > now or self._seen.get(key, 0) > now or \
+                    any(n.key == key for n in self.queue + self.feed[:30]):
                 return None
             if cooldown:
                 self._cooldown[key] = now + cooldown
+            if ring:
+                priority = "urgent"
             n = Nudge(text, source, priority if priority in PRIORITY else "normal", key, speak, now,
-                      now + expires_in, action=action, why=make_why(why, source))
-            if n.priority == "low" or self._quiet_source(source):
+                      now + expires_in, action=action, why=make_why(why, source), ring=bool(ring),
+                      once=float(ONCE_S if once is True else once or 0))
+            if not ring and (n.priority == "low" or self._quiet_source(source)):
                 n.speak = False
             self.queue.append(n)
             self.queue.sort(key=lambda x: (PRIORITY[x.priority], x.created))
@@ -155,12 +193,15 @@ class Nudges(Skill):
         fs = self.fullscreen()
         idle = self.idle() if self.idle else 0
         quiet = in_quiet_hours(datetime.now(self.svc.tz), self.setting("quiet_hours", "23:00-07:30"))
+        call = self._in_call()
         if now < self._muted_until:
             why = f"muted until {datetime.fromtimestamp(self._muted_until, self.svc.tz).strftime('%I:%M %p').lstrip('0')}"
         elif live:
             why = "live on stream"
         elif getattr(getattr(self.svc, "conversation", None), "active", False):
             why = "in a conversation"  # held until it ends; urgent ones still show on the HUD
+        elif call:
+            why = "in a call"  # a voice would go into the call (and its recording); urgent ones show on the HUD
         elif fs:
             why = {"game": "in a game", "presentation": "presenting"}.get(fs, "fullscreen")
         elif idle > 300:
@@ -175,7 +216,19 @@ class Nudges(Skill):
         budget = int(self.setting("spoken_per_hour", 6))
         return {"open": not why, "why": why, "live": live, "away": idle > 300, "idle_s": int(idle),
                 "speak_ok": not why and len(spoken_hour) < budget and now - (spoken_hour[-1] if spoken_hour else 0) > 90,
-                "spoken_last_hour": len(spoken_hour), "budget": budget}
+                "spoken_last_hour": len(spoken_hour), "budget": budget,
+                "others_hear": live or call or fs == "presentation"}  # a ring is the chime only: no words
+
+    def _in_call(self) -> bool:
+        """Recording a meeting or a call's audio, or a call app up during a calendar meeting (the recorder's status)."""
+        ev = self.svc.bus.latest.get("recorder") or {}
+        if time.time() - float(ev.get("ts") or 0) > 900:  # it publishes every tick: older means it stopped
+            return False
+        rec = ev.get("data") or {}
+        try:
+            return bool(rec.get("recording_call")) or self.clock() < float(rec.get("call_until") or 0)
+        except (TypeError, ValueError):
+            return False
 
     def deliver(self, at_break: bool = False) -> list[Nudge]:
         """Send what may go out now. ``at_break``: you just switched apps or came back."""
@@ -187,24 +240,35 @@ class Nudges(Skill):
             for n in self.queue:
                 if n.expired(now):
                     continue
-                go = (n.priority == "low" or (n.priority == "urgent" and g["why"] not in ("away from the PC",)) or
-                      (g["open"] and (at_break or now - n.created > 600 or now - self._last_break < 5)))
+                go = (n.ring or n.priority == "low" or (n.priority == "urgent" and g["why"] not in ("away from the PC",))
+                      or (g["open"] and (at_break or now - n.created > 600 or now - self._last_break < 5)))
                 if not go:
                     n.held = g["why"] or "waiting for a pause"
                     keep.append(n)
                     continue
                 n.delivered, n.held = now, ""
-                n.spoken = bool(n.speak and g["speak_ok"] and n.priority != "low")
+                if n.ring:  # J's own timer: past away, games, focus, quiet hours and the budget; never words on air
+                    n.spoken = bool(n.speak and not g["others_hear"])
+                else:
+                    n.spoken = bool(n.speak and g["speak_ok"] and n.priority != "low")
                 if n.spoken:
                     self._spoken_at.append(now)
                     self.last_spoken = n
                     g = self.gate()  # budget and spacing
+                if n.once:
+                    self._remember(n.key, now + n.once)
                 out.append(n)
             self.queue = keep
             self.feed = (list(reversed(out)) + self.feed)[:60]
         for n in out:
             self.svc.bus.publish("notice", {"source": n.source, "text": n.text, "level": n.priority, "ts": n.delivered,
-                                            "key": n.key, "spoken": n.spoken, "action": n.action, "why": n.why})
+                                            "key": n.key, "spoken": n.spoken, "action": n.action, "why": n.why,
+                                            **({"ring": True} if n.ring else {})})
+            if n.ring:
+                try:
+                    self.chime()
+                except Exception:
+                    pass
             if n.spoken:
                 self.svc.speak(n.text)
         if out or self.queue:
@@ -318,6 +382,24 @@ class Nudges(Skill):
         except (OSError, AttributeError, KeyError):
             pass
 
+    def _load_seen(self) -> dict[str, float]:
+        try:
+            rows = self.svc.storage.query("SELECT key, until FROM nudges_once WHERE until > ?", (self.clock(),))
+        except Exception:
+            return {}
+        return {r["key"]: float(r["until"]) for r in rows}
+
+    def _remember(self, key: str, until: float) -> None:
+        """Keep this key out of add() until then (a dismiss, a clear, or a once nudge that was shown)."""
+        if until <= self._seen.get(key, 0):
+            return
+        self._seen[key] = until
+        try:
+            self.svc.storage.execute("INSERT OR REPLACE INTO nudges_once(key, until) VALUES (?, ?)", (key, until))
+            self.svc.storage.execute("DELETE FROM nudges_once WHERE until < ?", (self.clock(),))
+        except Exception:
+            pass
+
     def _quiet_source(self, source: str) -> bool:
         s = self.stats.get(source) or {}
         return s.get("dismissed", 0) >= 3 and s.get("dismissed", 0) > 2 * s.get("useful", 0)
@@ -336,6 +418,7 @@ class Nudges(Skill):
             pass
         if not useful:
             self.feed = [x for x in self.feed if x.key != key]
+            self._remember(n.key, n.expires or n.created + 3600)  # a skill asking again doesn't bring it back
         return {"ok": True, "source": n.source, "quiet": self._quiet_source(n.source)}
 
     def recent_feedback(self, source: str | None = None, limit: int = 12) -> list[dict]:
@@ -386,6 +469,8 @@ class Nudges(Skill):
                 "clear": lambda b: self._clear()}
 
     def _clear(self) -> dict:
+        for n in self.feed:
+            self._remember(n.key, n.expires or n.created + 3600)
         self.feed = []
         return {"ok": True}
 

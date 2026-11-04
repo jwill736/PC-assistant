@@ -4,6 +4,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 pyyaml>=6.0
 psutil>=5.9
+nvidia-ml-py>=12.535,<14  # GPU readings in-process (integrations/nvml.py); optional: without it, nvidia-smi
 httpx>=0.27
 websockets>=13.0  # Twitch EventSub (live follows, subs, raids, chat)
 feedparser>=6.0
@@ -21,3 +22,4 @@ pycaw>=20240316; sys_platform == "win32"
 screen-brightness-control>=0.24; sys_platform == "win32"
 pyvda>=0.5; sys_platform == "win32"
 win11toast>=0.35; sys_platform == "win32"
+comtypes>=1.2,<2; sys_platform == "win32"  # UI Automation: "click Export in Premiere" (pycaw already brings it)

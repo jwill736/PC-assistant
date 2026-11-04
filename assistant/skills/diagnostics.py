@@ -9,6 +9,7 @@ This skill can't be switched off (it's where the others are switched back on).
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import sys
@@ -18,11 +19,13 @@ import webbrowser
 from pathlib import Path
 
 from .. import diagnostics as diag
+from .. import resources
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
 from . import Skill
 
 IS_WINDOWS = sys.platform == "win32"
+log = logging.getLogger(__name__)
 
 
 def open_path(path: Path, reveal: bool = False) -> None:
@@ -46,6 +49,9 @@ class Diagnostics(Skill):
         self.last: dict | None = None
         self._loaded = False
         self._busy = threading.Lock()
+        self.measuring: dict | None = None  # {"started", "starts_at", "seconds", "progress"} while it measures
+        self.measure_fn = resources.measure
+        self.wait = time.sleep  # the "start in a minute" delay (a test passes its own)
 
     def start(self, runtime) -> None:
         self.runtime = runtime
@@ -94,6 +100,41 @@ class Diagnostics(Skill):
             return {"ok": False, "error": f"Couldn't open it ({type(exc).__name__}): it's at {path}"}
         return {"ok": True, "path": str(path)}
 
+    # ---- what Vesper is using (resources.py) ------------------------------------------------------------------
+    def measure(self, seconds: float = resources.MEASURE_S, delay: float = 0.0) -> dict:
+        """Watch Vesper for 30 s in the background; the card shows the result when it's done. ``delay``: start that
+        many seconds from now (time to switch to a game: what it uses mid-game is the point)."""
+        if self.measuring is not None:
+            return {"ok": True, "running": True, **{k: v for k, v in self.measuring.items() if not k.startswith("_")}}
+        seconds = max(1.0, min(float(seconds or resources.MEASURE_S), 120.0))
+        delay = max(0.0, min(float(delay or 0), 600.0))
+        now = time.time()
+        self.measuring = started = {"started": now, "starts_at": now + delay, "seconds": seconds, "progress": 0.0}
+
+        def progress(frac: float) -> None:
+            m = self.measuring
+            if m is not None:
+                step = int(frac * 5)  # every 20 %: the card's bar moves without 30 messages
+                m["progress"] = frac
+                if step != m.get("_step"):
+                    m["_step"] = step
+                    self.publish()
+
+        def work() -> None:
+            try:
+                if delay:
+                    self.wait(delay)
+                    self.publish()  # the card: measuring now
+                self.measure_fn(self.runtime, seconds, on_progress=progress)
+            except Exception:
+                log.exception("measuring what Vesper uses failed")
+            finally:
+                self.measuring = None
+                self.publish()
+        self.publish()
+        threading.Thread(target=work, name="resources-measure", daemon=True).start()
+        return {"ok": True, "running": True, **{k: v for k, v in started.items() if not k.startswith("_")}}
+
     def toggle(self, body: dict) -> dict:
         sk = self.svc.skills
         name = str(body.get("name") or "")
@@ -105,11 +146,13 @@ class Diagnostics(Skill):
     def status(self) -> dict:
         sk = self.svc.skills
         return {"last": self.latest(), "running": self._busy.locked(),
-                "skills": sk.overview() if sk is not None else []}
+                "skills": sk.overview() if sk is not None else [],
+                "resources": resources.LAST[0], "measuring": self.measuring}
 
     def actions(self):
         return {"run": lambda b: self.run(), "open": lambda b: self.open(str(b.get("what") or "file")),
-                "skill": self.toggle}
+                "skill": self.toggle,
+                "measure": lambda b: self.measure(b.get("seconds") or resources.MEASURE_S, b.get("delay") or 0)}
 
     def tools(self):
         return [Tool("run_diagnostics", "Run Vesper's full self-check (every connection, model, skill and recent error) "

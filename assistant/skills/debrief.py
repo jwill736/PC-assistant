@@ -6,6 +6,8 @@
   the venue" / "send Dana the numbers tomorrow" (with due dates), and People notes for the attendees it mentions.
 - "debrief my last meeting" asks the question for the meeting that ended last (any time today);
   "debrief my last meeting: I'll send the deck by Friday" saves it at once. "nothing to note" closes it.
+- A meeting the recorder is recording isn't asked about (its notes answer it), and while listening, the recorder's own
+  phrases ("that's a wrap", "end the recording", "resume recording") still go to the recorder.
 
 A connected model tidies the tasks; without one they're found by pattern. Attendees come from Google calendars
 (iCal links don't list them). It replaces the meetings skill's "any follow-ups?" nudge when this skill is on.
@@ -347,7 +349,7 @@ class Debrief(Skill):
         if self.listening():
             if re.fullmatch(SKIP, t):
                 return Intent("tool", "debrief_skip", {})
-            if len(t.split()) >= 3 and not NOT_DEBRIEF.match(t):
+            if len(t.split()) >= 3 and not NOT_DEBRIEF.match(t) and not self._recorders(t):
                 return Intent("tool", "debrief_save", {"text": t})
         m = re.fullmatch(r"(?:let'?s )?debrief(?: me)?(?: (?:on|from))?(?: (?:my|the))?(?: (?:last|latest|previous))? "
                          r"(?:meeting|call)(?: (.{6,}))?|debrief", t)
@@ -357,6 +359,14 @@ class Debrief(Skill):
         if m:
             return Intent("tool", "debrief_save", {"text": m.group(1)})
         return None
+
+    def _recorders(self, t: str) -> bool:
+        """"That's a wrap", "end the recording", "resume recording", "always record …": the recorder's, not a debrief."""
+        rec = self.svc.skills.get("recorder") if self.svc.skills is not None else None
+        try:
+            return rec is not None and rec.route(t) is not None
+        except Exception:
+            return False
 
     def say(self, tool, args, result):
         if tool == "debrief_start":

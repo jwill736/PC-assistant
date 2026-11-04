@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -63,13 +65,18 @@ DEFAULTS: dict[str, Any] = {
             "auto_test": True,     # test your models once by itself, and again when the list changes
             "context": 8192,       # Ollama context size: room for the instructions, the tool list and the chat
             "keep_alive": "15m",   # how long Ollama keeps the model loaded after a question
+            # In a fullscreen game (brain/local_llm.py): background work only uses a model already loaded, and it
+            # unloads this long after; J's own questions keep the model this long instead of keep_alive
+            "game_keep_alive": "30s",
+            "game_answer_keep_alive": "2m",
         },
     },
     "voice": {
         "enabled": True,
         # Speech-to-text: auto | parakeet | parakeet-large | moonshine | whisper (see voice/stt.py)
         "stt_engine": "auto",
-        "stt_threads": 2,
+        # 1 thread: 42 ms of CPU per second of speech; a second one cut the wait to 33 ms for 115 ms of CPU (PERF-2)
+        "stt_threads": 1,
         "stt_model": "base.en",  # whisper engine only
         "stt_device": "auto",    # whisper engine only: auto | cpu | cuda
         "input_device": None,
@@ -251,21 +258,31 @@ def _read_yaml(path: Path) -> dict:
         return {}
 
 
+_SAVING = threading.RLock()  # HUD requests and background threads save at the same moment: one at a time
+
+
 def save_setting(cfg: Config, dotted: str, value: Any) -> None:
     """Remember a choice made in the HUD: data/settings.yaml, which wins over config.yaml."""
     path = cfg.data_dir / SETTINGS_FILE
-    settings = _read_yaml(path)
-    node, target = settings, cfg
-    *parents, leaf = dotted.split(".")
-    for part in parents:
-        node = node.setdefault(part, {})
-        target = target.setdefault(part, {})
-    node[leaf] = value
-    target[leaf] = value
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text("# Written by the assistant when you change a setting in the HUD. Delete a line to fall back\n"
-                   "# to config.yaml.\n" + yaml.safe_dump(settings, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    with _SAVING:  # read, change and write as one, or two saves at once lose one of them
+        settings = _read_yaml(path)
+        node, target = settings, cfg
+        *parents, leaf = dotted.split(".")
+        for part in parents:
+            node = node.setdefault(part, {})
+            target = target.setdefault(part, {})
+        node[leaf] = value
+        target[leaf] = value
+        fd, name = tempfile.mkstemp(prefix=".settings-", suffix=".tmp", dir=path.parent)  # never another save's
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("# Written by the assistant when you change a setting in the HUD. Delete a line to fall back\n"
+                        "# to config.yaml.\n" + yaml.safe_dump(settings, sort_keys=True))
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def _union(*lists) -> list:

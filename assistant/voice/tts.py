@@ -26,6 +26,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from .. import resources
 from ..bus import EventBus
 from . import neural
 from .level import LevelMeter
@@ -393,6 +394,7 @@ class Speaker:
 
     def _init_neural(self, gen: int = 0) -> None:
         engine = self.engine_name
+        rss0, t0 = resources.rss_mb(), time.perf_counter()  # what the voice adds (Setup → What Vesper is using)
         self.state = "loading"
         self._publish_status()
         try:
@@ -402,6 +404,7 @@ class Speaker:
             models_dir = self.models_dir or Path("data") / "models"
             loaded = self._loader(engine, models_dir, self.voice_id, self.speed, self.threads, on_progress=progress)
             took = loaded.warm_up()
+            resources.loaded("speaking voice", rss0, t0)
             if gen != self._gen:  # switched to another engine while this one loaded
                 return
             loaded.voice, loaded.speed = neural.voice(engine, self.voice_id), self.speed  # picked while loading

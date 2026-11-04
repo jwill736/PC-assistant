@@ -6,6 +6,7 @@
   pasted on the HUD. Lights, switches and scenes come from /api/states; changes go to /api/services/<domain>/<svc>.
 - ON AIR: when the stream starts, turn on skills.home.on_air.entity (any HA entity) and/or put the Key Lights on a
   preset (on_air.key_light: {brightness, kelvin}); when it ends, turn it off and put the lights back how they were.
+  A call that doesn't get through (a Wi-Fi blip, Home Assistant restarting) is tried again every tick until it does.
 
 "Turn on my key light", "lights to 50 percent", "warmer lights", "movie scene", "turn off the living room lights".
 """
@@ -62,6 +63,7 @@ class Home(Skill):
         self._restore: dict[str, dict] = {}  # ip -> state before ON AIR
         self.errors: dict[str, str] = {}
         self.on_air = False
+        self._on_air_left: set[str] = set()  # ON AIR calls that haven't gone through yet (Key Light IPs, "ha"): retried
         self._live = LiveEdge(svc)
 
     # ---- setup ---------------------------------------------------------------------------------------
@@ -302,25 +304,43 @@ class Home(Skill):
     def set_on_air(self, on: bool) -> dict:
         conf = self.setting("on_air", {}) or {}
         preset, entity = conf.get("key_light") or {}, conf.get("entity")
-        for x in self.key_lights() if preset else []:
-            ip = x["ip"]
-            if on:
-                before = self._elg_get(ip)
-                if before is not None:
-                    self._restore[ip] = before
-                self._elg_put(ip, True, preset.get("brightness"), preset.get("kelvin"))
-            elif ip in self._restore:
-                was = self._restore.pop(ip)
-                self._elg_put(ip, bool(was.get("on")), was.get("brightness"),
-                              mired_to_k(was["temperature"]) if was.get("temperature") else None)
-            else:
-                self._elg_put(ip, False)
-        if entity:
-            self._service("homeassistant", "turn_on" if on else "turn_off", {"entity_id": entity})
-        self.on_air = on
+        with self._lock:
+            self.on_air = on
+            self._on_air_left = {x["ip"] for x in self.key_lights()} if preset else set()
+            if entity:
+                self._on_air_left.add("ha")
+            self._on_air_step()
         if preset or entity:
             self.notify("On air light on." if on else "On air light off.", level="quiet", key=f"home:on_air:{on}")
         return {"ok": True, "on": on, "entity": entity, "preset": bool(preset)}
+
+    def _on_air_step(self) -> None:
+        """Each ON AIR call still to do. One that fails (a Wi-Fi blip, Home Assistant restarting) stays in
+        ``_on_air_left`` and the next tick tries it again. A Key Light gets the stream preset only once how it was is
+        known, and goes back only to that: never just off."""
+        on, conf = self.on_air, self.setting("on_air", {}) or {}
+        preset, entity = conf.get("key_light") or {}, conf.get("entity")
+        for ip in sorted(self._on_air_left - {"ha"}):
+            if on:
+                if ip not in self._restore:  # kept from before if the last stream's end didn't get through yet
+                    before = self._elg_get(ip)
+                    if before is None:
+                        continue
+                    self._restore[ip] = before
+                done = self._elg_put(ip, True, preset.get("brightness"), preset.get("kelvin"))
+            elif ip in self._restore:
+                was = self._restore[ip]
+                done = self._elg_put(ip, bool(was.get("on")), was.get("brightness"),
+                                     mired_to_k(was["temperature"]) if was.get("temperature") else None)
+                if done:
+                    self._restore.pop(ip, None)
+            else:
+                done = True  # never put on the preset: nothing to put back
+            if done:
+                self._on_air_left.discard(ip)
+        if "ha" in self._on_air_left and (
+                not entity or self._service("homeassistant", "turn_on" if on else "turn_off", {"entity_id": entity})):
+            self._on_air_left.discard("ha")
 
     def set_on_air_config(self, body: dict) -> dict:
         conf = {"entity": str(body.get("entity") or "").strip() or None}
@@ -334,6 +354,9 @@ class Home(Skill):
         edge = self._live()
         if edge:
             self.set_on_air(edge == "start")
+        elif self._on_air_left:
+            with self._lock:
+                self._on_air_step()
         self.lights(fresh=True)
         self.publish()
 

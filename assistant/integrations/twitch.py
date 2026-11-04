@@ -37,6 +37,7 @@ SCOPES = (
 NEEDS = {"clips:edit": "clips", "channel:manage:broadcast": "markers and title changes",
          "channel:edit:commercial": "ads", "moderator:manage:shoutouts": "shoutouts", "channel:manage:polls": "polls",
          "user:write:chat": "sending chat messages", "channel:manage:raids": "raids"}
+BUSY = "Twitch couldn't check the login just now; it's kept, and Vesper checks again soon"
 
 
 class TwitchAuth:
@@ -208,11 +209,20 @@ class TwitchAuth:
                 r = self.http.get(f"{ID}/validate", headers={"Authorization": f"OAuth {token}"})
             except httpx.HTTPError:
                 return True  # offline: keep the token, try again later
-            if r.status_code == 401 and self.refresh():
-                return self.validate(force=True)
-            if r.status_code != 200:
+            if r.status_code == 401:  # this token is dead: only a refresh Twitch refuses ends the login
+                if self.refresh():
+                    return self.validate(force=True)
+                if not self.connected:  # Twitch refused the refresh token too: refresh() signed out and said why
+                    return False
+                if self.token.get("refresh_token"):
+                    return False  # the refresh didn't get through (network, Twitch busy): keep it, try again later
                 self.forget("Twitch no longer accepts the saved login. Say “connect Twitch” to log in again.")
                 return False
+            if r.status_code != 200:  # 5xx, 429: Twitch's trouble, not the login's. Keep it and check again later
+                self.error = f"{BUSY} ({r.status_code})"
+                return True
+            if self.error.startswith(BUSY):
+                self.error = ""
             body = r.json()
             if body.get("client_id") and body["client_id"] != self.client_id:
                 self.forget("The saved Twitch login belongs to a different app. Say “connect Twitch” again.")

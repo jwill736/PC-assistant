@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -52,6 +53,16 @@ def sdk_problem() -> str | None:
     except ImportError:
         return "pip install -U mcp (version 2 or newer)"
     return None
+
+
+def sdk_missing() -> str | None:
+    """As sdk_problem, without importing the SDK when it hasn't been yet (only whether it's installed): for the panel
+    with no server set up, which used to import it at every start, half a second and ~40 MB (PERF-5)."""
+    if "mcp" in sys.modules:
+        return sdk_problem()
+    import importlib.util
+
+    return None if importlib.util.find_spec("mcp") is not None else "pip install mcp"
 
 
 # ---- names, command lines, tiers ------------------------------------------------------------------------------
@@ -500,7 +511,7 @@ class MCP(Skill):
         return out
 
     def status(self) -> dict:
-        problem = sdk_problem()
+        problem = sdk_problem() if self.servers else sdk_missing()
         servers = []
         for srv in list(self.servers.values()):
             c = srv.conf

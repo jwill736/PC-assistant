@@ -337,18 +337,19 @@ def test_risky_commands_from_the_phone_still_need_a_yes_and_strangers_are_ignore
     monkeypatch.setattr(desktop, "power_action", lambda action: done.append(action) or {"ok": True})
     a = Assistant(svc)
     p = tg.p
-    p.run_command = lambda text: a.handle(text, "phone")
+    p.run_command = lambda text, pending_id=None: a.handle(text, "phone", pending_id=pending_id)
     p.pending = a.pending_view
     pair(tg)
     tg.msg("turn off the pc")
     p.poll_once(timeout=0)
     assert done == [] and a.pending_view() is not None
     assert "Reply yes or no" in tg.texts()[-1]
+    pid = a.pending_view()["id"]
     tg.msg("yes", chat=STRANGER)  # a stranger's yes does nothing, and gets no answer
-    tg.button("yes", chat=STRANGER)
+    tg.button(f"yes:{pid}", chat=STRANGER)
     p.poll_once(timeout=0)
     assert done == [] and tg.texts(STRANGER) == []
-    tg.button("yes")
+    tg.button(f"yes:{pid}")
     p.poll_once(timeout=0)
     assert done == ["shutdown"]
 
@@ -456,6 +457,22 @@ def test_the_screen_isnt_looked_at_on_air_unless_asked(svc):
     s = screen_mod.Screen(svc, window=lambda: Win(), capture_fn=lambda *a, **k: shots.append(1))
     svc.live = lambda: True
     assert s.look("what's this", explicit=False)["ok"] is False and shots == []
+
+
+def test_where_am_i_on_air_doesnt_read_the_window_title(svc, monkeypatch):
+    """INTEG-12: "what's open" while live read the front window's title (an email subject, a DM) on stream."""
+    from assistant.integrations import desktop
+
+    gmail = desktop.WindowInfo("Re: Salary review - j@acme.com - Gmail - Google Chrome", "chrome", 21, 600)
+    monkeypatch.setattr(desktop, "active_window", lambda: gmail)
+    monkeypatch.setattr(desktop, "list_windows", lambda: [gmail])
+    svc.live = lambda: True
+    a = Assistant(svc)
+    out = a.handle("what's open")
+    assert out["reply"] == "You're in chrome; the window titles are on the HUD. 1 windows open across 1 apps."
+    assert out["data"]["live"] and "never a window's title" in out["data"]["live_note"]  # Claude is told too
+    svc.live = lambda: False
+    assert "Salary review" in a.handle("what's open")["reply"]  # off air, as before
 
 
 # ---- secrets are never kept -----------------------------------------------------------------------------------------

@@ -570,6 +570,17 @@ def decode_file(path: Path, ffmpeg: str | None = None, runner=subprocess.Popen) 
                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     import numpy as np
 
+    # A damaged file makes ffmpeg write an error line per bad packet: read them as they come (keeping the last few),
+    # or the pipe fills, ffmpeg blocks, and so does our read of its audio, for ever.
+    errs: deque = deque(maxlen=20)
+
+    def drain():
+        with contextlib.suppress(Exception):
+            for raw in iter(proc.stderr.readline, b""):
+                errs.append(raw)
+    drainer = threading.Thread(target=drain, name="ffmpeg-stderr", daemon=True) if proc.stderr is not None else None
+    if drainer is not None:
+        drainer.start()
     got = 0
     try:
         while True:
@@ -585,7 +596,9 @@ def decode_file(path: Path, ffmpeg: str | None = None, runner=subprocess.Popen) 
             proc.stdout.close()
         code = proc.wait()
     if code != 0 and not got:
-        err = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace").strip().splitlines()
+        if drainer is not None:
+            drainer.join(2)
+        err = b"".join(errs).decode("utf-8", "replace").strip().splitlines()
         raise DecodeError(f"ffmpeg couldn't read {path.name}: {(err[-1] if err else f'exit code {code}')[:200]}")
 
 

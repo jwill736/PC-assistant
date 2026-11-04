@@ -42,10 +42,16 @@ def summarize(tool: str, args: dict, result: dict, tz: tzinfo, hints: dict | Non
             f" {result['still_running']} process{'es' if result['still_running'] != 1 else ''} didn't exit." if result.get("still_running") else "")
     if tool == "focus_window":
         return f"Switched to {result['window']['app']}." if result.get("ok") else "I found it but Windows wouldn't give it focus."
+    if tool == "window_control":
+        done = {"minimize": "Minimised", "maximize": "Maximised"}.get(result.get("action"), "Restored")
+        return f"{done} {(result.get('window') or {}).get('app') or args.get('query')}."
     if tool == "where_am_i":
         active = result.get("active")
         apps = [a for a in result.get("apps", {}) if a != "unknown"]
-        here = f"You're in {active['app']}: {active['title'][:80]}." if active else "I can't read the active window."
+        if active and result.get("live"):  # on air: the app, not its window's title (an email subject, a DM)
+            here = f"You're in {active['app']}; the window titles are on the HUD."
+        else:
+            here = f"You're in {active['app']}: {active['title'][:80]}." if active else "I can't read the active window."
         return f"{here} {result.get('open_windows', 0)} windows open across {len(apps)} apps."
     if tool == "open_urls":
         opened = result.get("opened", [])
@@ -183,6 +189,8 @@ def _calendar_speech(result: dict, tz: tzinfo, hints: dict) -> str:
         mins = int((start - now).total_seconds() // 60)
         when = f"in {duration(mins * 60)}" if mins < 180 else f"at {clock(start)}"
         day = "" if start.date() == now.date() else " tomorrow"
+        if result.get("live"):  # on air: viewers would hear the title
+            return f"Your next one is{day} {when}; details on the HUD."
         return f"Next up: {e['title']}{day} {when}."
     when = hints.get("when", "today")
     if when == "tomorrow":
@@ -193,8 +201,11 @@ def _calendar_speech(result: dict, tz: tzinfo, hints: dict) -> str:
     if not events:
         free = result.get("free_today") or []
         return f"Nothing scheduled {when}." + (f" You've got {duration(sum(b['minutes'] for b in free) * 60)} of open time." if when == "today" and free else "")
-    listed = ", ".join(f"{clock(datetime.fromisoformat(e['start']))} {e['title']}" for e in events[:5])
     more = f", plus {len(events) - 5} more" if len(events) > 5 else ""
+    if result.get("live"):
+        listed = ", ".join(clock(datetime.fromisoformat(e["start"])) for e in events[:5])
+        return f"{len(events)} event{'s' if len(events) != 1 else ''} {when}, at {listed}{more}; details on the HUD."
+    listed = ", ".join(f"{clock(datetime.fromisoformat(e['start']))} {e['title']}" for e in events[:5])
     return f"{len(events)} event{'s' if len(events) != 1 else ''} {when}: {listed}{more}."
 
 

@@ -330,9 +330,12 @@ class Conversation:
         self.interrupted = False  # J cut the last reply short: the model is told on the next turn
         self.ended: dict | None = None  # {"reason", "ts"} of the last one
         self.asides_seen = 0.0  # background jobs (skills/tasks_agent.py) finished before this were already mentioned
+        self._asides_told: dict[str, None] = {}  # ids already mentioned: the times alone tie on Windows' ~15 ms clock
         self.speaker = None  # the runtime's Speaker: talking now counts as activity
         self.brain: Callable[[], str | None] = lambda: None  # set by the assistant: which model answers, if any
         self.on_change: list[Callable[[dict], None]] = []
+        self.on_forget: Callable[[], None] | None = None  # set by the assistant: drop the models' history of it
+        self.forgets = 0  # "forget this conversation" so far: a summary being written of it then is thrown away
         self._lock = threading.RLock()
         self._fold: threading.Thread | None = None
         # Vesper 2.2: threads, modes, style, off the record
@@ -437,13 +440,14 @@ class Conversation:
         self.last_activity = self.clock()
 
     # ---- turns ----------------------------------------------------------------------------------------
-    def turn_started(self, said: str, source: str) -> None:
-        """J said something in the conversation: on the HUD at once, with Vesper "thinking" until the reply."""
+    def turn_started(self, said: str, source: str, owner: str | None = None) -> None:
+        """J said something in the conversation: on the HUD at once, with Vesper "thinking" until the reply.
+        ``owner``: the speaker check's verdict; "mismatch" (it let another voice through) is kept as not J's."""
         with self._lock:
             self.busy += 1
             if source == "voice":  # J is talking out loud: typed lines in between get spoken replies too
                 self.last_source = source
-            self._add("user", said, source)
+            self._add("user", said, source, other=owner == "mismatch")
             self.touch()
             self.hold_until = 0.0  # J is talking again
             if self.off_record_check():
@@ -451,24 +455,27 @@ class Conversation:
         self._check_link(said)
         self._changed()
 
-    def turn_done(self, reply: str, source: str, said: str | None = None, started: bool = True) -> None:
+    def turn_done(self, reply: str, source: str, said: str | None = None, started: bool = True,
+                  owner: str | None = None) -> None:
         """The reply (``said``: J's words, when they weren't recorded at the start: the "let's talk" turn)."""
         with self._lock:
             if started:
                 self.busy = max(0, self.busy - 1)
             if said:
-                self._add("user", said, source)
+                self._add("user", said, source, other=owner == "mismatch")
             if reply:
                 self._add("assistant", reply, source)
             self.touch()
         self._changed()
 
-    def _add(self, role: str, text: str, source: str) -> None:
+    def _add(self, role: str, text: str, source: str, other: bool = False) -> None:
+        """``other``: a voice the speaker check said wasn't J's (it let it through in "log" mode): shown, but never
+        learned or summed up as his (threads.py)."""
         if not text:
             return
         now = max(self.clock(), (self.transcript[-1]["ts"] + 0.001) if self.transcript else 0.0)
         self.transcript.append({"role": role, "text": text[:1200 if role == "assistant" else 600], "ts": now,
-                                "source": source})
+                                "source": source, **({"other": True} if other else {})})
         self.transcript = self.transcript[-200:]
         if role == "user":
             self.turns += 1
@@ -480,11 +487,17 @@ class Conversation:
         if tasks is None or self.on_stream:
             return ""
         try:
-            done = tasks.done_since(self.asides_seen, mark=True)
+            # Look a second further back and skip what was told: a job that finished in the same clock tick as the
+            # last look (or as the conversation's start) would otherwise never be mentioned.
+            done = [d for d in tasks.done_since(self.asides_seen - 1.0, mark=True) if d["id"] not in self._asides_told]
         except Exception:
             log.exception("job asides failed")
             return ""
         self.asides_seen = self.clock()
+        for d in done:
+            self._asides_told[d["id"]] = None
+        while len(self._asides_told) > 200:
+            self._asides_told.pop(next(iter(self._asides_told)))
         user = self.svc.cfg["assistant"].get("user_name") or "J"
         lines = [f"- {d['title']}: " + (f"didn't work ({d['line']})" if d["state"] == "failed" else
                                         f"waiting on {user}'s OK to {d['waiting']}" if d.get("waiting") else
@@ -515,13 +528,15 @@ class Conversation:
             turns="\n".join(f"{a.get('user_name') or 'J' if e['role'] == 'user' else a.get('name') or 'Vesper'}: {e['text']}"
                             for e in old)[-6000:])
 
+        forgets = self.forgets
+
         def run() -> None:
             try:
                 text = think(prompt, max_tokens=400)
             except Exception:
                 log.exception("conversation summary failed")
                 text = None
-            if isinstance(text, str) and text.strip():
+            if isinstance(text, str) and text.strip() and self.forgets == forgets:  # (not of a talk since forgotten)
                 self.summary = _clip(text.strip(), 1200)
         if wait:
             run()
@@ -696,7 +711,7 @@ class Conversation:
         if self.transcript:
             self.saved_until = self.transcript[-1]["ts"]
         cfg = self.svc.cfg
-        real = [e for e in turns if e["role"] == "user" and len(e["text"].split()) >= 3
+        real = [e for e in turns if e["role"] == "user" and len(e["text"].split()) >= 3 and not e.get("other")
                 and e["text"] != "(journal entry)" and not match_start(_norm_t(e["text"]), cfg)
                 and not match_end(_norm_t(e["text"]), cfg)]
         base = {"ts": now, "mode": self.mode, "thread_id": (self.thread or {}).get("id"),
@@ -760,6 +775,12 @@ class Conversation:
         self.off_record = True  # the rest of this talk isn't kept either
         if self.covered and self.covered.get("thread_id") == tid:
             self.covered = {**self.covered, "state": "forgotten"}
+        with self._lock:  # off the HUD's panel, and out of what the next turn is told
+            self.forgets += 1
+            self.transcript, self.saved_until = [], 0.0
+            self.summary, self.summarised_until = "", self.clock()
+        if self.on_forget is not None:
+            self.on_forget()
         self._changed()
         return out
 

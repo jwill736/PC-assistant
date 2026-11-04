@@ -354,6 +354,11 @@ def route(text: str, ctx: RouterContext | None = None) -> Intent | None:
     m = re.search(r"^(?:focus|show me|switch to|bring) (?:on )?(?:the |my )?(.+?)(?: window)?(?: to the front)?$", t)
     if m:
         return Intent("tool", "focus_window", {"query": m.group(1)})
+    m = re.search(r"^(minimi[sz]e|maximi[sz]e|restore|unminimi[sz]e) (?:the |my )?(.+?)(?: window)?$", t)
+    if m and m.group(2) not in {"it", "that", "this", "everything", "all"}:
+        verb = m.group(1)
+        action = "minimize" if verb.startswith("mini") else "maximize" if verb.startswith("maxi") else "restore"
+        return Intent("tool", "window_control", {"query": m.group(2), "action": action})
     return None
 
 

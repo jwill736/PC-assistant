@@ -34,6 +34,11 @@ brain:
                                 # Test my models), else the strongest that fits your GPU. A name pins it.
     stream_model: auto          # while you're live: auto = the smallest that passed (the big one is unloaded);
                                 # same = don't switch; or a model name
+    # In a fullscreen game the graphics card is the game's: background work (triage, summaries, memory) only uses a
+    # model already loaded, then lets it go game_keep_alive later; your own questions load what they need and keep
+    # it game_answer_keep_alive (docs/VESPER-2.3-performance.md)
+    # game_keep_alive: 30s
+    # game_answer_keep_alive: 2m
     # url: http://GAMING-PC:11434   # your model on another PC, or a non-default port
 
 voice:
@@ -44,7 +49,14 @@ voice:
   # stt_model: base.en          # whisper engine only: tiny.en | base.en | small.en
   # stt_device: auto            # whisper engine only: cuda for an NVIDIA GPU
   endpoint_ms: 400              # pause that ends a command; raise it if you get cut off
-  corrections: {}               # words it keeps mishearing, e.g. {vrb: BRB}
+  end_of_turn: silence          # silence | smart = a model hears whether you finished (9 MB, downloaded once);
+                                # Setup → Voice test measures both on your voice and suggests one
+  # turn_pause_ms: 200          # smart: the pause it checks at...
+  # turn_max_silence_ms: 1500   # ...and the silence that always ends your turn
+  # turn_max_hold_ms: 3500      # ...and, from your first pause, the longest it waits for the rest
+  corrections: {}               # words it keeps mishearing, e.g. {vrb: BRB}; "you misheard X as Y" adds one
+                                # (after your yes) to data/settings.yaml, listed under Setup → Voice test
+  hotwords_score: 2.0           # Parakeet: expect your names (game, scenes, apps, words taught; never chatters'); 0 = off
   push_to_talk_hotkey: ctrl+alt+j
   wake_mode: auto               # auto = acoustic once a trained vesper.onnx is added (Setup tab), else transcript
   # wake_threshold: 0.5         # trained models; per-model thresholds come from the Colab notebook

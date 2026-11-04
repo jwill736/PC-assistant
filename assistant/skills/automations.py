@@ -8,7 +8,9 @@ Said out loud, understood without a model:
   said it (anything risky still waits for your yes)
 - "what are my reminders", "cancel the reminder about Dana"
 
-Saved in data/automations.json; reminders fire through the nudges queue so they never go out on air.
+Saved in data/automations.json. Timers and reminders ring through the nudges queue: a chime and the words, wherever J
+is (away from the PC, in a game, in quiet hours or a focus session); live, presenting or in a call it's the chime and
+the HUD card (and the phone when away), so their words never go out on air.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from datetime import datetime, timedelta
 
 from ..brain.router import Intent, number
 from ..brain.tools import Tool, obj
+from ..brain.undo import Undo
 from . import Skill
 
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -263,6 +266,16 @@ class Automations(Skill):
         return {"ok": bool(hit), "cancelled": [self._view(i) for i in hit],
                 **({} if hit else {"error": f"I can't find {what or 'that'} to cancel."})}
 
+    def _undo_add(self, result: dict) -> Undo | None:
+        """"Undo that" after a reminder, timer or routine: cancel it, unless it already went off or was cancelled."""
+        item = result.get("item") or {}
+        if not item.get("id"):
+            return None
+        name = f"the {item['kind']} “{item['label'] or item['text']}”"
+        return Undo(f"{name} cancelled", lambda: self.cancel(id=item["id"]), what=name,
+                    now=lambda: any(i["id"] == item["id"] and i["enabled"] for i in self.items), left=True,
+                    show=lambda on: "still set" if on else "already gone")
+
     def listing(self) -> dict:
         with self._lock:
             items = sorted((i for i in self.items if i["enabled"]), key=lambda i: (i.get("at") or 9e12))
@@ -307,12 +320,22 @@ class Automations(Skill):
             self.items = [x for x in self.items if x["enabled"]]
             self._save()
         if i["kind"] == "timer":
-            self.nudge(f"{i['label'] or 'Your'} timer is done." if i["label"] else "Time's up.", priority="urgent",
-                       key=f"timer:{i['id']}")
+            self._ring(f"{i['label'] or 'Your'} timer is done." if i["label"] else "Time's up.", f"timer:{i['id']}")
         elif i["kind"] == "reminder":
-            self.nudge(f"Reminder: {i['text']}.", priority="urgent", key=f"reminder:{i['id']}")
+            self._ring(f"Reminder: {i['text']}.", f"reminder:{i['id']}")
         elif i["kind"] == "routine" and self.run_command:
             threading.Thread(target=self._run_routine, args=(i,), daemon=True).start()
+
+    def _ring(self, text: str, key: str) -> None:
+        """A timer or reminder J set: it always sounds, away, in a game or in quiet hours too (skills/nudges.py's ring),
+        and its words are never said on air."""
+        if self.svc.nudge is not None:
+            self.nudge(text, priority="urgent", key=key, ring=True)
+            return
+        from .nudges import ring_sound
+
+        ring_sound()
+        self.notify(text, level="urgent", speak=True, key=key)
 
     def _run_routine(self, i: dict) -> None:
         try:
@@ -365,8 +388,7 @@ class Automations(Skill):
             hits = [i for i in self.items if i["enabled"] and (i.get("trigger") or "").startswith("email_from:")
                     and i["trigger"].split(":", 1)[1].lower() in who]
         for i in hits:
-            self.nudge(f"{msg.get('from')} emailed: {msg.get('subject')}. Reminder: {i['text']}.", priority="urgent",
-                       key=f"reminder:{i['id']}")
+            self._ring(f"{msg.get('from')} emailed: {msg.get('subject')}. Reminder: {i['text']}.", f"reminder:{i['id']}")
             with self._lock:
                 i["enabled"] = False
                 self.items = [x for x in self.items if x["enabled"]]
@@ -405,12 +427,13 @@ class Automations(Skill):
             Tool("remind", "Remind the user of something at a time ('in 20 minutes', 'at 3 pm', 'tomorrow at 9', "
                            "'friday at 10') or at a moment (trigger: after_stream, back, job_done, or email_from:<name>).",
                  obj({"text": {"type": "string"}, "when": {"type": "string"}, "trigger": {"type": "string"}}, ["text"]),
-                 self.remind, tier=1),
+                 self.remind, tier=1, undo=lambda a: self._undo_add),
             Tool("set_timer", "Start a countdown timer.", obj({"seconds": {"type": "number"}, "label": {"type": "string"}},
-                                                             ["seconds"]), self.timer, tier=1),
+                                                             ["seconds"]), self.timer, tier=1, undo=lambda a: self._undo_add),
             Tool("add_routine", "Run a command on a schedule, as if the user said it: every='every weekday at 9 am', "
                                 "command='check my email'.",
-                 obj({"every": {"type": "string"}, "command": {"type": "string"}}, ["every", "command"]), self.routine, tier=1),
+                 obj({"every": {"type": "string"}, "command": {"type": "string"}}, ["every", "command"]), self.routine,
+                 tier=1, undo=lambda a: self._undo_add),
             Tool("list_automations", "The user's reminders, timers and routines.", obj(), self.listing),
             Tool("cancel_automation", "Cancel a reminder, timer or routine by what it's about.",
                  obj({"what": {"type": "string"}}, ["what"]), self.cancel, tier=1),

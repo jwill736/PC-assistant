@@ -66,3 +66,6 @@
   .sc-needle { transition: none; }
   .sc-pulse, .sc-q, .sc-card, .sc-qcard, .sc-qlife { animation: none; }
 }
+/* the recap next to the last streams */
+.sc-growth { margin: 8px 0; }
+.sc-glist { margin: 4px 0 8px; padding-left: 18px; display: grid; gap: 2px; }

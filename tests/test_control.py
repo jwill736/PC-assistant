@@ -98,7 +98,7 @@ def test_pending_carries_an_id_and_tier_and_a_stale_click_does_nothing(svc, obs_
     assert first["tier"] == 3 and first["id"]
     assert ("pending", first) in published  # the HUD gets the id to send back
     a.handle("go live")  # replaces what's waiting
-    assert a.confirm(first["id"], via="hud") == "That confirmation is out of date; nothing ran."
+    assert a.confirm(first["id"], via="hud").startswith("That question has changed: ")  # and nothing ran
     assert obs_calls == [] and a.pending_view()
     a.cancel(first["id"])  # a stale "No" can't cancel the newer one either
     assert a.pending_view()
@@ -309,7 +309,7 @@ def test_control_endpoints(cfg, svc, launched):
         assert c.get("/api/state").json()["pc_control"]["hands_off"] is True
         assert c.post("/api/control/resume").json()["hands_off"] is False
         c.post("/api/command", json={"text": "close steam"})
-        assert "out of date" in c.post("/api/confirm", json={"id": "nope"}).json()["reply"]
+        assert "question has changed" in c.post("/api/confirm", json={"id": "nope"}).json()["reply"]
     assert launched == ["discord"]
 
 

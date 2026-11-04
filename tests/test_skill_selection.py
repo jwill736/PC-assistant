@@ -168,6 +168,22 @@ def test_replace_from_the_hud_goes_back_to_the_app_first(env):
     assert env.s.replace(out["id"])["ok"]  # still there, still valid
 
 
+def test_replace_later_never_pastes_over_a_different_selection(env):
+    """J asks to make a long paragraph more professional, reads the result on the HUD, carries on in the same window
+    and selects something else. Replace must not paste over that (in a chat box there may be no undo)."""
+    env.think.answer = "y" * 600
+    out = env.s.act("formal")
+    assert out["preview"] and env.keys.pasted == []
+    env.keys.selection = "the address for Saturday's party"  # same window, a different selection now
+    done = env.s.replace(out["id"])
+    assert done["ok"] is False and "selection changed" in done["error"] and env.keys.pasted == []
+    assert env.board.text == "J's clipboard"  # the check put the clipboard back too
+    env.keys.selection = None  # nothing selected, just the caret: no paste at the caret either
+    assert env.s.replace(out["id"])["ok"] is False and env.keys.pasted == []
+    env.keys.selection = "teh meeting is moved to thursday"  # he selects the original text again
+    assert env.s.replace(out["id"])["ok"] and env.keys.pasted == ["y" * 600]
+
+
 def test_translate_uses_the_language_and_the_tool_tiers(env, svc):
     env.think.answer = "La reunión se movió al jueves."
     out = env.s.act("translate", "spanish")

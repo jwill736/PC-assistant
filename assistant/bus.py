@@ -21,6 +21,7 @@ class EventBus:
     def __init__(self, history: int = 200):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._clients: set[asyncio.Queue] = set()
+        self._overlays: set[asyncio.Queue] = set()  # OBS Browser sources: they get events, but nobody is looking
         self._lock = threading.Lock()
         self._listeners: list[Callable[[dict], None]] = []
         self.latest: dict[str, dict] = {}  # last payload per event type, for new clients
@@ -31,21 +32,37 @@ class EventBus:
 
     @property
     def client_count(self) -> int:
-        return len(self._clients)
+        """Open HUDs (someone may be looking): what system stats, the level meters and "the HUD was open" go by. The
+        OBS overlay's sockets aren't counted: OBS keeps its Browser sources loaded whenever it's open."""
+        with self._lock:
+            return len(self._clients) - len(self._overlays)
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self, kind: str = "hud") -> asyncio.Queue:
+        """``kind``: "hud" (the HUD, the mini HUD, the phone) or "overlay" (an OBS Browser source)."""
         q: asyncio.Queue = asyncio.Queue(maxsize=500)
         with self._lock:
             self._clients.add(q)
+            if kind == "overlay":
+                self._overlays.add(q)
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         with self._lock:
             self._clients.discard(q)
+            self._overlays.discard(q)
 
     def on(self, callback: Callable[[dict], None]) -> None:
         """Register an in-process listener (called on the publishing thread)."""
-        self._listeners.append(callback)
+        with self._lock:
+            self._listeners.append(callback)
+
+    def off(self, callback: Callable[[dict], None]) -> None:
+        """Unregister one (a skill switched off in Setup → Skills, or by the crash guard, stops hearing the bus)."""
+        with self._lock:
+            self._listeners = [cb for cb in self._listeners if cb != callback]
+
+    def listeners(self) -> list[Callable[[dict], None]]:
+        return list(self._listeners)
 
     def publish(self, event_type: str, data: Any = None, *, sticky: bool = False, transient: bool = False) -> None:
         """``transient``: a high-rate, throwaway event (the orb's audio level) that only goes to connected HUDs:
@@ -68,9 +85,11 @@ class EventBus:
         loop = self._loop
         if loop is None or loop.is_closed():
             return
-        payload = json.dumps(event, default=str)
         with self._lock:
             clients = list(self._clients)
+        if not clients:
+            return  # nobody connected: not even worth the JSON
+        payload = json.dumps(event, default=str)
         for q in clients:
             loop.call_soon_threadsafe(_offer, q, payload)
 

@@ -1,8 +1,11 @@
 """Memory: Vesper learns from what J says, and every answer knows it.
 
 - After a conversation goes quiet for two minutes, the model picks out what's worth keeping (people, preferences,
-  plans, promises) from J's own words. Nothing said while live on stream is learned (guests and chat can't write
-  J's memory). "Remember that …" notes become facts straight away.
+  plans, promises) from J's own words: what he said, typed or sent from his paired phone. Not from routines, the
+  planner or jobs (Vesper's words), nor a voice the speaker check marked as someone else's, nor anything said while
+  live on stream (guests and chat can't write J's memory). "Remember that …" notes become facts straight away.
+  When no model can answer (a game with only the big model, Ollama closed), the conversation waits in line and is
+  learned once one can: after the game, at most a day later.
 - Each night it rewrites the short core profile (who J is, how J likes things, what's going on now).
 - "What do you know about me", "what have you learned lately", "forget that I like pineapple".
 - HUD (Setup → Memory): the profile (edit it and Vesper leaves it alone), what it learned, search, forget, pin.
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from datetime import datetime
 
@@ -22,9 +26,15 @@ from .. import rhythm
 from ..brain.router import Intent
 from ..brain.tools import Tool, obj
 from ..memory import BLOCKS, Embedder, Memory
+from ..privacy import redact
 from . import Skill, check, lazy_client
 
 QUIET_S = 120
+# A conversation no model could answer for yet (a game, Ollama closed) waits in line, as log ids only: at most
+# WAITING_MAX of them, each for a day at most, asked again as soon as the game is over or after RETRY_S, doubling
+# (RETRY_MAX_S at most); one that went MISSES asks unanswered outside a game (about 5 hours) is let go.
+WAITING_MAX, WAITING_S, RETRY_S, RETRY_MAX_S, MISSES = 20, 86400, 600, 3 * 3600, 6
+OWN_SOURCES = ("voice", "text", "phone")  # J speaking, typing in the HUD, or his paired phone
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
@@ -43,11 +53,42 @@ class MemorySkill(Skill):
             embedder = Embedder(local.get("url") or "http://127.0.0.1:11434", model, int(self.setting("embed_dims", 256)),
                                 http=lazy_client(timeout=30))
         a = svc.cfg["assistant"]
+        self._asked = threading.local()  # .missed: the model gave no answer (learn_conversations asks per thread)
         self.memory = Memory(svc.storage, user=a.get("user_name") or "J", assistant=a.get("name") or "Vesper", tz=svc.tz,
-                             think=lambda *x, **k: svc.think(*x, **k), embedder=embedder, clock=clock)
-        svc.memory = self.memory
+                             think=self._think, embedder=embedder, clock=clock)
+        self.hook(svc, "memory", self.memory)
+        self._waiting = self._load_waiting()  # conversations no model could answer for yet: learned when one can
+        self._retry_at = 0.0
+        self._missed_in_game = False
+        self._game = lambda: False  # set at start: a fullscreen game is running (think() then waits for it to end)
         self._live_spans: list[list[float]] = []
         self._last_rebuild_day = self.memory.meta("core_rebuilt") or ""
+        self._others: list[int] = []  # log ids of commands in a voice the speaker check said wasn't J's
+        self._ctx = lambda: {}
+        svc.bus.on(self._on_event)
+
+    def start(self, runtime) -> None:
+        assistant = getattr(runtime, "assistant", None)
+        self._ctx = lambda: getattr(assistant, "_ctx", None) or {}
+        self._game = lambda: (getattr(assistant, "low_power", None) or (lambda: ""))() == "game"
+        if self.memory.embedder is not None and hasattr(assistant, "gpu_keep_alive"):
+            self.memory.embedder.keep_alive = assistant.gpu_keep_alive  # mid-game: never a model load in the background
+
+    def _think(self, *a, **kw):
+        out = self.svc.think(*a, **kw)
+        if out is None:
+            self._asked.missed = True
+        return out
+
+    def _on_event(self, ev: dict) -> None:
+        """The speaker check in "log" mode lets another voice's command through (and marks it): it runs, but what it
+        said is never learned as J's. The line was logged just before this event, on the same thread."""
+        d = ev.get("data") or {}
+        if ev.get("type") != "user_said" or d.get("source") != "voice" or self._ctx().get("owner") != "mismatch":
+            return
+        rows = self.svc.storage.query("SELECT id, text FROM log WHERE role = 'user' ORDER BY id DESC LIMIT 1")
+        if rows and rows[0]["text"] == redact(str(d.get("text") or "")):
+            self._others = (self._others + [rows[0]["id"]])[-200:]
 
     # ---- the learning loop -----------------------------------------------------------------------------
     def tick(self) -> None:
@@ -199,21 +240,75 @@ class MemorySkill(Skill):
 
     def learn_conversations(self, now: float | None = None) -> int:
         now = now or self.clock()
+        learned = self._learn_waiting(now)  # what waited for the model (a game, Ollama closed) goes first
         last = int(self.memory.meta("log_id") or 0)
         rows = self.svc.storage.query("SELECT id, ts, role, source, text FROM log WHERE id > ? ORDER BY id LIMIT 200", (last,))
         if not rows or now - rows[-1]["ts"] < QUIET_S:
-            return 0  # still talking (or nothing new)
+            return self._learned(learned)  # still talking (or nothing new)
         owns = getattr(getattr(getattr(self.svc, "conversation", None), "threads", None), "owns", None)
         turns = [{"role": r["role"], "text": r["text"]} for r in rows
-                 if r["source"] not in ("automation",) and not self._while_live(r["ts"])
+                 if r["source"] in OWN_SOURCES and r["id"] not in self._others and not self._while_live(r["ts"])
                  and not (owns and owns(r["ts"]))  # a kept conversation learns through its thread (brain/threads.py)
                  and not re.match(r"^(?:remember|note|make a note)\b", r["text"].lower())]  # notes are learned above
-        learned = self.memory.extract(turns, source_ref=f"log:{rows[0]['id']}-{rows[-1]['id']}") if turns else []
+        if turns:  # it waits in line (just the log ids: a forgotten conversation is gone from there too)
+            kept = {(t["role"], t["text"]) for t in turns}
+            self._waiting = (self._waiting + [{"ids": [r["id"] for r in rows if (r["role"], r["text"]) in kept],
+                                               "ref": f"log:{rows[0]['id']}-{rows[-1]['id']}", "at": now}])[-WAITING_MAX:]
+            self._save_waiting()
         self.memory.meta("log_id", str(rows[-1]["id"]))
+        if turns:
+            learned += self._learn_waiting(now)
+        return self._learned(learned)
+
+    def _learned(self, learned: list[dict]) -> int:
         if learned:
             self.notify(f"Learned {len(learned)} thing{'s' if len(learned) != 1 else ''}: {learned[0]['statement']}",
                         level="quiet")
         return len(learned)
+
+    def _learn_waiting(self, now: float) -> list[dict]:
+        """Learn from the conversations in line, oldest first (a later fact can replace an earlier one). When the model
+        gives no answer (a game with only the big model, which think() won't load mid-game; Ollama closed), the line
+        waits: until the game is over, else RETRY_S, twice as long after each miss (RETRY_MAX_S at most). One is let go
+        after a day in line, or after MISSES unanswered asks outside a game."""
+        if not self._waiting:
+            return []
+        try:
+            game = bool(self._game())
+        except Exception:
+            game = False
+        if self._missed_in_game and not game:  # the game is over: what waited for it goes now
+            self._missed_in_game, self._retry_at = False, 0.0
+        n = len(self._waiting)
+        self._waiting = [w for w in self._waiting if now - w["at"] <= WAITING_S and w.get("misses", 0) < MISSES]
+        dirty, learned = len(self._waiting) != n, []
+        while self._waiting and not self._missed_in_game and now >= self._retry_at:
+            w, dirty = self._waiting[0], True
+            marks = ",".join("?" * len(w["ids"]))
+            turns = [{"role": r["role"], "text": r["text"]} for r in self.svc.storage.query(
+                f"SELECT role, text FROM log WHERE id IN ({marks}) ORDER BY id", tuple(w["ids"]))] if w["ids"] else []
+            self._asked.missed = False
+            got = self.memory.extract(turns, source_ref=w["ref"]) if turns else []
+            if self._asked.missed:
+                w["misses"] = w.get("misses", 0) + (0 if game else 1)
+                self._retry_at = now + min(RETRY_S * 2 ** max(0, w["misses"] - 1), RETRY_MAX_S)
+                self._missed_in_game = game
+                break
+            self._waiting.pop(0)
+            learned += got
+        if dirty:
+            self._save_waiting()
+        return learned
+
+    def _load_waiting(self) -> list[dict]:
+        try:
+            items = json.loads(self.memory.meta("learn_waiting") or "[]")
+        except ValueError:
+            items = []
+        return [w for w in items if isinstance(w, dict) and isinstance(w.get("ids"), list)][-WAITING_MAX:]
+
+    def _save_waiting(self) -> None:
+        self.memory.meta("learn_waiting", json.dumps(self._waiting))
 
     # ---- skill surface -----------------------------------------------------------------------------------
     def selftest(self) -> list[dict]:

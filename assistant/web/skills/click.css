@@ -1,0 +1,6 @@
+/* Click by name skill */
+.clk-last { margin-bottom: 8px; overflow-wrap: anywhere; }
+.clk-choices { margin-bottom: 8px; }
+.clk-choices ol { margin: 4px 0 0; padding-left: 18px; }
+.clk-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; max-height: 180px; overflow-y: auto; }
+.clk-pills .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

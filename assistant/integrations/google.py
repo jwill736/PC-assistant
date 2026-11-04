@@ -9,7 +9,10 @@ and writes only what you ask for, each behind its own box on Google's consent pa
 
 - reply drafts in Gmail (``gmail.compose``): saved as drafts, never sent; you send them yourself from Gmail;
 - a "Vesper · Work" / "Vesper · Personal" list in Google Tasks kept in step with your tasks (``tasks``);
-- focus blocks you said yes to, on your calendar (``calendar.events``).
+- focus blocks you said yes to, on your calendar (``calendar.events``);
+- your YouTube live stream's title and description, and reading its chat (``youtube``, skills/stream_youtube.py). That
+  box is asked for on its own, only when you click Connect YouTube Live (incremental consent: Google adds it to what
+  the account already allowed), so connecting Gmail and Calendar never asks for YouTube.
 
 Sign-in is Google's own page in your browser ("installed app" OAuth with PKCE); it comes back to Vesper on
 127.0.0.1. You create the sign-in key once (a Google Cloud "Desktop app" client, docs/SETUP.md) because Google
@@ -44,6 +47,9 @@ GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose"  # drafts: Vesper never sends
 TASKS_SCOPE = "https://www.googleapis.com/auth/tasks"
 EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+# Live chat and the live broadcast's title/description ("Manage your YouTube account"). Not in SCOPES or ALLOWS: it's
+# asked for on its own (``begin(scopes=[YOUTUBE_SCOPE])``), so an account without it isn't missing anything.
+YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube"
 SCOPES = ["openid", "email", "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/calendar.readonly", GMAIL_SCOPE, COMPOSE_SCOPE, TASKS_SCOPE, EVENTS_SCOPE]
 # Google's consent page has one box per permission: what Vesper calls each, and the words next to the box
@@ -76,6 +82,7 @@ class GoogleAccounts:
         self.http = http or httpx.Client(timeout=30)
         self.clock = clock
         self._lock = threading.RLock()
+        self._refreshing: dict[str, threading.Lock] = {}  # one token refresh at a time per account
         self._pending: dict[str, dict] = {}
         self._tokens: dict[str, dict] = self._load()
         self.on_change: Callable[[str], None] | None = None  # an account connected (email): read its docs again
@@ -139,8 +146,9 @@ class GoogleAccounts:
                 f"“{BOXES.get(scope, scope)}” ({ALLOWS.get(scope, scope)}).")
 
     # ---- signing in --------------------------------------------------------------
-    def begin(self, redirect_uri: str, login_hint: str = "") -> str:
-        """The Google sign-in address for one more account (open it in the browser)."""
+    def begin(self, redirect_uri: str, login_hint: str = "", scopes: list[str] | None = None) -> str:
+        """The Google sign-in address for one more account (open it in the browser). ``scopes``: ask for only these
+        (and who you are), on top of what the account already allowed: incremental consent, e.g. [YOUTUBE_SCOPE]."""
         if not self.configured:
             raise GoogleError("Add the Google sign-in key first (Setup → Google accounts).")
         verifier = secrets.token_urlsafe(64)
@@ -151,7 +159,8 @@ class GoogleAccounts:
             self._pending = {s: p for s, p in self._pending.items() if now - p["at"] < PENDING_S}
             self._pending[state] = {"verifier": verifier, "redirect_uri": redirect_uri, "at": now}
         params = {"client_id": self.client_id, "redirect_uri": redirect_uri, "response_type": "code",
-                  "scope": " ".join(SCOPES), "state": state, "code_challenge": challenge,
+                  "scope": " ".join(["openid", "email", *scopes] if scopes else SCOPES), "state": state,
+                  "code_challenge": challenge,
                   "code_challenge_method": "S256", "access_type": "offline",
                   "prompt": "consent select_account", "include_granted_scopes": "true"}
         if login_hint:
@@ -201,31 +210,53 @@ class GoogleAccounts:
                 pass
         return tok is not None
 
+    def _valid(self, email: str) -> tuple[dict, str | None]:
+        """(the account's token, its access token if still good). Call with ``_lock`` held."""
+        tok = self._tokens.get(email)
+        if not tok:
+            raise GoogleError(f"{email} isn't connected.")
+        if tok.get("error"):
+            raise GoogleError(tok["error"])
+        if self.clock() < tok.get("expires_at", 0):
+            return tok, tok["access_token"]
+        if not tok.get("refresh_token"):
+            tok["error"] = "Signed out: click Reconnect."
+            self._save()
+            raise GoogleError(tok["error"])
+        return tok, None
+
     def _access(self, email: str) -> str:
         with self._lock:
-            tok = self._tokens.get(email)
-            if not tok:
-                raise GoogleError(f"{email} isn't connected.")
-            if tok.get("error"):
-                raise GoogleError(tok["error"])
-            if self.clock() < tok.get("expires_at", 0):
-                return tok["access_token"]
-            if not tok.get("refresh_token"):
-                tok["error"] = "Signed out: click Reconnect."
-                self._save()
-                raise GoogleError(tok["error"])
+            _tok, good = self._valid(email)
+            if good:
+                return good
+            refreshing = self._refreshing.setdefault(email, threading.Lock())
+        # The refresh POST (up to 30 s on a bad network) holds only this account's refresh lock: everything else that
+        # asks about accounts (which are connected, what they allowed) answers meanwhile.
+        with refreshing:
+            with self._lock:  # another thread may have refreshed it while this one waited
+                tok, good = self._valid(email)
+                if good:
+                    return good
+                rt = tok["refresh_token"]
             resp = self.http.post(TOKEN_URL, data={"client_id": self.client_id, "client_secret": self.client_secret,
-                                                   "refresh_token": tok["refresh_token"], "grant_type": "refresh_token"})
-            if resp.status_code != 200:
-                if "invalid_grant" in resp.text:  # revoked, password changed, or a test app's 7 days ran out
-                    tok["error"] = "Google ended the sign-in: click Reconnect."
-                    self._save()
-                raise GoogleError(f"Couldn't refresh the sign-in for {email}: {_reason(resp)}")
-            data = resp.json()
-            tok["access_token"] = data["access_token"]
-            tok["expires_at"] = self.clock() + int(data.get("expires_in", 3600)) - 60
-            self._save()
-            return tok["access_token"]
+                                                   "refresh_token": rt, "grant_type": "refresh_token"})
+            with self._lock:
+                if self._tokens.get(email) is not tok:  # reconnected or removed meanwhile: go by what's there now
+                    good = self._valid(email)[1]
+                    if good:
+                        return good
+                    raise GoogleError(f"The sign-in for {email} changed while it was refreshed: try again.")
+                if resp.status_code != 200:
+                    if "invalid_grant" in resp.text:  # revoked, password changed, or a test app's 7 days ran out
+                        tok["error"] = "Google ended the sign-in: click Reconnect."
+                        self._save()
+                    raise GoogleError(f"Couldn't refresh the sign-in for {email}: {_reason(resp)}")
+                data = resp.json()
+                tok["access_token"] = data["access_token"]
+                tok["expires_at"] = self.clock() + int(data.get("expires_in", 3600)) - 60
+                self._save()
+                return tok["access_token"]
 
     def get(self, email: str, url: str, params: dict | None = None, headers: dict | None = None) -> httpx.Response:
         return self.request("GET", email, url, params=params, headers=headers)
@@ -308,6 +339,14 @@ class GoogleAccounts:
         if resp.status_code not in (200, 201):
             raise GoogleError(_reason(resp))
         return resp.json()
+
+    def delete_event(self, email: str, calendar_id: str, event_id: str) -> None:
+        """Remove one event Vesper made (undoing a focus block). Already gone counts as done."""
+        if not self.can(email, EVENTS_SCOPE):
+            raise GoogleError(self.need(EVENTS_SCOPE, "Taking time off your calendar", [email]))
+        resp = self.request("DELETE", email, f"{CALENDAR}/calendars/{_quote(calendar_id)}/events/{_quote(event_id)}")
+        if resp.status_code not in (200, 204, 404, 410):
+            raise GoogleError(_reason(resp))
 
 
 def _event(ev: dict, tz: tzinfo) -> dict | None:

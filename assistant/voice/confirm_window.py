@@ -23,8 +23,11 @@ log = logging.getLogger(__name__)
 _YES = (r"yes|yeah|yep|yup|ya|sure|ok|okay|confirm(?:ed)?|do it|go ahead|go for it|affirmative|correct|send it|"
         r"post it|absolutely|definitely|please do|let'?s go|let'?s do it|proceed")
 _NO = (r"no|nope|nah|cancel|don'?t|do not|never ?mind|stop|abort|forget it|not now|hold off|negative|skip it|leave it")
-YES = re.compile(rf"(?:{_YES})(?: (?:please|thanks|thank you|do it|go ahead|send it|post it|yes|that'?s right))*")
-NO = re.compile(rf"(?:{_NO})(?: (?:thanks|thank you|thank|don'?t|do it|that|it|cancel|not now|wait))*")
+_YES_AFTER = r"please|thanks|thank you|do it|go ahead|send it|post it|yes|that'?s right"
+_NO_AFTER = r"thanks|thank you|thank|don'?t|do it|that|it|cancel|not now|wait"
+# Every word in these steers an answer, so a learned correction may never write or rewrite one (voice/vocab.py).
+YES = re.compile(rf"(?:{_YES})(?: (?:{_YES_AFTER}))*")
+NO = re.compile(rf"(?:{_NO})(?: (?:{_NO_AFTER}))*")
 
 
 def answer(text: str) -> str | None:
@@ -37,6 +40,12 @@ def answer(text: str) -> str | None:
     if NO.fullmatch(t):
         return "no"
     return None
+
+
+class Answer(str):
+    """"yes" / "no" from the window, carrying the id of the question it answers (so it can't confirm a newer one)."""
+
+    pending_id: str | None = None
 
 
 def question(what: str) -> str:
@@ -100,7 +109,9 @@ class ConfirmWindow:
                 return True
             cur["phase"], cur["toasted"] = "waiting", True  # the answer is on its way; expiry still clears the card
             self._publish("answered", answer=said)
-            return said
+            out = Answer(said)
+            out.pending_id = cur["id"]
+            return out
 
     # ---- the state machine -----------------------------------------------------------------------------------------
     def tick(self) -> str:

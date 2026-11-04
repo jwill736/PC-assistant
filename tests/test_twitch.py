@@ -169,6 +169,44 @@ def test_a_401_refreshes_once_and_retries(tmp_path):
     assert auths == ["Bearer at1", "Bearer at2"]
 
 
+def saved_login(tmp_path, transport):
+    path = tmp_path / "twitch_token.json"
+    path.write_text(json.dumps({"access_token": "at0", "refresh_token": "rt0", "expires_at": time.time() + 9000,
+                                "scopes": [], "login": "vesperdev", "user_id": "42", "validated_at": 0}))
+    return TwitchAuth("cid", path=path, http=httpx.Client(transport=httpx.MockTransport(transport))), path
+
+
+@pytest.mark.parametrize("status", [500, 503, 429])
+def test_a_twitch_outage_does_not_sign_j_out(tmp_path, status):
+    """INTEG-3: a 5xx or 429 on the hourly validate deleted the saved login, mid-stream included."""
+    fake = FakeTwitch()
+    down = [True]
+
+    def outage(req):
+        if req.url.path == "/oauth2/validate" and down[0]:
+            return httpx.Response(status, text="upstream connect error")
+        return fake(req)
+    auth, path = saved_login(tmp_path, outage)
+    assert auth.validate() is True  # the hourly check, during a Twitch blip
+    assert auth.connected and path.exists() and str(status) in auth.error
+    down[0] = False
+    assert auth.validate() is True and auth.error == "" and auth.token["validated_at"] > 0  # checked again: fine
+
+
+def test_a_401_whose_refresh_doesnt_get_through_keeps_the_login(tmp_path):
+    fake = FakeTwitch()
+    fake.refresh_status = 503  # Twitch's token endpoint is down too
+
+    def dead_token(req):
+        if req.url.path == "/oauth2/validate":
+            return httpx.Response(401, json={"status": 401, "message": "invalid access token"})
+        return fake(req)
+    auth, path = saved_login(tmp_path, dead_token)
+    assert auth.validate() is False and auth.connected and path.exists()
+    fake.refresh_status = 400  # now Twitch answers: that refresh token is dead too. Only this signs J out
+    assert auth.validate() is False and not auth.connected and not path.exists() and "connect Twitch" in auth.error
+
+
 # ---- actions ------------------------------------------------------------------------
 
 def test_clip_marker_title_and_category(tmp_path):
@@ -353,6 +391,86 @@ def test_eventsub_subscribes_delivers_and_moves_connections(tmp_path):
     assert follow["version"] == "2" and follow["condition"] == {"broadcaster_user_id": "42", "moderator_user_id": "42"}
     assert next(p for p in posted if p["type"] == "channel.raid")["condition"] == {"to_broadcaster_user_id": "42"}
     assert "channel.hype_train.begin" in sub.failed and "channel.raid" in sub.subscribed
+
+
+def test_eventsub_waits_two_seconds_after_a_drop_that_followed_a_long_healthy_session():
+    """INTEG-8: the wait doubled on every drop and never came back down, so after five Wi-Fi blips each later one left
+    Twitch events off for 60 s (raids and follows in that minute are gone: EventSub doesn't replay)."""
+    class Sock:
+        def __init__(self):
+            self.n = 0
+
+        def recv(self, timeout=None):
+            self.n += 1
+            if self.n == 1:
+                return json.dumps(welcome("s1"))
+            if self.n < 50:  # a healthy session: keepalives
+                return json.dumps({"metadata": {"message_id": f"k{self.n}", "message_type": "session_keepalive"},
+                                   "payload": {}})
+            raise ConnectionError("network blip")
+
+        def close(self):
+            pass
+
+    twitch = SimpleNamespace(ids=lambda: ("1", "1"), subscribe_eventsub=lambda *a: {"ok": True},
+                             auth=SimpleNamespace(connected=True))
+    sub = es.EventSub(twitch, lambda t, e: None, connect=lambda url: Sock(), types=["stream.online"])
+    waits = []
+    sub._stop.wait = lambda s: waits.append(s) or len(waits) >= 6  # six drops
+    sub._loop()
+    assert waits == [2.0] * 6
+
+
+def test_eventsub_backs_off_while_twitch_keeps_refusing():
+    """A connection that never gets going (Twitch closes it at once) still waits longer each time."""
+    twitch = SimpleNamespace(ids=lambda: ("1", "1"), subscribe_eventsub=lambda *a: {"ok": True},
+                             auth=SimpleNamespace(connected=True))
+
+    def refuse(url):
+        raise ConnectionError("4003 connection unused")
+    sub = es.EventSub(twitch, lambda t, e: None, connect=refuse, types=["stream.online"])
+    waits = []
+    sub._stop.wait = lambda s: waits.append(s) or len(waits) >= 7
+    sub._loop()
+    assert waits == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+
+
+def test_eventsub_stops_dialling_once_the_login_is_gone():
+    """INTEG-9: after Twitch forgot the login, EventSub still opened a WebSocket every minute, forever."""
+    opened = []
+    auth = SimpleNamespace(connected=True)
+
+    class Sock:
+        def recv(self, timeout=None):
+            auth.connected = False  # the login goes (a dead refresh token) while this one is up
+            raise ConnectionError("closed")
+
+        def close(self):
+            pass
+    twitch = SimpleNamespace(ids=lambda: ("1", "1"), subscribe_eventsub=lambda *a: {"ok": True}, auth=auth)
+    sub = es.EventSub(twitch, lambda t, e: None, connect=lambda url: opened.append(url) or Sock(), types=["stream.online"])
+    waits = []
+    sub._stop.wait = lambda s: waits.append(s) or len(waits) >= 60
+    sub._loop()
+    assert len(opened) == 1 and sub.state == "stopped" and "connect Twitch" in sub.error  # a login starts it again
+
+
+def test_shoutout_yes_goes_to_the_login_it_asked_about(svc, monkeypatch):
+    """CORE-5: the question resolved the spoken name, then the yes resolved it again against a chat list that had
+    moved on: a chatter named like it who typed in between got the shoutout."""
+    from assistant.brain.assistant import Assistant
+
+    feed = es.TwitchFeed()
+    svc.twitch_feed = feed
+    feed.add({"kind": "raid", "user": "Shroudy", "detail": {"login": "shroudy"}})
+    sent = []
+    monkeypatch.setattr(svc.twitch, "shoutout", lambda user: sent.append(user) or {"ok": True, "user": user})
+    a = Assistant(svc)
+    out = a.handle("shout out shroud")
+    assert "shout out shroudy" in out["reply"].lower()  # the question J hears
+    feed.add({"kind": "chat", "user": "shroud", "text": "hi"})  # before he answers, a chatter named exactly that
+    a.handle("yes")
+    assert sent == ["shroudy"]
 
 
 def test_events_normalize_and_callouts_never_speak_viewer_text():

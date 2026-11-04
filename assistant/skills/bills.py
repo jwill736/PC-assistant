@@ -552,17 +552,17 @@ class Bills(Skill):
         for t in data["trials"]:
             if t["days"] <= 2:
                 self.nudge(f"Your {t['merchant']} trial ends {t['when']}.", priority="normal",
-                           key=f"bills:trial:{t['merchant']}:{t['ends']}", expires_in=12 * 3600)
+                           key=f"bills:trial:{t['merchant']}:{t['ends']}", expires_in=12 * 3600, once=3 * 86400)
         for u in data["upcoming"]:
             if u["kind"] == "renewal" and u["days"] == 1:
                 self.nudge(f"{u['merchant']} renews tomorrow, {money(u['amount'], u['currency'])}.", priority="low",
-                           key=f"bills:renew:{u['merchant']}:{u['date']}")
+                           key=f"bills:renew:{u['merchant']}:{u['date']}", once=2 * 86400)
         if not (self.svc.live and self.svc.live()):  # once a month per unused subscription, in the feed only
             month = datetime.fromtimestamp(self.clock(), self.svc.tz).strftime("%Y-%m")
             for i in self.audit()["flagged"]:
                 if not i["reminder_at"]:
                     self.nudge(i["line"] + ".", priority="low", key=f"bills:audit:{i['merchant'].lower()}:{month}",
-                               expires_in=7 * 86400)
+                               expires_in=7 * 86400, once=32 * 86400)
 
     def briefing(self):
         d = self.overview(days=3)

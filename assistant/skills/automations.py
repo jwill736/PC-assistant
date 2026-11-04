@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 
 from ..brain.router import Intent, number
 from ..brain.tools import Tool, obj
+from ..brain.undo import Undo
 from . import Skill
 
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -263,6 +264,16 @@ class Automations(Skill):
         return {"ok": bool(hit), "cancelled": [self._view(i) for i in hit],
                 **({} if hit else {"error": f"I can't find {what or 'that'} to cancel."})}
 
+    def _undo_add(self, result: dict) -> Undo | None:
+        """"Undo that" after a reminder, timer or routine: cancel it, unless it already went off or was cancelled."""
+        item = result.get("item") or {}
+        if not item.get("id"):
+            return None
+        name = f"the {item['kind']} “{item['label'] or item['text']}”"
+        return Undo(f"{name} cancelled", lambda: self.cancel(id=item["id"]), what=name,
+                    now=lambda: any(i["id"] == item["id"] and i["enabled"] for i in self.items), left=True,
+                    show=lambda on: "still set" if on else "already gone")
+
     def listing(self) -> dict:
         with self._lock:
             items = sorted((i for i in self.items if i["enabled"]), key=lambda i: (i.get("at") or 9e12))
@@ -405,12 +416,13 @@ class Automations(Skill):
             Tool("remind", "Remind the user of something at a time ('in 20 minutes', 'at 3 pm', 'tomorrow at 9', "
                            "'friday at 10') or at a moment (trigger: after_stream, back, job_done, or email_from:<name>).",
                  obj({"text": {"type": "string"}, "when": {"type": "string"}, "trigger": {"type": "string"}}, ["text"]),
-                 self.remind, tier=1),
+                 self.remind, tier=1, undo=lambda a: self._undo_add),
             Tool("set_timer", "Start a countdown timer.", obj({"seconds": {"type": "number"}, "label": {"type": "string"}},
-                                                             ["seconds"]), self.timer, tier=1),
+                                                             ["seconds"]), self.timer, tier=1, undo=lambda a: self._undo_add),
             Tool("add_routine", "Run a command on a schedule, as if the user said it: every='every weekday at 9 am', "
                                 "command='check my email'.",
-                 obj({"every": {"type": "string"}, "command": {"type": "string"}}, ["every", "command"]), self.routine, tier=1),
+                 obj({"every": {"type": "string"}, "command": {"type": "string"}}, ["every", "command"]), self.routine,
+                 tier=1, undo=lambda a: self._undo_add),
             Tool("list_automations", "The user's reminders, timers and routines.", obj(), self.listing),
             Tool("cancel_automation", "Cancel a reminder, timer or routine by what it's about.",
                  obj({"what": {"type": "string"}}, ["what"]), self.cancel, tier=1),

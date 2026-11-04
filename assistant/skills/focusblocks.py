@@ -19,6 +19,7 @@ from datetime import date, datetime, time as dtime, timedelta
 
 from ..brain.router import Intent, number
 from ..brain.tools import Tool, obj
+from ..brain.undo import Undo
 from ..integrations.calendars import free_blocks
 from ..integrations.google import EVENTS_SCOPE, GoogleError
 from . import Skill
@@ -268,6 +269,34 @@ class FocusBlocks(Skill):
         return {"ok": True, "title": f"{LOCK} {name}", "start": start, "end": end, "account": account_kind(account),
                 "calendar": calendar, "link": ev.get("htmlLink") or "", "id": ev.get("id")}
 
+    def _undo_blocks(self, result: dict) -> Undo | None:
+        """"Undo that": take the block(s) just made off the calendar again. It writes to J's calendar, so tier 2."""
+        ids = [b["id"] for b in (result.get("made") or [result]) if b.get("id")]
+        if not ids:
+            return None
+        n = len(ids)
+        return Undo(f"{'the focus block' if n == 1 else f'the {n} focus blocks'} taken off your calendar",
+                    lambda: self._remove(ids), tier=2)
+
+    def _remove(self, event_ids: list[str]) -> dict:
+        errors = []
+        for eid in event_ids:
+            rows = self.svc.storage.query("SELECT * FROM focusblocks_made WHERE event_id=?", (eid,))
+            if not rows:
+                continue
+            try:
+                self.svc.google.delete_event(rows[0]["account"], rows[0]["calendar"], eid)
+            except GoogleError as exc:
+                errors.append(str(exc))
+                continue
+            self.svc.storage.execute("DELETE FROM focusblocks_made WHERE event_id=?", (eid,))
+        try:
+            self.svc.calendars.refresh(force=True)
+        except Exception:
+            pass
+        self.publish()
+        return {"ok": not errors, **({"error": "; ".join(errors)} if errors else {})}
+
     def _events(self, d: date) -> list[dict]:
         try:
             return self.svc.calendars.agenda(1, start=datetime.combine(d, dtime.min, tzinfo=self.svc.tz))
@@ -341,10 +370,11 @@ class FocusBlocks(Skill):
                  obj({"minutes": {"type": "integer"}, "day": {"type": "string"}, "title": {"type": "string"},
                       "part": {"type": "string", "enum": ["morning", "afternoon", "evening", "any"]},
                       "profile": {"type": "string", "enum": ["work", "personal"]}}),
-                 self.protect_time, tier=self._tier, confirm_text=self._describe),
+                 self.protect_time, tier=self._tier, confirm_text=self._describe, undo=lambda a: self._undo_blocks),
             Tool("calendar_plan_blocks", "Put today's Day plan task blocks on J's Google calendar as busy focus "
                                          "blocks (J confirms the list first).", obj(), self.calendar_plan,
-                 tier=lambda a: 2 if self._resolve_plan(a) else 0, confirm_text=self._describe_plan),
+                 tier=lambda a: 2 if self._resolve_plan(a) else 0, confirm_text=self._describe_plan,
+                 undo=lambda a: self._undo_blocks),
         ]
 
     def route(self, t: str):

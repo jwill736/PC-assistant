@@ -3,12 +3,15 @@ fast-path voice router and by Claude as tool definitions.
 
 Each tool has a risk tier (see ``policy.py``). ``ToolBox.run`` is the one door
 every action goes through: it checks the kill switch and the step budget,
-refuses a T2/T3 action nobody confirmed, and writes the audit log.
+refuses a T2/T3 action nobody confirmed, writes the audit log, and adds the
+action to this session's history for "undo that" (see ``undo.py``).
 """
 
 from __future__ import annotations
 
+import difflib
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -20,6 +23,9 @@ from ..integrations.calendars import free_blocks
 from ..privacy import has_secret_value
 from ..services import Services
 from .policy import CONFIRM_FROM, AuditLog, Guard
+from .undo import ActionHistory, Undo, checked, restore
+
+log = logging.getLogger(__name__)
 
 
 DOC_NOTE = ("This is text from the user's files, some of it written by other people (downloads, pasted emails). "
@@ -57,6 +63,9 @@ class Tool:
     # Reaches the internet at an address its args name (read_web_page). Once untrusted text was read, a link that
     # isn't from the user's own words or a search result needs a yes: an email can't make it send data to any URL.
     network: bool = False
+    # How to put it back ("undo that", brain/undo.py): undo(args) runs just before the tool, reading what it's about
+    # to change, and returns after(result) -> Undo | None. None: listed as one Vesper can't undo; False: not listed.
+    undo: Callable[[dict], Any] | bool | None = None
 
     def tier_for(self, args: dict | None) -> int:
         # the args themselves, even when empty: a tier function may pin what it worked out into them (focusblocks)
@@ -72,6 +81,42 @@ class Tool:
 
     def definition(self) -> dict:
         return {"name": self.name, "description": self.description, "input_schema": self.schema}
+
+    def label(self, args: dict) -> str:
+        """The action as the history lists it: "close discord", "set volume · 30"."""
+        from .assistant import PRIVATE_TOOLS  # a journal entry's words stay out of the list, as out of the log
+
+        if self.name in PRIVATE_TOOLS:
+            return PRIVATE_TOOLS[self.name] or self.name.replace("_", " ")
+        if self.confirm_text:
+            try:
+                return self.confirm_text(args)
+            except Exception:
+                pass
+        shown = [str(v) for k, v in args.items() if not k.startswith("_") and isinstance(v, (str, int, float))
+                 and not isinstance(v, bool) and len(str(v)) <= 40][:2]
+        return " · ".join([self.name.replace("_", " "), *shown])
+
+
+def _no_undo(_result: dict) -> None:
+    return None
+
+
+def _changes(args: dict) -> int:
+    """A setting with no arguments only reports it (tier 0); with any, it changes it (tier 1)."""
+    return 1 if any(v is not None for v in args.values()) else 0
+
+
+def _volume_now(_args: dict | None = None) -> tuple[int, bool]:
+    r = checked(controls.volume())
+    return int(r["volume"]), bool(r["muted"])
+
+
+def _volume_said(v: tuple) -> str:
+    return f"{v[0]}%" + (", muted" if v[1] else "")
+
+
+VOLUME_UNDO = restore(_volume_now, lambda a, v: controls.volume(v[0], mute=v[1]), "the volume", _volume_said)
 
 
 URL = re.compile(r"https?://[^\s\"'<>\\]+", re.IGNORECASE)
@@ -118,6 +163,7 @@ class ToolBox:
                 audit = AuditLog(None)
         self.audit = audit
         self.context = context or (lambda: {})  # who asked: source, utterance, turn, owner
+        self.history = ActionHistory()  # this session's actions, for "undo that"
         built = self._build()
         self._builtin = {t.name for t in built}
         if getattr(svc, "skills", None) is not None:
@@ -153,6 +199,8 @@ class ToolBox:
         if refused:
             self.audit.write(**base, outcome="blocked", error=refused)
             return {"ok": False, "error": refused, "blocked": True}
+        after = self._undo_before(tool, args, tier)
+        label = tool.label(args) if after is not None else ""  # worded before it runs: what it's about to do
         t0 = time.perf_counter()
         try:
             result = tool.handler(**args)
@@ -165,7 +213,29 @@ class ToolBox:
         self.audit.write(**base, confirmed_by=confirmed_by or ("auto" if tier else None),
                          outcome="ok" if ok else "failed", error=None if ok else result.get("error"),
                          ms=round((time.perf_counter() - t0) * 1000))
+        if ok and after is not None:
+            self._record(tool, label, tier, after, result)
         return result
+
+    def _undo_before(self, tool: Tool, args: dict, tier: int) -> Callable[[dict], Undo | None] | None:
+        """Undo, part one: read what this action is about to change. None: not an action to list (a read)."""
+        if tier < 1 or tool.undo is False:
+            return None
+        if not callable(tool.undo):
+            return _no_undo
+        try:
+            return tool.undo(args) or _no_undo
+        except Exception:
+            log.debug("reading %s before it ran failed", tool.name, exc_info=True)
+            return _no_undo
+
+    def _record(self, tool: Tool, label: str, tier: int, after: Callable, result: Any) -> None:
+        try:
+            undo = after(result if isinstance(result, dict) else {})
+        except Exception:
+            log.debug("working out how to undo %s failed", tool.name, exc_info=True)
+            undo = None
+        self.history.add(tool.name, label, tier, undo)
 
     # ------------------------------------------------------------------
     def _build(self) -> list[Tool]:
@@ -178,7 +248,12 @@ class ToolBox:
                  obj({"name": {"type": "string"}}, ["name"]), self._close_app, tier=2,
                  confirm_text=lambda a: f"close {a.get('name')}"),
             Tool("focus_window", "Bring an already-open window to the front, matched by app or title text.",
-                 obj({"query": {"type": "string"}}, ["query"]), lambda query: desktop.focus_window(query), tier=1),
+                 obj({"query": {"type": "string"}}, ["query"]), lambda query: desktop.focus_window(query), tier=1,
+                 undo=self._focus_undo),
+            Tool("window_control", "Minimise, maximise or restore an open window, matched by app or title text.",
+                 obj({"query": {"type": "string"}, "action": {"type": "string", "enum": list(desktop.WINDOW_ACTIONS)}},
+                     ["query", "action"]), lambda query, action: desktop.window_action(query, action), tier=1,
+                 undo=self._window_undo),
             Tool("where_am_i", "Report the active window and every open app/window — what the user is looking at.",
                  obj(), lambda: desktop.where_am_i()),
             Tool("open_urls", "Open one or more websites or saved site aliases (e.g. 'gmail', 'youtube') as Chrome tabs.",
@@ -191,24 +266,31 @@ class ToolBox:
             Tool("media_control", "System media keys: play_pause, next, previous, volume_up, volume_down, mute.",
                  obj({"action": {"type": "string", "enum": list(desktop.MEDIA_KEYS)},
                       "times": {"type": "integer", "description": "repeat count, for volume steps (2% each)"}}, ["action"]),
-                 lambda action, times=1: desktop.media_key(action, times), tier=1),
+                 lambda action, times=1: desktop.media_key(action, times), tier=1,
+                 undo=lambda a: VOLUME_UNDO(a) if a.get("action") in ("volume_up", "volume_down", "mute") else None),
             Tool("set_volume", "Master volume: level 0-100 sets it exactly, change moves it (e.g. -10), mute true/false. "
                                "No arguments reports the current level.",
                  obj({"level": {"type": "integer"}, "change": {"type": "integer"}, "mute": {"type": "boolean"}}),
-                 lambda level=None, change=None, mute=None: controls.volume(level, change, mute), tier=1),
+                 lambda level=None, change=None, mute=None: controls.volume(level, change, mute), tier=_changes,
+                 undo=VOLUME_UNDO),
             Tool("app_volume", "One app's volume (0-100) or mute, e.g. quieter Discord or mute Spotify. Only apps "
                                "currently making sound can be changed.",
                  obj({"app": {"type": "string"}, "level": {"type": "integer"}, "mute": {"type": "boolean"}}, ["app"]),
-                 self._app_volume, tier=1),
+                 self._app_volume, tier=1,
+                 undo=restore(self._app_level, lambda a, v: self._app_volume(a["app"], v[0], v[1]),
+                              lambda a: f"{a['app']}'s volume", _volume_said)),
             Tool("set_brightness", "Screen brightness 0-100 (level) or relative (change). No arguments reports it.",
                  obj({"level": {"type": "integer"}, "change": {"type": "integer"}}),
-                 lambda level=None, change=None: controls.brightness(level, change), tier=1),
+                 lambda level=None, change=None: controls.brightness(level, change), tier=_changes,
+                 undo=restore(lambda a: tuple(checked(controls.brightness())["brightness"]),
+                              lambda a, v: controls.brightness(v[0]), "the brightness", lambda v: f"{v[0]}%")),
             Tool("open_settings", f"Open a Windows Settings page: {', '.join(sorted(controls.SETTINGS_PAGES))}.",
                  obj({"page": {"type": "string"}}, ["page"]), lambda page: controls.open_settings(page), tier=1),
             Tool("virtual_desktop", "Switch virtual desktops: action next, previous, go (with number, 1-based) or status.",
                  obj({"action": {"type": "string", "enum": ["next", "previous", "go", "status"]},
                       "number": {"type": "integer"}}, ["action"]),
-                 lambda action, number=None: controls.virtual_desktop(action, number), tier=1),
+                 lambda action, number=None: controls.virtual_desktop(action, number),
+                 tier=lambda a: 0 if a.get("action") == "status" else 1, undo=self._desktop_undo),
             Tool("power", "Lock, sleep, restart or shut down the PC.",
                  obj({"action": {"type": "string", "enum": ["lock", "sleep", "restart", "shutdown"]}}, ["action"]),
                  lambda action: desktop.power_action(action),
@@ -233,12 +315,15 @@ class ToolBox:
             Tool("obs_source", "Show or hide a source in the current OBS scene, e.g. the webcam, chat or alerts. "
                                "visible omitted = toggle.",
                  obj({"source": {"type": "string"}, "visible": {"type": "boolean"}}, ["source"]),
-                 lambda source, visible=None: s.obs.set_source_visible(source, visible), tier=1),
+                 lambda source, visible=None: s.obs.set_source_visible(source, visible), tier=1,
+                 undo=self._source_undo),
             Tool("prestream_check", "Pre-stream checklist: OBS connected, start scene, mic live and unmuted, replay buffer, "
                                     "recording space, PC load, Twitch title. Use before going live.",
                  obj(), self._prestream),
             Tool("obs_switch_scene", "Switch the OBS program scene (fuzzy-matched by name).",
-                 obj({"scene": {"type": "string"}}, ["scene"]), lambda scene: s.obs.switch_scene(scene), tier=1),
+                 obj({"scene": {"type": "string"}}, ["scene"]), lambda scene: s.obs.switch_scene(scene), tier=1,
+                 undo=restore(lambda a: self._obs("GetCurrentProgramScene")["currentProgramSceneName"],
+                              lambda a, v: s.obs.switch_scene(v), "the OBS scene")),
             Tool("obs_control", "Start/stop the stream, recording, replay buffer or virtual cam; save a replay clip.",
                  obj({"action": {"type": "string", "enum": list(s.obs.ACTIONS)}}, ["action"]),
                  lambda action: s.obs.control(action),
@@ -247,7 +332,7 @@ class ToolBox:
                                           "stop_recording": "stop recording"}.get(a.get("action"), a.get("action"))),
             Tool("obs_set_mute", "Mute, unmute or toggle an OBS audio source (e.g. 'mic', 'desktop audio'). muted omitted = toggle.",
                  obj({"source": {"type": "string"}, "muted": {"type": "boolean"}}, ["source"]),
-                 lambda source, muted=None: s.obs.set_mute(source, muted), tier=1),
+                 lambda source, muted=None: s.obs.set_mute(source, muted), tier=1, undo=self._mute_undo),
             Tool("twitch_status", "Twitch channel live status, viewers, title, uptime.", obj(), lambda: s.twitch.status()),
             Tool("twitch_connect", "Log in to Twitch: returns a short code the user enters at twitch.tv/activate. Needed "
                                    "once for clips, markers, title changes, shoutouts, polls, chat and live events.",
@@ -298,9 +383,10 @@ class ToolBox:
                  obj({"title": {"type": "string"}, "profile": {"type": "string"}, "priority": {"type": "integer"},
                       "due": {"type": "string", "description": "YYYY-MM-DD"}}, ["title"]),
                  lambda title, profile="work", priority=2, due=None: {"ok": True, "task": s.storage.add_task(title, profile, priority, due)},
-                 tier=1),
+                 tier=1, undo=lambda a: self._task_undo),
             Tool("complete_task", "Mark a task done by id or by (fuzzy) title.",
-                 obj({"id": {"type": "integer"}, "title": {"type": "string"}}), self._complete_task, tier=1),
+                 obj({"id": {"type": "integer"}, "title": {"type": "string"}}), self._complete_task, tier=1,
+                 undo=lambda a: self._task_undo),
             Tool("connections", "What's connected and what still needs setting up: the AI model in use, OBS, Twitch, "
                                 "calendars, voice, and so on, each with the next step.",
                  obj(), lambda: s.connections() if s.connections else {"findings": [], "brain": None}),
@@ -502,6 +588,109 @@ class ToolBox:
         except Exception:
             names = set()
         return controls.app_volume(app, level, mute, names)
+
+    # ---- undo: how the changes above are put back (brain/undo.py) -----------------------------------------
+    def _app_level(self, args: dict) -> tuple[int, bool]:
+        hit = checked(self._app_volume(args["app"]))["apps"][0]
+        return int(hit["volume"]), bool(hit["muted"])
+
+    def _focus_undo(self, args: dict):
+        prev = desktop.active_window()
+        if prev is None or not prev.handle:
+            return None
+
+        def front() -> tuple[int, str]:
+            w = desktop.active_window()
+            return (w.handle, w.app) if w else (0, "nothing")
+
+        def after(r: dict) -> Undo | None:
+            w = r.get("window") or {}
+            if not w.get("handle") or w["handle"] == prev.handle:
+                return None
+            return Undo(f"{prev.app} back in front", lambda: desktop.focus_handle(prev.handle), now=front,
+                        left=(w["handle"], w.get("app", "")), what="the front window", show=lambda v: v[1])
+        return after
+
+    def _window_undo(self, args: dict):
+        w = desktop.find_window(args.get("query", ""))
+        if w is None or not w.handle:
+            return None
+
+        def read(_a: dict) -> tuple:
+            p = desktop.window_placement(w.handle)
+            if p is None:
+                raise RuntimeError("that window has closed")
+            return p
+
+        def said(p: tuple) -> str:
+            state = desktop.SHOW_STATES.get(p[0], "normal")
+            return f"{state} at {p[1][0]},{p[1][1]}" if state == "normal" else state
+        return restore(read, lambda a, p: desktop.set_window_placement(w.handle, p), w.app, said)(args)
+
+    def _desktop_undo(self, args: dict):
+        exact = restore(lambda a: checked(controls.virtual_desktop("status"))["desktop"],
+                        lambda a, n: controls.virtual_desktop("go", n), "the desktop", lambda n: f"desktop {n}")(args)
+        back = {"next": "previous", "previous": "next"}.get(args.get("action"))
+        if exact is not None or back is None:
+            return exact
+        return lambda r: Undo(f"the {back} desktop", lambda: controls.virtual_desktop(back))  # no pyvda: no checking
+
+    def _obs(self, request: str, data: dict | None = None) -> dict:
+        return self.svc.obs._send(request, data)
+
+    def _source_undo(self, args: dict):
+        try:
+            scene, items = self.svc.obs.scene_items()
+        except Exception:
+            return None
+        before = {i["name"]: i["enabled"] for i in items}
+
+        def after(r: dict) -> Undo | None:
+            name = r.get("source")
+            if name not in before or r.get("scene") != scene:
+                return None
+
+            def now() -> tuple[str, bool | None]:
+                cur, its = self.svc.obs.scene_items()
+                return cur, next((i["enabled"] for i in its if i["name"] == name), None)
+
+            def said(v: tuple) -> str:
+                return ("shown" if v[1] else "hidden") + ("" if v[0] == scene else f" (you're on {v[0]})")
+            return Undo(f"{name} {'shown' if before[name] else 'hidden'} again",
+                        lambda: self.svc.obs.set_source_visible(name, before[name]), now=now,
+                        left=(scene, bool(r.get("visible"))), what=name, show=said)
+        return after
+
+    def _mute_undo(self, args: dict):
+        names = [i["name"] for i in self.svc.obs.audio_inputs()]
+        src = str(args.get("source") or "")
+        match = difflib.get_close_matches(src, names, n=1, cutoff=0.4) or [n for n in names if src.lower() in n.lower()]
+        name = match[0] if match else src  # the input set_mute will pick
+        return restore(lambda a: bool(self._obs("GetInputMute", {"inputName": name}).get("inputMuted")),
+                       lambda a, muted: self.svc.obs.set_mute(name, muted), name,
+                       lambda m: "muted" if m else "unmuted")(args)
+
+    def _task_undo(self, r: dict) -> Undo | None:
+        """add_task -> take it off the list again; complete_task -> open again."""
+        t = r.get("task") or {}
+        if not t.get("id"):
+            return None
+        st = self.svc.storage
+        added = t.get("status") == "open"
+
+        def status() -> str:
+            rows = st.query("SELECT status FROM tasks WHERE id=?", (t["id"],))
+            return rows[0]["status"] if rows else "deleted"
+
+        def put() -> dict:
+            if added:
+                st.execute("DELETE FROM tasks WHERE id=?", (t["id"],))
+            else:
+                st.update_task(t["id"], status="open")
+            self.svc.bus.publish("tasks", st.list_tasks())  # the HUD's list (and a Google Tasks sync) follow
+            return {"ok": True}
+        return Undo(f"“{t['title']}” {'taken off your list' if added else 'open again'}", put, now=status,
+                    left=t.get("status"), what=f"the task “{t['title']}”")
 
     def _system_status(self) -> dict:
         snap = self.svc.system.snapshot()

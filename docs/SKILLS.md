@@ -68,6 +68,9 @@ Rules:
   `untrusted=True, untrusted_label="an email", untrusted_note=...` so any action after reading it needs a yes.
 - **On air**: when `svc.live()`, never put private details in spoken replies (`say` should give the gist and point
   at the HUD).
+- **Undo**: a tool that changes something says how to put it back, next to its own code: `undo=restore(read, put,
+  "the volume")` for a setting that reads back, or `undo=lambda args: after` where `after(result)` returns an `Undo`
+  (`brain/undo.py`). Without `undo` it's listed as one Vesper can't undo, which is right for a sent message.
 - **Never break Vesper**: no network at import or in `__init__`; catch errors in `tick` and show them in `status`.
 - Secrets live in `.env` (read with `self.svc.cfg.secret("NAME")`), never in config.yaml or logs.
 - Skills must work on Windows (the real target) and import fine on Linux CI (guard `ctypes.windll`, `winreg`).
@@ -103,8 +106,9 @@ and wrap loops in `:root[data-motion="full"]` (the Setup → Display setting, wh
 cover the routes (`route(text, RouterContext(skill_route=Skills(svc, ["thing"]).route))`), the tools, `say`, and
 the edge cases. `pytest -q` and `ruff check assistant tests` must pass; `node --check` the JS.
 
-## New in 2.3
+## Skills added in 2.3
 
-| Area | Skills | What they do | Doc |
+| Area | Skills | What they do | Walkthrough |
 |---|---|---|---|
-| Streaming | `stream_captions`, `stream_youtube` | J's words as live captions in OBS (from the listener's `heard` event); YouTube Live chat into the Twitch feed, titles on Twitch and YouTube; the recap next to the last 5 streams (in `stream_copilot`) | docs/VESPER-2.3-streaming.md |
+| PC control | `click`, `undo` | "click Export in Premiere", "turn on the Dark mode toggle in Settings", "what can I click here" (Windows UI Automation, a yes before pressing anything in another app); "undo that" / "undo the last 3" and an Undo button per action, from the history `ToolBox.run` keeps (a tool declares its inverse with `Tool(..., undo=...)`, see `brain/undo.py`) | [VESPER-2.3-pc-control.md](VESPER-2.3-pc-control.md) |
+| Streaming | `stream_captions`, `stream_youtube` | J's words as live captions in OBS (from the listener's `heard` event); YouTube Live chat into the Twitch feed, titles on Twitch and YouTube; the recap next to the last 5 streams (in `stream_copilot`) | [VESPER-2.3-streaming.md](VESPER-2.3-streaming.md) |

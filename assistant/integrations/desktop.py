@@ -75,6 +75,11 @@ if IS_WINDOWS:  # pragma: no cover - exercised by the Windows CI job
     class LASTINPUTINFO(ctypes.Structure):
         _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
 
+    class WINDOWPLACEMENT(ctypes.Structure):
+        _fields_ = [("length", wintypes.UINT), ("flags", wintypes.UINT), ("showCmd", wintypes.UINT),
+                    ("ptMinPosition", wintypes.POINT), ("ptMaxPosition", wintypes.POINT),
+                    ("rcNormalPosition", wintypes.RECT)]
+
     EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
     def _sig(fn, restype, *argtypes):
@@ -88,6 +93,9 @@ if IS_WINDOWS:  # pragma: no cover - exercised by the Windows CI job
     _sig(user32.IsIconic, wintypes.BOOL, wintypes.HWND)
     _sig(user32.ShowWindow, wintypes.BOOL, wintypes.HWND, ctypes.c_int)
     _sig(user32.SetForegroundWindow, wintypes.BOOL, wintypes.HWND)
+    _sig(user32.IsWindow, wintypes.BOOL, wintypes.HWND)
+    _sig(user32.GetWindowPlacement, wintypes.BOOL, wintypes.HWND, ctypes.POINTER(WINDOWPLACEMENT))
+    _sig(user32.SetWindowPlacement, wintypes.BOOL, wintypes.HWND, ctypes.POINTER(WINDOWPLACEMENT))
     _sig(user32.EnumWindows, wintypes.BOOL, EnumWindowsProc, wintypes.LPARAM)
     _sig(user32.GetLastInputInfo, wintypes.BOOL, ctypes.POINTER(LASTINPUTINFO))
     _sig(user32.keybd_event, None, ctypes.c_ubyte, ctypes.c_ubyte, wintypes.DWORD, ctypes.c_size_t)  # BYTE is unsigned
@@ -145,6 +153,28 @@ if IS_WINDOWS:  # pragma: no cover - exercised by the Windows CI job
         user32.keybd_event(0x12, 0, 0, 0)
         user32.keybd_event(0x12, 0, 2, 0)
         return bool(user32.SetForegroundWindow(handle))
+
+    def _show(handle: int, cmd: int) -> bool:
+        if not user32.IsWindow(handle):
+            return False
+        user32.ShowWindow(handle, cmd)  # returns whether it was visible before, not whether it worked
+        return True
+
+    def _placement(handle: int) -> tuple | None:
+        """(showCmd, normal rect, min point, max point, flags): all SetWindowPlacement needs to put it back."""
+        wp = WINDOWPLACEMENT()
+        wp.length = ctypes.sizeof(wp)
+        if not user32.IsWindow(handle) or not user32.GetWindowPlacement(handle, ctypes.byref(wp)):
+            return None
+        r = wp.rcNormalPosition
+        return (int(wp.showCmd), (r.left, r.top, r.right, r.bottom), (wp.ptMinPosition.x, wp.ptMinPosition.y),
+                (wp.ptMaxPosition.x, wp.ptMaxPosition.y), int(wp.flags))
+
+    def _set_placement(handle: int, p: tuple) -> bool:
+        show, rect, lo, hi, flags = p
+        wp = WINDOWPLACEMENT(ctypes.sizeof(WINDOWPLACEMENT), flags, show, wintypes.POINT(*lo), wintypes.POINT(*hi),
+                             wintypes.RECT(*rect))
+        return bool(user32.IsWindow(handle) and user32.SetWindowPlacement(handle, ctypes.byref(wp)))
 
     def _idle_seconds() -> float:
         info = LASTINPUTINFO()
@@ -206,6 +236,15 @@ else:
             return subprocess.call(["wmctrl", "-ia", hex(handle)]) == 0
         return False
 
+    def _show(handle: int, cmd: int) -> bool:
+        raise NotImplementedError("Minimising and maximising windows is only wired up on Windows.")
+
+    def _placement(handle: int) -> tuple | None:
+        return None
+
+    def _set_placement(handle: int, p: tuple) -> bool:
+        raise NotImplementedError("Moving windows back is only wired up on Windows.")
+
     def _idle_seconds() -> float:
         if shutil.which("xprintidle"):
             out = _run_quiet(["xprintidle"])
@@ -260,20 +299,70 @@ def where_am_i() -> dict:
     }
 
 
-def focus_window(query: str) -> dict:
+def find_window(query: str, windows: list[WindowInfo] | None = None) -> WindowInfo | None:
+    """The open window that best matches a spoken app or title ("discord", "premiere"); the front-most on a tie."""
     q = query.lower().strip()
-    windows = list_windows()
     scored = []
-    for w in windows:
+    for w in windows if windows is not None else list_windows():
         hay = f"{w.app} {w.title}".lower()
         score = 1.0 if q in hay else difflib.SequenceMatcher(None, q, hay).ratio()
         scored.append((score, w))
-    scored.sort(key=lambda s: s[0], reverse=True)
-    if not scored or scored[0][0] < 0.45:
+    scored.sort(key=lambda s: s[0], reverse=True)  # a stable sort: EnumWindows lists the front-most first
+    return scored[0][1] if scored and scored[0][0] >= 0.45 else None
+
+
+def focus_window(query: str) -> dict:
+    target = find_window(query)
+    if target is None:
         return {"ok": False, "error": f"No open window matches '{query}'."}
-    target = scored[0][1]
     ok = _focus(target.handle) if target.handle else False
     return {"ok": ok, "window": target.as_dict()}
+
+
+def focus_handle(handle: int) -> dict:
+    """Bring one exact window back to the front (undoing a focus_window)."""
+    try:
+        ok = bool(handle) and _focus(handle)
+    except Exception as exc:
+        return {"ok": False, "error": f"Couldn't bring that window back: {exc}"}
+    return {"ok": ok, **({} if ok else {"error": "Windows wouldn't bring that window back to the front."})}
+
+
+WINDOW_ACTIONS = {"minimize": 6, "maximize": 3, "restore": 9}  # ShowWindow: SW_MINIMIZE, SW_MAXIMIZE, SW_RESTORE
+SHOW_STATES = {1: "normal", 2: "minimised", 3: "maximised"}  # WINDOWPLACEMENT.showCmd
+
+
+def window_action(query: str, action: str) -> dict:
+    """Minimise, maximise or restore an open window."""
+    cmd = WINDOW_ACTIONS.get(action)
+    if cmd is None:
+        return {"ok": False, "error": f"I can {', '.join(WINDOW_ACTIONS)} a window, not {action}."}
+    target = find_window(query)
+    if target is None:
+        return {"ok": False, "error": f"No open window matches '{query}'."}
+    try:
+        ok = _show(target.handle, cmd)
+    except NotImplementedError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": ok, "window": target.as_dict(), "action": action,
+            **({} if ok else {"error": f"{target.app} closed before I could {action} it."})}
+
+
+def window_placement(handle: int) -> tuple | None:
+    """Where a window is and whether it's minimised or maximised (None: gone, or not Windows)."""
+    try:
+        return _placement(handle)
+    except Exception:
+        log.debug("window_placement failed", exc_info=True)
+        return None
+
+
+def set_window_placement(handle: int, placement: tuple) -> dict:
+    try:
+        ok = _set_placement(handle, placement)
+    except NotImplementedError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": ok, **({} if ok else {"error": "That window has closed."})}
 
 
 MEDIA_KEYS = {

@@ -21,3 +21,4 @@ pycaw>=20240316; sys_platform == "win32"
 screen-brightness-control>=0.24; sys_platform == "win32"
 pyvda>=0.5; sys_platform == "win32"
 win11toast>=0.35; sys_platform == "win32"
+comtypes>=1.2,<2; sys_platform == "win32"  # UI Automation: "click Export in Premiere" (pycaw already brings it)

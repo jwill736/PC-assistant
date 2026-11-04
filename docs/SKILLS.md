@@ -102,3 +102,9 @@ and wrap loops in `:root[data-motion="full"]` (the Setup → Display setting, wh
 `tests/test_skill_<name>.py`: use the `svc`/`cfg` fixtures from `tests/conftest.py`, fake every network call, and
 cover the routes (`route(text, RouterContext(skill_route=Skills(svc, ["thing"]).route))`), the tools, `say`, and
 the edge cases. `pytest -q` and `ruff check assistant tests` must pass; `node --check` the JS.
+
+## Skills added in 2.3
+
+| Skill | Area | What it does | Doc |
+|---|---|---|---|
+| `hearing` | Voice | The voice test (your commands and background replayed through the capture chain; suggested settings, Apply), words learned from "you misheard X as Y" and retyping, the end-of-turn switch | docs/VESPER-2.3-voice.md |

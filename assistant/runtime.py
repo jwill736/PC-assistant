@@ -27,6 +27,7 @@ from .integrations.jobs import JobRunner
 from .services import Services, build_services
 from .voice.hotkey import register_hotkey
 from .voice import calibrate as calib
+from .voice import vocab
 from .voice import neural
 from .voice.confirm_window import ConfirmWindow, answer
 from .voice.latency import Prewarm, TurnLatency
@@ -135,8 +136,12 @@ class Runtime:
         self.voice_taps.append(self.confirm_window.tap)
 
     def _hint_words(self) -> list[str]:
-        """Vocabulary that biases speech recognition toward your scene/app names."""
-        words = list(self.svc.obs.scenes)
+        """Vocabulary that biases speech recognition toward your words and names (the first 60 count): fixes you
+        taught it, the game and category, scenes, chatters and people you email (voice/vocab.py), apps and sites."""
+        if getattr(self, "_name_hints", None) is None:
+            self._name_hints = vocab.NameHints(vocab.runtime_sources(self.svc, self.twitch_feed))
+        words = vocab.learned_words(self.cfg) + vocab.playing(self.svc, self.bus, self._low_power() == "game")
+        words += list(self.svc.obs.scenes) + self._name_hints()
         words += list(self.cfg["apps"].keys()) + list(self.cfg["sites"].keys())
         return words
 
@@ -872,7 +877,8 @@ class Runtime:
             "wake_words": self.cfg["assistant"]["wake_words"],
             "min_rms": self.cfg["voice"].get("min_rms"),
             "pipeline": ({k: v for k, v in self.listener.status().items()
-                          if k in ("engine", "vad", "latency_ms", "wake_mode", "wake", "triggers")}
+                          if k in ("engine", "vad", "latency_ms", "wake_mode", "wake", "triggers", "end_of_turn",
+                                   "turn_error", "hotwords")}
                          if self.listener else None),
             "wake_models": self.wake_models(),
             "calibrating": self.calibrator is not None,

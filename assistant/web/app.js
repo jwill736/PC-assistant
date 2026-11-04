@@ -856,6 +856,7 @@ render.voice = function voice() {
       onclick: () => post('/api/voice/speaker_check', { mode: m }).then(() => refreshVoice()),
     }, m)));
     const last = v.last_calibration;
+    const silero = (v.pipeline?.vad || '').startsWith('silero');
     fill(b,
       prof.enrolled
         ? h('div', {}, status('good', 'Voice enrolled'), h('span', { class: 'muted' }, ` · ${prof.clips} samples · ${ago(prof.created)}`),
@@ -866,10 +867,14 @@ render.voice = function voice() {
         h('span', { class: 'k' }, 'Only answer me'), h('span', {}, modes),
         h('span', { class: 'k' }, 'Match threshold'), h('span', {}, prof.threshold != null ? `${prof.threshold}${prof.enrolled_threshold != null && prof.enrolled_threshold !== prof.threshold ? ` (calibrated ${prof.enrolled_threshold})` : ''}${prof.last_score != null ? ` · last voice ${prof.last_score}` : ''}` : '—'),
         h('span', { class: 'k' }, 'Speech engine'), h('span', {}, v.pipeline?.engine
-          ? `${v.pipeline.engine} · ${v.pipeline.vad === 'silero' ? 'Silero' : 'energy'} voice detection${v.pipeline.latency_ms != null ? ` · ${v.pipeline.latency_ms} ms median` : ''}`
+          ? `${v.pipeline.engine} · ${silero ? 'Silero' : 'energy'} voice detection${v.pipeline.latency_ms != null ? ` · ${v.pipeline.latency_ms} ms median` : ''}`
           : 'loads with the listener'),
-        v.pipeline?.vad === 'silero' ? null : h('span', { class: 'k' }, 'Speech threshold'),
-        v.pipeline?.vad === 'silero' ? null : h('span', {}, `min_rms ${v.min_rms}`)),
+        silero ? null : h('span', { class: 'k' }, 'Speech threshold'),
+        silero ? null : h('span', {}, `min_rms ${v.min_rms}`),
+        v.pipeline ? h('span', { class: 'k' }, 'End of a sentence') : null,  // voice/turn.py; names: voice/stt.py hotwords
+        v.pipeline ? h('span', { title: v.pipeline.turn_error || '' }, (v.pipeline.vad || '').endsWith('+turn') ? 'natural (Smart Turn)'
+          : v.pipeline.end_of_turn === 'smart' ? `silence (Smart Turn unavailable${v.pipeline.turn_error ? `: ${v.pipeline.turn_error}` : ''})` : 'after a silence',
+          v.pipeline.hotwords ? ` · names ${v.pipeline.hotwords.on ? `expected (${v.pipeline.hotwords.words})` : 'not expected'}` : '') : null),
       last && last.step === 'done' && last.summary ? h('div', { class: 't2', style: { marginBottom: '8px' } },
         `Last run heard the name as: ${(last.summary.wake_heard || []).join(' · ') || '—'}`) : null,
       last && last.step === 'error' ? h('div', { class: 'empty' }, status('critical', `Calibration failed: ${last.error}`)) : null,

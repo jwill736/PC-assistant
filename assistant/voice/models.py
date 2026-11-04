@@ -2,7 +2,8 @@
 
 Everything here runs on sherpa-onnx (onnxruntime inside, no PyTorch), which the
 voice profile already depends on: Silero VAD for "is someone talking",
-Parakeet/Moonshine for speech-to-text, Supertonic/Kokoro for speaking.
+Parakeet/Moonshine for speech-to-text, Supertonic/Kokoro for speaking. Smart Turn
+(natural end of turn, voice/turn.py) comes from Hugging Face, pinned to one commit and checked by its hash.
 Downloads are streamed to a ``.part`` file and only renamed into place once
 complete, so a dropped connection never leaves a half-model that fails to load
 forever.
@@ -32,6 +33,7 @@ class ModelFile:
     url: str
     size_mb: int       # download size, for the progress message
     archive: bool = True
+    sha256: str = ""   # checked after download when set (a file not from the sherpa-onnx releases)
 
 
 MODELS = {
@@ -46,6 +48,11 @@ MODELS = {
     "supertonic": ModelFile("sherpa-onnx-supertonic-tts-int8-2026-03-06",
                             f"{RELEASES}/tts-models/sherpa-onnx-supertonic-tts-int8-2026-03-06.tar.bz2", 85),
     "kokoro": ModelFile("kokoro-en-v0_19", f"{RELEASES}/tts-models/kokoro-en-v0_19.tar.bz2", 320),
+    # end of turn (voice/turn.py): pipecat-ai/smart-turn v3.2, CPU int8, BSD-2-Clause; 8,679,182 bytes
+    "smart-turn": ModelFile("smart-turn-v3.2-cpu.onnx",
+                            "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/"
+                            "smart-turn-v3.2-cpu.onnx", 9, archive=False,
+                            sha256="2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"),
 }
 
 
@@ -94,6 +101,9 @@ def _download(key: str, models_dir: Path, on_progress: Callable[[float], None] |
                 got += len(chunk)
                 if on_progress:
                     on_progress(min(got / total, 1.0))
+    if spec.sha256 and _sha256(part) != spec.sha256:
+        part.unlink(missing_ok=True)
+        raise RuntimeError(f"{spec.name}: the download doesn't match its published hash; try again later")
     if not spec.archive:
         part.replace(target)
         return target
@@ -111,6 +121,16 @@ def _download(key: str, models_dir: Path, on_progress: Callable[[float], None] |
         part.unlink(missing_ok=True)
     (target / COMPLETE).write_text("ok")
     return target
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:

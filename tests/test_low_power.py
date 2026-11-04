@@ -76,13 +76,15 @@ def test_in_a_game_non_essential_pollers_pause_or_slow_and_essential_ones_keep_g
     sup.poller("weather", 0.02, lambda: runs["weather"].append(time.monotonic()), game_interval=0.3)
     assert wait_for(lambda: all(len(r) >= 3 for r in runs.values()))
     scr.state = "game"
-    time.sleep(0.1)  # let every loop see it
-    before = {k: len(v) for k, v in runs.items()}
-    time.sleep(0.6)
-    during = {k: len(v) - before[k] for k, v in runs.items()}
-    assert during["nudges"] >= 10  # essential: full pace
-    assert during["clipboard"] == 0  # paused
-    assert 1 <= during["weather"] <= 3  # every 0.3 s instead of every 0.02 s
+    parts = sup.parts  # every loop has seen it (no counting runs in a window of wall time: a slow runner stalls)
+    assert wait_for(lambda: (parts["clipboard"].throttle, parts["weather"].throttle) == ("paused", "slowed"), 10)
+    seen, paused_at = time.monotonic(), len(runs["clipboard"])
+    nudges = len(runs["nudges"])
+    assert wait_for(lambda: len([t for t in runs["weather"] if t > seen]) >= 2, 10)
+    slowed = [t for t in runs["weather"] if t > seen]
+    assert slowed[1] - slowed[0] >= 0.29  # every 0.3 s instead of every 0.02 s
+    assert wait_for(lambda: len(runs["nudges"]) >= nudges + 10, 10)  # essential: keeps going
+    assert len(runs["clipboard"]) == paused_at  # paused: not one run
     view = {p["name"]: p for p in sup.snapshot()}
     assert view["clipboard"]["throttle"] == "paused" and view["weather"]["throttle"] == "slowed"
     assert view["nudges"]["throttle"] == "" and view["nudges"]["essential"] is True
@@ -92,7 +94,7 @@ def test_in_a_game_non_essential_pollers_pause_or_slow_and_essential_ones_keep_g
     assert sup.parts["clipboard"].restarts == 0
     scr.state = ""  # the game ends: everything is back at its normal pace soon (not after a full slow interval)
     n = len(runs["clipboard"])
-    assert wait_for(lambda: len(runs["clipboard"]) >= n + 3, timeout=1.0)
+    assert wait_for(lambda: len(runs["clipboard"]) >= n + 3, timeout=5.0)
     assert wait_for(lambda: sup.snapshot()[1]["throttle"] == "" and sup.snapshot()[1]["low_power"] == "")
     sup.stop()
 

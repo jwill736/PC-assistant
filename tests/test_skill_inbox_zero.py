@@ -20,6 +20,7 @@ from assistant.skills import Skills
 from assistant.skills.inbox_zero import InboxZero, due_date, find_promises
 
 ME = {WORK: "Jon Williams <jon@talent-sdk.com>", HOME: "J <jwill736@gmail.com>"}
+NOW = time.time  # what the fake mailbox's ages count from (test_skill_meetings pins it to a fixed noon)
 
 
 def b64(text: str) -> str:
@@ -27,7 +28,7 @@ def b64(text: str) -> str:
 
 
 def mail(mid, thread, frm, to, subject, body="", age_h=1.0, labels=("INBOX",), important=False, unsubscribe=False):
-    ts = time.time() - age_h * 3600
+    ts = NOW() - age_h * 3600
     headers = [{"name": "From", "value": frm}, {"name": "To", "value": to}, {"name": "Subject", "value": subject},
                {"name": "Date", "value": time.strftime("%a, %d %b %Y %H:%M:%S +0000", time.gmtime(ts))}]
     if unsubscribe:
@@ -44,7 +45,7 @@ def sent(mid, thread, account, to, subject, body="", age_h=1.0):
 def matches(m: dict, q: str) -> bool:
     h = {x["name"].lower(): x["value"].lower() for x in m["payload"]["headers"]}
     labels = set(m["labelIds"])
-    age_d = (time.time() - int(m["internalDate"]) / 1000) / 86400
+    age_d = (NOW() - int(m["internalDate"]) / 1000) / 86400
     either = re.search(r"from:(\S+) OR to:(\S+)", q)
     if either:
         if either.group(1).lower() not in h["from"] + " " + h.get("to", ""):
@@ -201,7 +202,9 @@ def test_add_as_task_and_dismiss(iz, svc):
 
 
 def test_nudges_urgent_once_and_the_daily_count(iz, svc):
-    now = datetime.now(svc.tz)
+    t = time.time()
+    iz.clock = lambda: t  # one instant for both: the hour can't roll over between these lines
+    now = datetime.fromtimestamp(t, svc.tz)
     iz.cfg["daily_at"] = f"{now.hour:02d}:00"
     iz.refresh()
     texts = [(t, kw["priority"]) for t, kw in iz.nudged]

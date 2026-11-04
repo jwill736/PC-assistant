@@ -13,6 +13,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from test_skill_phone import ME, STRANGER, TOKEN, pair, tg  # noqa: F401  (fixture: a fake Telegram)
 
+from assistant import library as library_mod
 from assistant import privacy
 from assistant.brain.assistant import Assistant
 from assistant.firstrun import set_env_value
@@ -22,6 +23,11 @@ from assistant.skills import _kit
 from assistant.skills import clipboard as clip_mod
 from assistant.skills import mcp as mcp_mod
 from assistant.skills import screen as screen_mod
+
+try:
+    import httpx2  # the anthropic SDK's own copy of httpx (the Claude API check in the diagnostics report)
+except ImportError:
+    httpx2 = None
 
 # ---- the HUD's API: token, Host and Origin ---------------------------------------------------------------------
 
@@ -194,8 +200,14 @@ def secret_world(svc, cfg, monkeypatch, tmp_path):
         raise httpx.ConnectError(f"can't reach {request.url} (headers {dict(request.headers)})", request=request)
 
     monkeypatch.setattr(httpx.Client, "send", no_network)
+    if httpx2 is not None:
+        monkeypatch.setattr(httpx2.Client, "send", no_network)
     monkeypatch.setattr(webbrowser, "open", lambda *a, **k: True)
+    monkeypatch.setattr(library_mod, "open_path", lambda doc: {"ok": True, "opened": doc.get("title")})
     sk = svc.skills
+    # nothing opens on the PC: diagnostics' "open" would start Notepad on Windows, the recorder's Explorer
+    sk["diagnostics"].opener = lambda *a, **k: None
+    sk["recorder"].opener = lambda path: None
     sk["spotify"].tokens = dict(SPOTIFY_TOKENS)
     sk["spotify"].opener = lambda url: None
     sk["spotify"]._save = lambda: None
@@ -259,6 +271,18 @@ def test_no_skill_action_or_panel_hands_out_a_secret(secret_world, cfg):
     assert not _leaks([e.get("data") for e in svc.bus_seen])  # nor anything sent to the HUD while they ran
     rt = Runtime(cfg, services=svc)
     assert not _leaks(rt.state())
+
+
+def test_running_every_action_opens_nothing_on_the_pc_even_on_windows(secret_world, blocked_calls, monkeypatch):
+    """Diagnostics' "open" started the real Notepad on the Windows CI runner: the fixture faked only the browser."""
+    from assistant.skills import diagnostics as diag_skill
+
+    monkeypatch.setattr(diag_skill, "IS_WINDOWS", True)
+    sk = secret_world.skills
+    assert sk.action("diagnostics", "run", {})["ok"]
+    sk.action("diagnostics", "open", {})
+    sk.action("diagnostics", "open", {"what": "folder"})
+    assert blocked_calls == []
 
 
 # ---- the phone bridge ---------------------------------------------------------------------------------------------

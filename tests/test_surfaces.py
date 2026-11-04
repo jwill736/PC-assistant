@@ -555,6 +555,7 @@ GOLDEN = [
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="needs node")
+@pytest.mark.real_subprocess  # node runs the HUD's QR encoder
 def test_qr_encoder_matches_the_reference():
     script = ("const Q = require(process.argv[1]);"
               "console.log(JSON.stringify(Q.matrix('http://192.168.1.23:8766/', { ecl: 'M', mask: 2 }).map(r => r.map(b => b ? '#' : '.').join(''))));"

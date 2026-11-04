@@ -1,10 +1,11 @@
 """Meeting prep: a card per meeting with other people (attendees, last emails, docs, notes, tasks, link), a nudge
 10–15 minutes before, a follow-up question after, and nothing private on air."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+import test_skill_inbox_zero
 from test_skill_inbox_zero import fake, gmail  # noqa: F401  (fixtures: Gmail for work and personal, faked)
 
 from assistant.brain.router import RouterContext, route
@@ -19,22 +20,31 @@ SAM = {"email": "sam@talent-sdk.com", "name": "", "response": "needsAction"}
 
 
 def event(title, start, minutes=30, attendees=(), **kw):
-    end = start + timedelta(minutes=minutes)
+    end = datetime.fromtimestamp(start.timestamp() + minutes * 60, start.tzinfo)  # not wall-clock: DST days too
     return {"calendar": "Work", "profile": "work", "color": "#6f9bff", "title": title, "start": start.isoformat(),
             "end": end.isoformat(), "all_day": False, "location": kw.get("location", ""),
             "description": kw.get("description", ""), "attendees": list(attendees), "link": kw.get("link", ""),
             "account": "jon@talent-sdk.com"}
 
 
+@pytest.fixture(autouse=True)
+def noon(svc, monkeypatch) -> float:
+    """Today at noon, J's time: the calendar, the mailbox and the skills all count from it, so "today" never turns
+    into "yesterday" for a test run just after midnight."""
+    t = datetime.now(svc.tz).replace(hour=12, minute=0, second=0, microsecond=0).timestamp()
+    monkeypatch.setattr(test_skill_inbox_zero, "NOW", lambda: t)
+    return t
+
+
 @pytest.fixture
 def cal(svc):
-    now = datetime.now(svc.tz)
+    def at(minutes):  # from the mailbox's clock (here: noon), counted on the timestamp: right across a DST change too
+        return datetime.fromtimestamp(test_skill_inbox_zero.NOW() + minutes * 60, svc.tz)
     events = [
-        event("Retro", now - timedelta(minutes=40), 30, [ME, SAM]),  # ended 10 minutes ago
-        event("Focus block", now + timedelta(minutes=5), 60),  # no one else: not a meeting to prep
-        event("Contract review", now + timedelta(minutes=12), 30, [ME, DANA, SAM],
-              description="Join: https://meet.google.com/abc-defg-hij"),
-        event("Budget sync w/ Priya", now + timedelta(hours=5), 30, [ME, {"email": "priya@vendor.io", "name": "Priya N"}]),
+        event("Retro", at(-40), 30, [ME, SAM]),  # ended 10 minutes ago
+        event("Focus block", at(5), 60),  # no one else: not a meeting to prep
+        event("Contract review", at(12), 30, [ME, DANA, SAM], description="Join: https://meet.google.com/abc-defg-hij"),
+        event("Budget sync w/ Priya", at(5 * 60), 30, [ME, {"email": "priya@vendor.io", "name": "Priya N"}]),
     ]
     svc.calendars.events = lambda start, end, profile=None: [
         e for e in events if datetime.fromisoformat(e["end"]) > start and datetime.fromisoformat(e["start"]) < end]
@@ -43,7 +53,7 @@ def cal(svc):
 
 
 @pytest.fixture
-def mt(svc, gmail, cal):  # noqa: F811
+def mt(svc, gmail, cal, noon):  # noqa: F811
     svc.gmail = gmail
     svc.library = SimpleNamespace(search=lambda q, limit=5: [
         {"title": "Contract v3", "file": "contract-v3.docx", "path": "C:/Docs/contract-v3.docx", "folder": "Legal"}]
@@ -52,13 +62,13 @@ def mt(svc, gmail, cal):  # noqa: F811
     svc.storage.add_task("Send Dana the redlines")
     svc.storage.add_task("Water the plants")
     svc.skills = Skills(svc, [])
-    people = People(svc)
+    people = People(svc, clock=lambda: noon)
     svc.skills.all["people"] = people
     people.build()
     people.remember_about("dana", "ask about her daughter's college next time")
     nudged = []
     svc.nudge = lambda text, **kw: nudged.append((text, kw))
-    m = Meetings(svc)
+    m = Meetings(svc, clock=lambda: noon)
     svc.skills.all["meetings"] = m
     m.nudged = nudged
     return m
@@ -123,17 +133,15 @@ def test_routes(svc, said, tool, args):
     assert Skills(svc, ["meetings"]).route("prep me for the stream") is None
 
 
-def test_briefing_and_no_google(svc, cal):
-    m = Meetings(svc)  # no Google account: still lists meetings, prep has no emails and says why
-    now = datetime.now(svc.tz)
-    if (now + timedelta(minutes=12)).date() == now.date():  # not just before midnight
-        first = m.briefing()["meetings"][0]
-        assert (first["title"], first["with"]) == ("Contract review", ["Dana Ortiz", "Sam"])
+def test_briefing_and_no_google(svc, cal, noon):
+    m = Meetings(svc, clock=lambda: noon)  # no Google account: still lists meetings, prep has no emails and says why
+    first = m.briefing()["meetings"][0]
+    assert (first["title"], first["with"]) == ("Contract review", ["Dana Ortiz", "Sam"])
     card = m.meeting_prep()
     assert card["ok"] and card["attendees"][0]["emails"] == [] and "No Google account" in card["gmail_error"]
     svc.calendars.events = lambda start, end, profile=None: []
     svc.calendars.status = lambda: []
-    m2 = Meetings(svc)
+    m2 = Meetings(svc, clock=lambda: noon)
     out = m2.meeting_prep()
     assert out["ok"] is False and "Google calendars" in out["error"]
     m2.tick()
@@ -142,7 +150,7 @@ def test_briefing_and_no_google(svc, cal):
     def boom(*a, **k):
         raise RuntimeError("calendar down")
     svc.calendars.events = boom
-    m3 = Meetings(svc)
+    m3 = Meetings(svc, clock=lambda: noon)
     m3.tick()  # never raises
     assert "calendar" in m3.status()["warning"].lower()
 

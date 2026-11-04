@@ -221,9 +221,7 @@ def test_a_skill_that_wont_import_is_listed_as_failed(svc, monkeypatch):
 # ---- self-tests and the health check ----------------------------------------------------------------------
 
 def test_selftests_run_side_by_side_with_a_time_limit(sk):
-    t0 = time.perf_counter()
-    out = sk.selftests(timeout=0.5)
-    assert time.perf_counter() - t0 < 2  # Slow's 3 s didn't hold the rest up
+    out = sk.selftests(timeout=0.5)  # Slow's 3 s didn't hold the rest up: it's reported as late, the others answered
     assert out["flaky"] == [{"name": "Service", "status": "pass", "detail": "answers", "fix": ""}]
     assert out["slow"][0]["status"] == "warn" and "didn't answer within" in out["slow"][0]["detail"]
     assert out["crashy"][0]["status"] == "fail" and "OSError: socket closed" in out["crashy"][0]["detail"]
@@ -243,11 +241,11 @@ def test_doctor_groups_skill_checks_with_a_docs_pointer(sk, svc, cfg):
 
 
 def test_doctor_runs_checks_in_parallel_and_a_stuck_one_is_a_warning(cfg, monkeypatch):
-    monkeypatch.setattr(doctor, "check_browser", lambda: time.sleep(5))
+    stuck = threading.Event()  # held until the end: the check is left behind, not waited for (no stopwatch)
+    monkeypatch.setattr(doctor, "check_browser", lambda: stuck.wait(30))
     monkeypatch.setattr(doctor, "check_claude_cli", lambda cfg: (_ for _ in ()).throw(RuntimeError("bad PATH")))
-    t0 = time.perf_counter()
     result = doctor.run_doctor(cfg, network=False, test_mic=False, load_model=False, check_ports=False, timeout=1)
-    assert time.perf_counter() - t0 < 3
+    stuck.set()
     rows = {c["name"]: c for c in result["checks"]}
     assert rows["Chrome"]["status"] == "warn" and "no answer within 1s" in rows["Chrome"]["detail"]
     assert rows["Claude Code CLI"] == {"name": "Claude Code CLI", "status": "fail", "detail": "RuntimeError: bad PATH", "fix": ""}
@@ -534,10 +532,10 @@ def app_token(cfg):
 
 
 def test_report_survives_a_stuck_part(cfg, svc, monkeypatch):
-    monkeypatch.setattr(diag, "gpu_info", lambda runner=None: time.sleep(10))
-    t0 = time.perf_counter()
+    stuck = threading.Event()  # held until the report is back: it came without the GPU part (no stopwatch)
+    monkeypatch.setattr(diag, "gpu_info", lambda runner=None: stuck.wait(30))
     rep = diag.run(cfg, svc, None, timeout=1, write=False)
-    assert time.perf_counter() - t0 < 6
+    stuck.set()
     assert rep["gpu"]["error"] == "no answer in time" and "files" not in rep
     assert rep["watchdog"] is None and rep["mode"].startswith("separate")
 

@@ -68,6 +68,7 @@ def _wait_for(check, timeout=10):
     return False
 
 
+@pytest.mark.real_subprocess  # stand-in copies of Vesper: python children it ends
 def test_finds_the_copies_started_from_this_folder_only(folder, spawn):
     root, other = folder("Vesper"), folder("Elsewhere")
     mine = spawn(root)
@@ -78,6 +79,7 @@ def test_finds_the_copies_started_from_this_folder_only(folder, spawn):
     assert {p.pid for p in vesper_processes(root)} <= own
 
 
+@pytest.mark.real_subprocess
 def test_ends_a_copy_that_hung_on_without_its_hud(folder, spawn, monkeypatch):
     root = folder("Vesper")
     stuck = spawn(root)
@@ -101,6 +103,7 @@ def _serving(monkeypatch, pid_of):
     monkeypatch.setattr(httpx, "post", post)
 
 
+@pytest.mark.real_subprocess
 def test_waits_for_the_running_copy_to_finish_closing_itself(folder, spawn, monkeypatch):
     root = folder("Vesper")
     launcher = spawn(root, "launch", "1.5")  # closes cleanly 1.5 s in
@@ -117,6 +120,7 @@ def test_waits_for_the_running_copy_to_finish_closing_itself(folder, spawn, monk
     assert vesper_processes(root) == []
 
 
+@pytest.mark.real_subprocess
 def test_ends_the_running_copy_when_it_does_not_close(folder, spawn, monkeypatch):
     root = folder("Vesper")
     hung = spawn(root)
@@ -158,9 +162,16 @@ def test_opens_a_window_when_none_was_open(monkeypatch):
 def test_a_plain_start_opens_the_window_as_soon_as_the_server_is_up(monkeypatch):
     opened = []
     monkeypatch.setattr(main_mod, "open_hud", opened.append)
-    started = time.monotonic()
+    slept = []
+
+    class Clock:  # its time module with the sleeps counted: "at once" is no sleep at all, not a stopwatch
+        sleep = staticmethod(slept.append)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+    monkeypatch.setattr(main_mod, "time", Clock())
     assert open_hud_unless_one_reconnects(EventBus(), "http://x/", wait=0) is True
-    assert opened == ["http://x/"] and time.monotonic() - started < 0.5
+    assert opened == ["http://x/"] and slept == []
 
 
 def test_the_hud_learns_vesper_was_updated(cfg, svc):

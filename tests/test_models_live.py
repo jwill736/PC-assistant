@@ -13,7 +13,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.skipif(os.environ.get("ASSISTANT_MODEL_TESTS") != "1", reason="set ASSISTANT_MODEL_TESTS=1")
+pytestmark = [pytest.mark.skipif(os.environ.get("ASSISTANT_MODEL_TESTS") != "1", reason="set ASSISTANT_MODEL_TESTS=1"),
+              pytest.mark.real_network]  # downloads the models on first run
 
 
 @pytest.fixture(scope="module")

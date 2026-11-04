@@ -30,7 +30,7 @@ from ..voice.confirm_window import question
 from . import briefing, conversation as convo_mod, local_llm, macros as macro_mod, model_bench
 from .router import Intent, RouterContext, clean, route
 from .speech import clock, summarize
-from .tools import ToolBox, compact
+from .tools import ToolBox, compact, urls
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +108,7 @@ class Assistant:
         self._tainted = False  # this command has read text other people wrote (see Tool.untrusted)
         self._untrusted_ids: dict[str, str] = {}  # tool results to scrub from history once the command ends
         self._tainted_by = "chat"
+        self._known_urls: set[str] = set()  # links from J's own words or a search this command (see Tool.network)
         self.tools = toolbox or ToolBox(svc, context=lambda: self._ctx)
         svc.think = self.think  # skills ask the model through this
         svc.off_record = self.set_off_record
@@ -126,6 +127,9 @@ class Assistant:
         self.user_turns = 0
         self.last_turn = 0.0
         self.pending: dict | None = None
+        self._queued: list[dict] = []  # questions waiting their turn: a new one never replaces the one J is answering
+        self.replaced: str | None = None  # the question J's newest request just replaced (said in the reply)
+        self._plock = threading.RLock()  # pending and _queued (an offer comes in on the EventSub thread)
         self.active_profile: str | None = None
         self.last_briefing: dict | None = None
         self._lock = threading.RLock()
@@ -309,7 +313,10 @@ class Assistant:
             return {"reply": "", "kind": "empty"}
         with self._lock:
             self._ctx = {"source": source, "utterance": text[:200], "turn": turn, "owner": owner}
-            self._tainted = False
+            # the morning briefing (invite titles, email senders) stays in Claude's history for follow-ups
+            self._tainted = any(isinstance(m.get("content"), str) and m["content"] in BRIEFING_MARKS for m in self.history)
+            self._tainted_by = "your briefing" if self._tainted else "chat"
+            self._known_urls = urls(text)
             self.tools.guard.new_command()
             convo = self.convo
             in_convo = convo.is_active()
@@ -394,7 +401,8 @@ class Assistant:
             had = self.pending is not None
             self.pending = None
             self.svc.bus.publish("pending", None)
-            return {"reply": "Cancelled." if had else "Okay.", "kind": "cancel"}
+            nxt = self._next_question()
+            return {"reply": ("Cancelled." if had else "Okay.") + (f" {nxt}" if nxt else ""), "kind": "cancel"}
         if kind == "kill":
             self.stop_everything("voice")
             return {"reply": "Stopped. PC control is paused until you say resume control.", "kind": "kill"}
@@ -467,8 +475,10 @@ class Assistant:
             return {"reply": f"I don't have a macro called {name}.", "kind": "error"}
         risks = self.macro_risks(name)
         if risks and not via:
-            self._set_pending([("run_macro", {"name": macro.name})], f"run {macro.name} ({'; '.join(risks)})")
-            return {"reply": f"{macro.name} will {', '.join(risks)}. Say yes to run it.", "kind": "pending"}
+            if not self._set_pending([("run_macro", {"name": macro.name})], f"run {macro.name} ({'; '.join(risks)})"):
+                return {"reply": f"I'll ask you about running {macro.name} once you've answered me.", "kind": "pending"}
+            return {"reply": f"{macro.name} will {', '.join(risks)}. Say yes to run it.{self._replaced_note()}",
+                    "kind": "pending"}
         spoken, results = [], []
         for step in macro.steps:
             if self.tools.guard.hands_off:
@@ -514,32 +524,71 @@ class Assistant:
         if tool is None:
             return {"reply": f"I don't have a {name} tool.", "kind": "error"}
         if tool.needs_confirmation(args) and not via:
-            self._set_pending([(name, args)], tool.describe(args))
-            return {"reply": question(tool.describe(args)), "kind": "pending"}  # asked once (voice/confirm_window.py)
+            what = tool.describe(args)  # works out and pins the exact target (a raid's login, a slot, a job's items)
+            if not self._set_pending([(name, args)], what):
+                return {"reply": f"I'll ask you to {what} once you've answered me.", "kind": "pending"}
+            return {"reply": question(what) + self._replaced_note(), "kind": "pending"}  # asked once (confirm_window.py)
         result = self.tools.run(name, args, confirmed_by=via)
         said = self.svc.skills.say(name, args, result) if self.svc.skills is not None and not _failed(result) else None
         reply = said or summarize(name, args, result, self.svc.tz, hints)
         if name == "run_routine" and result.get("close_candidates"):
             names = result["close_candidates"]
-            self._set_pending([("close_app", {"name": n}) for n in names], f"close {', '.join(names)}")
-            reply += f" Want me to close {', '.join(names)}?"
+            if self._set_pending([("close_app", {"name": n}) for n in names], f"close {', '.join(names)}"):
+                reply += f" Want me to close {', '.join(names)}?{self._replaced_note()}"
+            else:
+                reply += f" I'll ask about closing {', '.join(names)} once you've answered me."
         if self._early and reply:  # say it now; the HUD's tool chip and panels follow
             self._speak_sentence(reply, final=True)
         self.svc.bus.publish("tool", {"name": name, "args": args, "result": result})
         return {"reply": reply, "kind": "tool", "tool": name, "data": result}
 
-    def offer(self, calls: list[tuple[str, dict]], text: str) -> None:
-        """Something Vesper suggests on its own (a shoutout after a raid): waits for a yes like any T2 action."""
-        self._set_pending(calls, text)
+    def offer(self, calls: list[tuple[str, dict]], text: str) -> bool:
+        """Something Vesper suggests on its own (a shoutout after a raid): waits for a yes like any T2 action. False:
+        J is answering another question, so it waits its turn (asked when that one is settled) and isn't asked now."""
+        return self._set_pending(calls, text, unprompted=True)
 
-    def _set_pending(self, calls: list[tuple[str, dict]], text: str) -> None:
+    def _wait_s(self) -> float:
+        return 60 * float((self.svc.cfg.get("pc_control") or {}).get("confirm_minutes", 2))  # the HUD/toast card
+
+    def _set_pending(self, calls: list[tuple[str, dict]], text: str, unprompted: bool = False) -> bool:
+        """Ask for a yes. A yes only ever runs what J was asked about, so a question never silently replaces the one
+        he's answering: one Vesper raises on its own (an offer, a routine) queues behind it; J's own newer request
+        replaces it, and ``replaced`` holds the old one for the reply to say so (never re-asked: he moved on, and a
+        second reflexive yes could end a stream he just started). True: this one is the question now."""
         tier = max([self._tier_of(n, a) for n, a in calls] or [0])
-        wait_s = 60 * float((self.svc.cfg.get("pc_control") or {}).get("confirm_minutes", 2))  # the HUD/toast card
-        self.pending = {"id": uuid.uuid4().hex[:10], "calls": calls, "text": text, "tier": tier,
-                        "expires": time.time() + wait_s}
+        new = {"id": uuid.uuid4().hex[:10], "calls": calls, "text": text, "tier": tier, "expires": time.time() + self._wait_s()}
+        with self._plock:
+            old = self.pending if self.pending_view() else None
+            self.replaced = None
+            if old is not None and old["calls"] != calls:
+                if unprompted or self._ctx.get("source") == "automation":
+                    self._queued.append(new)
+                    log.info("question queued behind the one waiting: %s", text)
+                    return False
+                self.replaced = old["text"]
+            self.pending = new
         self.svc.bus.publish("pending", self.pending_view())
         if self.on_pending:
             self.on_pending(self.pending_view())
+        return True
+
+    def _replaced_note(self) -> str:
+        return f" I've dropped the earlier question: {self.replaced}." if self.replaced else ""
+
+    def _next_question(self) -> str:
+        """Once nothing waits on a yes: the question that was waiting its turn becomes the one asked ("" if none)."""
+        with self._plock:
+            if self.pending_view() is not None:
+                return ""
+            now = time.time()
+            self._queued = [q for q in self._queued if q["expires"] > now]
+            if not self._queued:
+                return ""
+            self.pending = nxt = {**self._queued.pop(0), "id": uuid.uuid4().hex[:10], "expires": now + self._wait_s()}
+        self.svc.bus.publish("pending", self.pending_view())
+        if self.on_pending:
+            self.on_pending(self.pending_view())
+        return f"Next: {question(nxt['text'])}"
 
     def confirm(self, pending_id: str | None = None, via: str | None = None) -> str:
         """Run what's waiting on a yes. ``pending_id`` (HUD, toast) must match what's waiting now,
@@ -549,7 +598,8 @@ class Assistant:
             if not pending or pending["expires"] < time.time():
                 self.pending = None
                 self.svc.bus.publish("pending", None)
-                return "Nothing waiting on a yes."
+                nxt = self._next_question()  # never this yes: J hasn't heard it yet
+                return "Nothing waiting on a yes." + (f" {nxt}" if nxt else "")
             if pending_id and pending_id != pending["id"]:
                 return "That confirmation is out of date; nothing ran."
             via = via or ("voice" if self._ctx.get("source") == "voice" else "hud")
@@ -563,18 +613,25 @@ class Assistant:
                 self.history.append({"role": "user", "content": f"[system note] User confirmed; executed: {pending['text']}. "
                                                                  f"Result: {' '.join(replies)}"})
                 self.history.append({"role": "assistant", "content": "Done."})
-            return " ".join(r for r in replies if r) or "Done."
+            nxt = self._next_question()
+            return " ".join(r for r in [*replies, nxt] if r) or "Done."
 
     def cancel(self, pending_id: str | None = None) -> None:
+        """A "No" from the HUD or the toast, or the card running out: the question waiting its turn is asked aloud."""
         if pending_id and (not self.pending or self.pending["id"] != pending_id):
             return  # a stale "No" must not cancel something newer
         self.pending = None
         self.svc.bus.publish("pending", None)
+        nxt = self._next_question()
+        if nxt:
+            self.svc.speak(nxt, expects_reply=True)
 
     # ---- kill switch -------------------------------------------------------
     def stop_everything(self, source: str = "hotkey") -> None:
         """Hands off: no more actions (reads still work), nothing waiting on a yes, nothing still talking."""
         self.tools.guard.stop(source)
+        with self._plock:
+            self._queued.clear()
         self.cancel()
         self.convo.end("stopped")
         self.tools.audit.write(tool="kill_switch", tier=0, source=source, outcome="stopped")
@@ -895,7 +952,9 @@ class Assistant:
                                 **({"is_error": True} if payload.get("ok") is False else {})})
                 continue
             tool = self.tools.tools.get(block.name)
-            after_chat = bool(tool and self._tainted and tool.tier_for(args) >= 1)
+            # after other people's text: any action, and any link that isn't from J or a search, waits for a yes
+            after_chat = bool(tool and self._tainted and (tool.tier_for(args) >= 1
+                                                          or (tool.network and urls(args) - self._known_urls)))
             if tool and (tool.needs_confirmation(args) or after_chat):
                 what = tool.describe(args) + (f" (asked after reading {self._tainted_by})" if after_chat else "")
                 pending_calls.append((block.name, args))
@@ -906,6 +965,8 @@ class Assistant:
                 self.svc.bus.publish("tool", {"name": block.name, "args": args, "result": payload})
                 if payload.get("blocked") and self.tools.guard.hands_off:
                     payload = {**payload, "note": "The user stopped all actions. Don't retry; say you've stopped."}
+                if tool and tool.network:  # a search's results: links the model may follow without a yes
+                    self._known_urls |= urls(payload)
                 if tool and tool.untrusted:
                     self._tainted = True
                     self._tainted_by = tool.untrusted_label
@@ -916,7 +977,16 @@ class Assistant:
                 **({"is_error": True} if payload.get("ok") is False else {}),
             })
         if pending_calls:
-            self._set_pending(pending_calls, "; ".join(pending_text))
+            asked = self._set_pending(pending_calls, "; ".join(pending_text))
+            for r in results:
+                if '"awaiting_confirmation"' not in r["content"]:
+                    continue
+                if not asked:  # J is answering another question: the model mustn't ask this one now
+                    r["content"] = compact({"status": "queued", "note": "The user is answering another yes/no question. "
+                                            "Don't ask this one now: say you'll ask about it once they've answered."})
+                elif self.replaced:
+                    r["content"] = compact({**json.loads(r["content"]), "replaces": self.replaced,
+                                            "note": "This replaces an earlier question; tell the user it was dropped."})
         return results
 
     def _scrub_untrusted(self) -> None:
@@ -977,7 +1047,7 @@ class Assistant:
             with self._lock:
                 if time.time() - self.last_turn > self.cfg.get("history_idle_minutes", 10) * 60:
                     self.reset()
-                self.history.append({"role": "user", "content": f"[{kind} briefing requested]"})
+                self.history.append({"role": "user", "content": f"[{kind} briefing requested]"})  # see BRIEFING_MARKS
                 self.history.append({"role": "assistant", "content": json.dumps(
                     {k: result[k] for k in ("headline", "top_moves", "risks") if k in result})})
                 self.last_turn = time.time()
@@ -1004,6 +1074,8 @@ class Assistant:
 
 # What's said for these, and the reply, is kept only where the tool keeps it; the HUD shows the label ("": the words).
 PRIVATE_TOOLS = {"journal_add": "(journal entry)", "recording_mark": "(recording note)", "recordings_search": ""}
+# A briefing in Claude's history was written from other people's text: later commands start as if they'd read it.
+BRIEFING_MARKS = {"[morning briefing requested]", "[recap briefing requested]"}
 # In a conversation "yeah" / "no" answer a question; these still cancel.
 HARD_CANCEL = {"stop", "cancel", "abort", "never mind", "nevermind", "forget it", "cancel that", "cancel it"}
 

@@ -64,6 +64,7 @@ class ConversationSkill(Skill):
         self._next_followup = 0.0
         self._awaiting: dict | None = None  # a follow-up that was just asked: {"thread_id", "text", "title", "at"}
         self._answer: str | None = None
+        self._answer_source: str | None = None  # voice or text: the reply that counts is the one to that
         self._lock = threading.RLock()
         bus = getattr(svc, "bus", None)
         if bus is not None and hasattr(bus, "on"):
@@ -144,13 +145,15 @@ class ConversationSkill(Skill):
                         self._awaiting, self._answer = note, None
                     if self.convo is not None:
                         self.convo.followup_note = note
-            elif kind == "user_said" and self._awaiting and not data.get("conversation"):
+            elif (kind == "user_said" and self._awaiting and not data.get("conversation")
+                  and data.get("source") in ("voice", "text")):  # J's own words, not a routine or the phone's
                 with self._lock:
                     if self.clock() - self._awaiting["at"] > float(self.setting("followup_answer_s", 300)):
                         self._awaiting = None
                     else:
-                        self._answer = str(data.get("text") or "")
-            elif kind == "assistant_said" and self._awaiting and self._answer is not None:
+                        self._answer, self._answer_source = str(data.get("text") or ""), data.get("source")
+            elif (kind == "assistant_said" and self._awaiting and self._answer is not None
+                  and data.get("source", self._answer_source) == self._answer_source):  # the reply to J's answer
                 with self._lock:
                     note, answer, self._answer = self._awaiting, self._answer, None
                     if data.get("kind") not in ("claude", "local", "offline"):

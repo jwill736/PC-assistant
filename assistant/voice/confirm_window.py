@@ -106,8 +106,10 @@ class ConfirmWindow:
                 return "done"
             now = self.clock()
             if now >= cur["expires"]:
-                self.assistant.cancel(cur["id"])  # quietly: the card goes (unless it was replaced), nothing is said
                 self._publish("expired")
+                self.assistant.cancel(cur["id"])  # quietly: the card goes (unless it was replaced), nothing is said
+                if self.current is not None and self.current is not cur:
+                    return self.current["phase"]  # ...but a question that waited its turn is asked now: the window's
                 return self._done()
             if self._waiting_id() != cur["id"]:  # answered (voice, HUD, toast) or replaced
                 return self._done()

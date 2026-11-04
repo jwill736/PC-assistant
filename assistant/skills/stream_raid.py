@@ -205,9 +205,16 @@ class RaidPlanner(Skill):
         feed = self.svc.twitch_feed
         return feed.resolve(user) if feed is not None else key
 
-    def raid(self, user: str) -> dict:
+    def _pin(self, a: dict) -> str:
+        """Work out the channel once, when J is asked, and pin it into the call: the yes raids the one he heard, even
+        if the list refreshes (or someone in chat has a name like it) before he answers."""
+        if "login" not in a:
+            a["login"] = self._resolve(str(a.get("user") or ""))
+        return a["login"]
+
+    def raid(self, user: str = "", login: str | None = None) -> dict:
         """The tool's handler: by the time this runs, J said yes (voice) or clicked Confirm (HUD)."""
-        login = self._resolve(user)
+        login = self._resolve(user) if login is None else login
         if not login:
             return {"ok": False, "error": "Who should I raid?"}
         out = self.svc.twitch.start_raid(login)
@@ -263,7 +270,7 @@ class RaidPlanner(Skill):
                                      "7 days goes last).", obj(), lambda: self.suggest()),
             Tool("twitch_raid", "Raid another Twitch channel (sends J's viewers there; Twitch counts down 90 s). user: "
                                 "their channel name as said.", obj({"user": {"type": "string"}}, ["user"]), self.raid,
-                 tier=2, confirm_text=lambda a: f"raid {self._resolve(a.get('user', ''))}"),
+                 tier=2, confirm_text=lambda a: f"raid {self._pin(a)}"),
         ]
 
     def route(self, t: str):

@@ -618,6 +618,8 @@ class Assistant:
             if via == "voice" and pending["tier"] >= 3 and self._ctx.get("owner") in ("mismatch", "unsure"):
                 # LOG mode lets other voices through, and a bare "yes" is too short to judge: an irreversible action
                 # still needs yours.
+                if self._ctx.get("owner") == "unsure":
+                    return "A bare yes is too short to know it's you: say \"yes, go ahead please\", or click Confirm."
                 return "That one needs your voice. Press the talk hotkey and say yes, or click Confirm."
             self.pending = None
             self.svc.bus.publish("pending", None)

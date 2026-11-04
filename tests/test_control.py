@@ -121,7 +121,7 @@ def test_an_irreversible_yes_too_short_to_judge_is_not_taken_as_the_owners(svc, 
     a = Assistant(svc)
     a.handle("end the stream", "voice")
     out = a.handle("yes", "voice", owner="unsure")  # a bare "yes": too little voice to fingerprint
-    assert "needs your voice" in out["reply"] and obs_calls == []
+    assert "too short to know it's you" in out["reply"] and obs_calls == []
     assert a.handle("yes", "voice", owner="pressed")["reply"] == "Stream ended."
 
 

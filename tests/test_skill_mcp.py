@@ -130,6 +130,7 @@ def live(svc):
     s.close()
 
 
+@pytest.mark.real_subprocess  # the fake tool server is a python child it starts and ends
 def test_a_connected_server_gives_the_brain_its_tools(live):
     s, box = live
     out = s.add({"name": "fake", "target": f'"{sys.executable}" "{FAKE}"', "wait": 30})
@@ -159,6 +160,7 @@ def test_a_connected_server_gives_the_brain_its_tools(live):
     assert s.call("fake", "add", a=1, b=1)["ok"] is False
 
 
+@pytest.mark.real_subprocess  # tries to start a program that isn't there
 def test_a_server_that_wont_start_shows_why(live):
     s, box = live
     out = s.add({"name": "ghost", "target": "definitely-not-a-real-command-xyz --serve", "wait": 30})

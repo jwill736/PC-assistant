@@ -157,12 +157,16 @@ def test_model_calls_go_one_at_a_time_on_the_gpu_and_side_by_side_in_the_cloud(s
     for how, expect_one in (("always", True), ("never", False)):
         live, peak = [0], [0]
         lock = threading.Lock()
+        together = threading.Barrier(3, timeout=10)  # side by side: all three calls in at once, however slow the runner
 
         def think(prompt, schema=None, **kw):
             with lock:
                 live[0] += 1
                 peak[0] = max(peak[0], live[0])
-            time.sleep(0.15)
+            if expect_one:
+                time.sleep(0.05)  # room for a second call to slip in, if the gate let it
+            else:
+                together.wait()
             with lock:
                 live[0] -= 1
             return {"summary": "ok", "markdown": "# ok"}
@@ -193,17 +197,26 @@ def test_model_calls_inside_a_tool_share_the_gate_and_the_budget(svc, nudged):
     assert svc.think("outside a job") == "words"  # J's own calls never count
 
 
-def test_a_job_waits_while_j_is_being_answered(svc, nudged):
+def test_a_job_waits_while_j_is_being_answered(svc, nudged, monkeypatch):
+    from assistant.skills import tasks_agent as ta
+
+    slept = []
+
+    class Clock:  # the skill's time module with its sleeps counted, not slept: no stopwatch on a busy runner
+        sleep = staticmethod(slept.append)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+    monkeypatch.setattr(ta, "time", Clock())
     a = make(svc, [], model=True)
     a.cfg["yield_seconds"] = 0.4
     svc.bus.publish("thinking", {"active": True})
-    t0 = time.time()
     a._gated({"priority": 0, "model_calls": 0}, lambda: None)
-    assert time.time() - t0 >= 0.35
+    assert sum(slept) == pytest.approx(0.4)  # it held back for yield_seconds
     svc.bus.publish("thinking", {"active": False})
-    t0 = time.time()
+    slept.clear()
     a._gated({"priority": 0, "model_calls": 0}, lambda: None)
-    assert time.time() - t0 < 0.2
+    assert slept == []  # not at all
 
 
 # ---- side effects wait for one yes --------------------------------------------------------------------------------

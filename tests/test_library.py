@@ -3,6 +3,7 @@ word, quoted with the file and page, and opened by name. Files OneDrive keeps on
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -200,10 +201,10 @@ def test_a_drive_that_hangs_is_left_out_quickly(tmp_path, monkeypatch):
     ok, dead = tmp_path / "ok", tmp_path / "dead"
     ok.mkdir()
     real = libmod._is_dir
-    monkeypatch.setattr(libmod, "_is_dir", lambda p: time.sleep(30) if p == dead else real(p))
-    started = time.time()
+    hung = threading.Event()  # the dead drive answers "a folder" only once let go: waiting on it would list it
+    monkeypatch.setattr(libmod, "_is_dir", lambda p: hung.wait(30) or True if p == dead else real(p))
     assert libmod._dirs_within([dead, ok], timeout=0.5) == [ok]
-    assert time.time() - started < 2
+    hung.set()
     monkeypatch.setattr(libmod, "drive_letters", lambda: ["J", "L"])
     monkeypatch.setattr(libmod, "_dirs_within", lambda paths, timeout=2.0: [p for p in paths if str(p).startswith("J")])
     assert libmod.google_drives() == [Path("J:/My Drive")]

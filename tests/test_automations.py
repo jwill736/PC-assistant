@@ -114,7 +114,9 @@ def test_routine_runs_the_command_and_repeats(auto):
     clock.t = datetime(2026, 10, 14, 9, 0, 1, tzinfo=NY).timestamp()
     a.tick()
     import time
-    time.sleep(0.2)
+    deadline = time.monotonic() + 10  # the routine runs on a thread of its own: wait for what it says
+    while "Nobody's waiting on you." not in a.said and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert ran == ["check my email"] and "Nobody's waiting on you." in a.said
     assert a.listing()["items"][0]["when"].startswith("Thu 9:00")
 

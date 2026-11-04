@@ -1,6 +1,7 @@
 """Every update carries a "why" (rule + evidence) to the HUD, and "why did you say that" explains the last one."""
 
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
 
 import pytest
 
@@ -52,7 +53,7 @@ def test_why_travels_with_the_notice_and_the_feed(env):
 
 def test_built_in_rules_say_why(env, svc, monkeypatch):
     n, clock, state, said, events = env
-    soon = datetime.now(svc.tz) + timedelta(minutes=6)
+    soon = datetime.fromtimestamp(time.time() + 6 * 60, svc.tz)  # on the timestamp: right across a DST change too
     monkeypatch.setattr(svc.calendars, "agenda", lambda days=1, **k: [
         {"title": "Client sync", "start": soon.isoformat(), "all_day": False, "location": "Zoom"}])
     n._rules(clock.t)

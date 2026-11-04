@@ -705,8 +705,11 @@ class TasksAgent(Skill):
         job["active_s"] += self.clock() - seg
         job["seg"] = None
         self._finish(job)
-        with self._cv:  # "add to that" arrived while it was writing up: run the new part too
-            if any(s["state"] == "pending" for s in job["steps"]) and job["state"] in ("done", "waiting"):
+        with self._cv:  # "add to that" arrived while it was writing up: run the new part, then write up once more
+            if any(s["state"] == "pending" for s in job["steps"]) and job["state"] in ("running", "done", "waiting"):
+                if job["state"] != "running":  # it had finished: its delivery comes again at the end, once (as add_to)
+                    job["steps"] = [s for s in job["steps"] if not s["id"].startswith("deliver_")]
+                    job["approvals"] = [a for a in job["approvals"] if not a["step"].startswith("deliver_")]
                 job["state"], job["told"] = "queued", False
                 self._save(job)
                 self._cv.notify_all()
@@ -730,6 +733,17 @@ class TasksAgent(Skill):
             if step["state"] not in ("pending", "running"):
                 continue
             self._check(job, seg)
+            if step.get("addition"):  # "add to that …": planned here, on the job's own turn at the model
+                planned = self._plan_addition(job, step.pop("addition"))
+                if planned:
+                    with self._cv:
+                        k = job["steps"].index(step)
+                        for n, s in enumerate(planned):
+                            s["id"] = f"{step['id']}{chr(97 + n)}"
+                        job["steps"][k:k + 1] = planned
+                    i -= 1
+                    self._changed(job)
+                    continue
             if sum(1 for s in job["steps"] if s["state"] not in ("pending", "skipped")) >= max_steps:
                 raise Budget(f"ran its {max_steps} steps")
             step["state"], step["started"] = "running", self.clock()
@@ -779,6 +793,8 @@ class TasksAgent(Skill):
         for args in calls:
             if step["tool"] not in ACTION_TOOLS:
                 self._check(job, seg)
+            elif job["cancel"]:  # cancelled mid-batch: nothing more goes out (a pause still finishes the batch)
+                raise Stopped
             args = {k: v for k, v in args.items() if k in ((tool.schema or {}).get("properties") or {})}
             # Once the job has read other people's text, what the model fills in from it is theirs: it waits for J's
             # yes (pre-approved or not), and so does a link it picked that isn't from J or the job's own search.
@@ -993,6 +1009,7 @@ class TasksAgent(Skill):
         return "\n".join(parts) or "(no results)"
 
     def _finish(self, job: dict) -> None:
+        n0 = len(job["steps"])
         rec = self.recipes.get(job["recipe"]) if job["recipe"] else None
         waiting = [a for a in job["approvals"] if a["state"] == "waiting"]
         done_steps = [s for s in job["steps"] if s["state"] in ("done", "waiting")]
@@ -1019,6 +1036,16 @@ class TasksAgent(Skill):
         if len(markdown) > int(self.setting("note_over_chars", 500)) or (rec or {}).get("deliver") == "note":
             result["note"] = self._write_note(job, markdown)
         job["result"] = result
+        if job["cancel"]:  # "cancel that job" while it wrote up: J heard "Cancelled", so nothing goes out
+            for a in job["approvals"]:
+                if a["state"] == "waiting":
+                    a["state"] = "rejected"
+            self._end(job, "cancelled", "")
+            return
+        with self._cv:
+            added = any(s["state"] == "pending" for s in job["steps"][n0:])
+        if added:  # "add to that" came in during the write-up: run_job runs the new part, then delivers once
+            return
         self._deliveries(job)
         failed = not job["steps"] or all(s["state"] in ("failed", "skipped") for s in job["steps"])
         if failed:
@@ -1297,21 +1324,15 @@ class TasksAgent(Skill):
         if job is None:
             return {"ok": False, "error": "Which job? Nothing is running."}
         new: list[dict] = []
-        if self.has_model():
-            try:
-                plan = self._think(job, PLAN_PROMPT.format(
-                    user=self._user(), max_steps=3, tools="\n".join(f"- {n}: {t.description[:140]}" for n, t in
-                                                                     sorted(self.catalogue().items())),
-                    today=datetime.now(self.svc.tz).strftime("%A %B %d %Y"),
-                    goal=f"{job['goal']} — this is an addition to a job already running; plan only the new part: {text}"),
-                    schema=_plan_schema(sorted(self.catalogue())), max_tokens=600)
-                new, _ = self.validate_plan(plan)
-            except (Budget, TimeoutError):
-                new = []
-        if not new and "web_lookup" in self._tools():
+        planning = self.has_model()
+        if planning or "web_lookup" in self._tools():
             topic = job["inputs"].get("topic") or job["goal"]
             q = re.sub(r"^(?:also |and )?(?:check|look at|search|include|compare|try|add)\s+", "", text)
             new = [self._step({"title": f"Also: {text}"[:80], "tool": "web_lookup", "args": {"query": f"{topic} {q}"}}, 0)]
+            if planning:
+                # The model plans it on the job's worker when it gets there (a web lookup if that fails), never here:
+                # J's command would wait for itself (the yield to J) and then behind the job's own write-up.
+                new[0]["addition"] = text
         if not new:
             return {"ok": False, "error": "I couldn't turn that into a step."}
         with self._cv:
@@ -1329,7 +1350,25 @@ class TasksAgent(Skill):
             self._ensure_workers()
             self._cv.notify_all()
         self.publish(force=True)
-        return {"ok": True, "job": job["id"], "title": job["title"], "added": [s["title"] for s in new]}
+        return {"ok": True, "job": job["id"], "title": job["title"], "added": [s["title"] for s in new],
+                **({"planning": True} if planning else {})}
+
+    def _plan_addition(self, job: dict, text: str) -> list[dict]:
+        """The steps for "add to that: <text>", from the model ([] when it can't: the web lookup stays)."""
+        try:
+            plan = self._think(job, PLAN_PROMPT.format(
+                user=self._user(), max_steps=3, tools="\n".join(f"- {n}: {t.description[:140]}" for n, t in
+                                                                 sorted(self.catalogue().items())),
+                today=datetime.now(self.svc.tz).strftime("%A %B %d %Y"),
+                goal=f"{job['goal']} — this is an addition to a job already running; plan only the new part: {text}"),
+                schema=_plan_schema(sorted(self.catalogue())), max_tokens=600)
+            new, _ = self.validate_plan(plan)
+        except (Budget, TimeoutError):
+            new = []
+        except Exception:
+            log.exception("job %s: planning the addition failed", job["id"])
+            new = []
+        return new
 
     def find(self, ref: str = "", where: Callable[[dict], bool] = lambda j: True) -> dict | None:
         """The job J means: "that one" = the newest that fits; else the best match by its words."""
@@ -1930,6 +1969,8 @@ class TasksAgent(Skill):
             names = js[0]["title"] if len(js) == 1 else f"{len(js)} jobs"
             return f"{what} {names}."
         if tool == "job_add":
+            if result.get("planning"):
+                return f"Adding that to {result['title']}."
             return f"Added to {result['title']}: {', '.join(result['added'])[:120]}."
         if tool == "job_result":
             if result.get("live"):

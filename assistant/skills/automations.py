@@ -8,7 +8,9 @@ Said out loud, understood without a model:
   said it (anything risky still waits for your yes)
 - "what are my reminders", "cancel the reminder about Dana"
 
-Saved in data/automations.json; reminders fire through the nudges queue so they never go out on air.
+Saved in data/automations.json. Timers and reminders ring through the nudges queue: a chime and the words, wherever J
+is (away from the PC, in a game, in quiet hours or a focus session); live, presenting or in a call it's the chime and
+the HUD card (and the phone when away), so their words never go out on air.
 """
 
 from __future__ import annotations
@@ -318,12 +320,22 @@ class Automations(Skill):
             self.items = [x for x in self.items if x["enabled"]]
             self._save()
         if i["kind"] == "timer":
-            self.nudge(f"{i['label'] or 'Your'} timer is done." if i["label"] else "Time's up.", priority="urgent",
-                       key=f"timer:{i['id']}")
+            self._ring(f"{i['label'] or 'Your'} timer is done." if i["label"] else "Time's up.", f"timer:{i['id']}")
         elif i["kind"] == "reminder":
-            self.nudge(f"Reminder: {i['text']}.", priority="urgent", key=f"reminder:{i['id']}")
+            self._ring(f"Reminder: {i['text']}.", f"reminder:{i['id']}")
         elif i["kind"] == "routine" and self.run_command:
             threading.Thread(target=self._run_routine, args=(i,), daemon=True).start()
+
+    def _ring(self, text: str, key: str) -> None:
+        """A timer or reminder J set: it always sounds, away, in a game or in quiet hours too (skills/nudges.py's ring),
+        and its words are never said on air."""
+        if self.svc.nudge is not None:
+            self.nudge(text, priority="urgent", key=key, ring=True)
+            return
+        from .nudges import ring_sound
+
+        ring_sound()
+        self.notify(text, level="urgent", speak=True, key=key)
 
     def _run_routine(self, i: dict) -> None:
         try:
@@ -376,8 +388,7 @@ class Automations(Skill):
             hits = [i for i in self.items if i["enabled"] and (i.get("trigger") or "").startswith("email_from:")
                     and i["trigger"].split(":", 1)[1].lower() in who]
         for i in hits:
-            self.nudge(f"{msg.get('from')} emailed: {msg.get('subject')}. Reminder: {i['text']}.", priority="urgent",
-                       key=f"reminder:{i['id']}")
+            self._ring(f"{msg.get('from')} emailed: {msg.get('subject')}. Reminder: {i['text']}.", f"reminder:{i['id']}")
             with self._lock:
                 i["enabled"] = False
                 self.items = [x for x in self.items if x["enabled"]]

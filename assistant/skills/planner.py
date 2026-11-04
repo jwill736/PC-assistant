@@ -14,7 +14,9 @@
   rhythm), gym toward the weekly habit ("gym 3 times a week", habits.py), and bed against ``sleep_hours`` (bedtime from
   the rhythm). Which days break ("Thursday: meeting till 6, stream at 7, no gym slot, bed after 1 AM") and one fix;
   "book it" puts the gym block on the calendar through focusblocks (tier 2: J hears the exact time and says yes).
-  All of it is worked out here, in UTC, so DST nights are their real length; nothing asks a model.
+  All of it is worked out here, in UTC, so DST nights are their real length; nothing asks a model. An all-day
+  vacation, holiday or OOO is a day off; only J's own calendars (or a "🔒 Gym" block) count as gym, never a work
+  meeting like "Dry run: client demo". The Sunday preview waits out a Sunday stream and comes once, restarts included.
 """
 
 from __future__ import annotations
@@ -179,6 +181,12 @@ def next_workday(d: date) -> date:
 # ---- the week: work, streams, gym and sleep -------------------------------------------------------------------------
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 UTC = timezone.utc
+# an all-day event that means no work that day (a weekday off: no 9-to-5, no work-day wake-up)
+OFF_DAY = re.compile(r"\b(?:vacation|holidays?|ooo|out of (?:the )?office|pto|days? off|time off|"
+                     r"(?:annual|parental|sick|medical|family) leave|sick day)\b", re.I)
+# a gym session on the calendar: stricter than the habit's words ("Dry run: client demo", "tabletop exercise" and
+# "Weights & Biases" are meetings), and only on J's own calendars or a block Vesper booked ("🔒 Gym")
+GYM_EVENT = re.compile(r"\b(?:gym|work ?outs?|lift(?:ing)?|swim(?:ming)?|yoga|climb(?:ing)?|crossfit|spin class)\b", re.I)
 
 
 def _u(iso: str) -> datetime:
@@ -215,12 +223,20 @@ def _gaps(busy: list[tuple], lo: datetime, hi: datetime, need: timedelta) -> lis
     return out
 
 
-def _day(d: date, evs: list[dict], tz, hours: dict, usual: dict | None, prep: int) -> dict:
-    """One day's fixed parts, in UTC: work, meetings, the stream, gym on the calendar, the first thing that morning."""
+def _gym_event(e: dict) -> bool:
+    """A gym session on the calendar: a "🔒 Gym" block Vesper booked, or a personal event named like one."""
+    if e["title"].startswith("🔒"):
+        return bool(GYM.search(e["title"]))
+    return e.get("profile") not in ("work", "stream") and bool(GYM_EVENT.search(e["title"]))
+
+
+def _day(d: date, evs: list[dict], tz, hours: dict, usual: dict | None, prep: int, off: frozenset = frozenset()) -> dict:
+    """One day's fixed parts, in UTC: work, meetings, the stream, gym on the calendar, the first thing that morning.
+    ``off``: days an all-day vacation, holiday or OOO takes out of the work week."""
     mine = [e for e in evs if e["_d"] == d]
-    work = (_wall(d, hours["start"], tz), _wall(d, hours["end"], tz)) if d.weekday() < 5 else None
+    work = (_wall(d, hours["start"], tz), _wall(d, hours["end"], tz)) if d.weekday() < 5 and d not in off else None
     streams = [e for e in mine if e.get("profile") == "stream"]
-    gyms = [e for e in mine if e.get("profile") != "stream" and GYM.search(e["title"])]
+    gyms = [e for e in mine if _gym_event(e)]
     meetings = [e for e in mine if e not in streams and e not in gyms and not e["title"].startswith("🔒")]
     stream = None
     if streams:
@@ -252,18 +268,21 @@ def build_week(events: list[dict], days: list[date], now: datetime, tz, *, hours
     {weekday: (start, end)}), gym (``gym``: {target, done}) and sleep (``sleep``: {hours, bedtime, wake, ready,
     wind_down}); which days break, and one fix. Times are worked out in UTC, so a DST night is its real length."""
     sl = {"hours": 7.5, "bedtime": "", "wake": "08:00", "ready": 60, "wind_down": 30, **(sleep or {})}
-    evs = []
+    evs, days_off = [], set()
     for e in events:
         try:
             if not e.get("all_day"):
                 s, en = _u(e["start"]), _u(e["end"])
                 evs.append({**e, "_s": s, "_e": en, "_d": s.astimezone(tz).date()})
+            elif e.get("profile") != "stream" and OFF_DAY.search(e.get("title") or ""):
+                a, b = date.fromisoformat(e["start"][:10]), date.fromisoformat(e["end"][:10])
+                days_off.update(a + timedelta(days=i) for i in range(max(1, (b - a).days)))
         except (KeyError, TypeError, ValueError):
             continue
     if any(e.get("profile") == "stream" for e in evs):
         usual = None  # a stream calendar says which nights: a night without one is a night off
     one, ready = timedelta(days=1), timedelta(minutes=int(sl["ready"]))
-    info = {d: _day(d, evs, tz, hours, usual, prep) for d in [days[0] - one, *days, days[-1] + one]}
+    info = {d: _day(d, evs, tz, hours, usual, prep, frozenset(days_off)) for d in [days[0] - one, *days, days[-1] + one]}
     wind, rest = timedelta(minutes=int(sl["wind_down"])), timedelta(hours=float(sl["hours"]))
     for d in [days[0] - one, *days]:  # each night: the latest bed that still leaves the sleep target
         x, nxt = info[d], info[d + one]
@@ -330,7 +349,7 @@ def build_week(events: list[dict], days: list[date], now: datetime, tz, *, hours
             parts.append(f"gym at {_hm(datetime.fromisoformat(g['start']))}")
         parts += [i["text"] for i in issues if i["kind"] != "clash"]
         if not parts:
-            parts = [f"work till {_hm(x['work'][1].astimezone(tz))}" if x["work"] else "free"]
+            parts = [f"work till {_hm(x['work'][1].astimezone(tz))}" if x["work"] else "day off" if d in days_off else "free"]
         row = {"date": d.isoformat(), "day": d.strftime("%A"), "workday": bool(x["work"]),
                "work": {"start": loc(x["work"][0]), "end": loc(x["work"][1])} if x["work"] else None,
                "meetings": len(x["meetings"]), "meetings_till": loc(till) if till else None,
@@ -676,7 +695,7 @@ class Planner(Skill):
             day, at = int(self.setting("review_weekday", 4)), str(self.setting("review_time", "16:00"))
             if now.weekday() == day and now.strftime("%H:%M") >= at:
                 self.nudge("It's the end of the week. Want your weekly review? Say “weekly review”.",
-                           key=f"planner:review:{now.strftime('%G-%V')}", expires_in=4 * 3600,
+                           key=f"planner:review:{now.strftime('%G-%V')}", expires_in=4 * 3600, once=True,
                            action={"label": "Weekly review", "command": "weekly review"})
         except Exception as exc:
             self.plan = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "blocks": [], "date": ""}
@@ -706,8 +725,10 @@ class Planner(Skill):
             return
         self._previewed = key
         w = self.plan_week("next")
-        self.nudge(self.preview_line(w), priority="normal", key=key, expires_in=3 * 3600,
-                   action={"label": "Plan my week", "command": "plan my week"},
+        # it waits out a Sunday stream (held while live) until 3 AM; once=True: once, even across a restart
+        until = datetime.combine(now.date() + timedelta(days=1), dtime(3, 0), tzinfo=self.svc.tz).timestamp()
+        self.nudge(self.preview_line(w), priority="normal", key=key, expires_in=max(3600, until - self.clock()),
+                   once=True, action={"label": "Plan my week", "command": "plan my week"},
                    why={"rule": "Sunday evening week preview", "evidence": [d["line"] for d in w["days"] if d["issues"]][:3]
                         or ["Calendar, stream nights, gym target and sleep: everything fits"]})
 

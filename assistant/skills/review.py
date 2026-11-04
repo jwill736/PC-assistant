@@ -317,7 +317,7 @@ class Review(Skill):
                 r = self.build("this")
             if sunday_evening:
                 self.nudge("Your week in review is ready on the Life tab. Say “life review” to hear it.", priority="normal",
-                           key=f"review:{now.strftime('%G-%V')}", expires_in=5 * 3600,
+                           key=f"review:{now.strftime('%G-%V')}", expires_in=5 * 3600, once=True,
                            action={"label": "Life review", "command": "life review"})
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"

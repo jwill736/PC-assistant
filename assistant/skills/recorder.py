@@ -24,11 +24,18 @@
 - Meeting autopilot: when a calendar meeting with a call link starts, or a call app (Zoom, Teams, Meet, Webex,
   Discord) is up during one, Vesper asks once, "Record notes for <meeting>? Say yes or no.", through the assistant's
   yes gate (a spoken yes window, the HUD card, the toast); nothing records without the yes, and nothing is offered
-  while live or off the record. "Always record <meeting>" pre-approves that series only (matched by its title words);
-  "stop always recording <meeting>" undoes it. A recording tied to a meeting stops by itself once the meeting's end
-  plus ``stop_grace_minutes`` has passed and the call audio (the mic, with no call audio) has been quiet for
-  ``quiet_minutes``; it says so. A meeting's notes go to the phone (skills/phone.py's push) when one is paired, else
-  to a HUD card; action items still wait for J's click.
+  while live or off the record. A call app found by its window alone (in front, no call in its title) counts only for
+  a meeting with other people on it, and Teams' main window ("Chat | Microsoft Teams") is not a call. "Always record
+  <meeting>" pre-approves that series only (its exact title words, dates and counters aside: "Weekly HR sync" is
+  not "Weekly sync"); "stop always recording <meeting>" undoes it. The yes records the meeting it was asked about,
+  even with another one on. A recording tied to a meeting stops by itself once the meeting's end plus
+  ``stop_grace_minutes`` has passed and both J's mic and the call audio have been quiet for ``quiet_minutes``; it
+  says so. A meeting's notes go to the phone (skills/phone.py's push) when one is paired, else to a HUD card; action
+  items still wait for J's click. While recording a meeting (or a call's audio), or with a call app up during a
+  calendar meeting (``recording_call`` / ``call_until`` in the status), nudges keep their voice out of the call.
+- Notes the model can't write now because a game holds it (only the big model is installed) wait ("Notes after the
+  game") and are written when the game ends. After a crash, audio that speech-to-text hadn't reached yet
+  (``.pending``) is transcribed into the notes; retention deletes it with the rest of the audio.
 
 Settings (config.yaml, skills.recorder): hotkey (ctrl+alt+r; "" turns it off), notes_dir (data/notes; e.g.
 "K:/My Drive/Vesper Notes"), keep_audio_days (30), system_audio ("meetings" | "always" | "never"), compress ("auto"),
@@ -141,7 +148,7 @@ J_NAMES = {"j", "me", "i", "myself", "you", "user"}
 CALL_APPS = {"zoom": "Zoom", "ms-teams": "Teams", "teams": "Teams", "discord": "Discord", "webex": "Webex",
              "ciscocollabhost": "Webex"}
 CALL_TITLE = re.compile(r"\bzoom (?:meeting|webinar)\b|^meet\s*[-–]|\bgoogle meet\b|meet\.google\.com|"
-                        r"\| microsoft teams|\bhuddle\b|\bwebex meeting\b", re.I)
+                        r"\b(?:meeting|call)\b[^|]*\| microsoft teams|\bhuddle\b|\bwebex meeting\b", re.I)
 ALWAYS = re.compile(r"(?:always|automatically|auto) (?:record|take notes (?:of|for|in|during)|record notes (?:of|for)) "
                     r"(?:every |each |all )?(?:my |the )?(.+?)(?: meetings?| calls?)?(?: from now on| every time)?")
 NEVER = re.compile(r"(?:stop|don'?t|do not) (?:always |auto(?:matically)? )?record(?:ing)? (?:every |each |all )?(?:my |the )?"
@@ -152,8 +159,15 @@ MONTHS = set("jan feb mar apr may jun jul aug sep sept oct nov dec january febru
 
 
 def series(title: str) -> str:
-    """A meeting series as words: 'Weekly sync (Oct 14) #12' -> 'weekly sync'."""
-    return " ".join(w for w in re.findall(r"[a-z]+", (title or "").lower()) if len(w) > 1 and w not in MONTHS)
+    """A meeting series as words, without its dates and counters: 'Weekly sync (Oct 14) #12' -> 'weekly sync',
+    'Q4 planning' -> 'q4 planning'."""
+    return " ".join(w for w in re.findall(r"[a-z0-9]+", (title or "").lower())
+                    if len(w) > 1 and w not in MONTHS and not re.fullmatch(r"\d+(?:st|nd|rd|th)?", w))
+
+
+def _with_others(e: dict) -> bool:
+    """Other people are on this calendar meeting (Google lists them; an iCal link doesn't)."""
+    return any(a.get("email") and not a.get("self") for a in e.get("attendees") or [])
 
 
 # ---- notes from a transcript (pure, testable) --------------------------------------------------------------------------
@@ -466,6 +480,8 @@ class Recorder(Skill):
         self._pub_timer = None
         self._loud: dict[str, float] = {}  # source -> when it last carried sound (the meeting auto-stop)
         self._overran = ""  # the meeting already told "still recording" past its end
+        self._call_until = 0.0  # a call app is up during a calendar meeting until it ends (nudges stay quiet)
+        self._wins: list | None = None  # this tick's window list (scanned at most once a tick)
         st = svc.storage
         st.execute("CREATE TABLE IF NOT EXISTS recorder_recordings (id TEXT PRIMARY KEY, title TEXT NOT NULL, "
                    "started REAL NOT NULL, ended REAL, seconds REAL NOT NULL DEFAULT 0, folder TEXT NOT NULL, "
@@ -731,7 +747,8 @@ class Recorder(Skill):
         return bool(meeting) or bool(CALL.search((said or "").lower()))
 
     # ---- the calendar ----------------------------------------------------------------------------------------------
-    def _meeting_now(self) -> dict | None:
+    def _meeting_now(self, title: str = "") -> dict | None:
+        """The calendar meeting on now: the one called ``title`` (the one J said yes to), else one with people."""
         now = datetime.fromtimestamp(self.clock(), self.svc.tz)
         try:
             evs = self.svc.calendars.events(now - timedelta(hours=8), now + timedelta(minutes=10))
@@ -748,17 +765,27 @@ class Recorder(Skill):
             if start - timedelta(minutes=5) <= now <= end:
                 others = [{"name": a.get("name") or a["email"].split("@")[0], "email": a["email"].lower()}
                           for a in e.get("attendees") or [] if not a.get("self") and a.get("email")]
-                found.append((bool(others), start, {"title": e["title"], "start": e["start"], "end": e["end"],
-                                                     "key": f"{e['title']}|{e['start']}", "profile": e.get("profile") or "work",
-                                                     "attendees": others, "with": [o["name"] for o in others]}))
+                found.append((bool(title) and e["title"] == title, bool(others), start,
+                              {"title": e["title"], "start": e["start"], "end": e["end"],
+                               "key": f"{e['title']}|{e['start']}", "profile": e.get("profile") or "work",
+                               "attendees": others, "with": [o["name"] for o in others]}))
         if not found:
             return None
-        found.sort(key=lambda x: (x[0], x[1]), reverse=True)  # a meeting with people first, then the latest to start
-        return found[0][2]
+        found.sort(key=lambda x: x[:3], reverse=True)  # the named one, then one with people, then the latest to start
+        return found[0][3]
 
     # ---- the meeting autopilot: offer to record a call, stop when it's over ------------------------------------------
     def _on(self, key: str) -> bool:
         return str(self.setting(key, True)).lower() not in ("false", "0", "no", "off", "none")
+
+    def _windows_now(self) -> list[tuple[str, str, bool]]:
+        """The windows, scanned at most once per autopilot tick."""
+        if self._wins is None:
+            try:
+                self._wins = self._windows()
+            except Exception:
+                self._wins = []
+        return self._wins
 
     def _windows(self) -> list[tuple[str, str, bool]]:
         if self._windows_fn is not None:
@@ -770,13 +797,14 @@ class Recorder(Skill):
             ([(cur.get("app") or "", cur.get("title") or "", True)] if cur else [])
 
     @staticmethod
-    def call_app(title: str, wins: list[tuple[str, str, bool]]) -> str:
+    def call_app(title: str, wins: list[tuple[str, str, bool]], others: bool = True) -> str:
         """The call app that's up for a meeting ("Zoom", "Teams", "Google Meet"…), or "": a window titled like a call
-        (or like the meeting), or a call app in front."""
+        (or like the meeting), or a call app in front. ``others``: the meeting has other people on it; without them an
+        app merely in front (Discord, Teams' chat) isn't a call ("Lunch" with Teams open)."""
         want = series(title)
         for app, wtitle, front in wins:
             name, low = CALL_APPS.get((app or "").lower()), (wtitle or "").lower()
-            if CALL_TITLE.search(low) or (name and (front or (want and want in series(wtitle)))):
+            if CALL_TITLE.search(low) or (name and ((front and others) or (want and want in series(wtitle)))):
                 return name or next((n for k, n in (("zoom", "Zoom"), ("teams", "Teams"), ("meet", "Google Meet"),
                                                      ("webex", "Webex")) if k in low), "a call")
         return ""
@@ -787,7 +815,6 @@ class Recorder(Skill):
             evs = self.svc.calendars.events(now - timedelta(hours=8), now + timedelta(minutes=2))
         except Exception:
             return None
-        wins = None
         for e in sorted(evs, key=lambda x: str(x.get("start") or ""), reverse=True):
             title = str(e.get("title") or "")
             if e.get("all_day") or e.get("profile") == "stream" or title.startswith("🔒"):
@@ -803,15 +830,36 @@ class Recorder(Skill):
             if (e.get("link") or CALL_LINK.search(f"{e.get('location') or ''} {e.get('description') or ''}")) \
                     and now <= start + timedelta(minutes=10):
                 return {"title": title, "key": key, "why": "link"}
-            if wins is None:
-                try:
-                    wins = self._windows()
-                except Exception:
-                    wins = []
-            app = self.call_app(title, wins)
+            app = self.call_app(title, self._windows_now(), _with_others(e))
             if app:
                 return {"title": title, "key": key, "why": app}
         return None
+
+    def _on_call(self, now: datetime) -> float:
+        """Until when a call app is up during a calendar meeting on now (0.0: none), for the nudges' "in a call"."""
+        try:
+            evs = self.svc.calendars.events(now - timedelta(hours=8), now + timedelta(minutes=2))
+        except Exception:
+            return 0.0
+        for e in evs:
+            title = str(e.get("title") or "")
+            if e.get("all_day") or e.get("profile") == "stream" or title.startswith("🔒"):
+                continue
+            try:
+                start, end = datetime.fromisoformat(e["start"]), datetime.fromisoformat(e["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start - timedelta(minutes=1) <= now < end and self.call_app(title, self._windows_now(), _with_others(e)):
+                return end.timestamp()
+        return 0.0
+
+    def recording_call(self) -> bool:
+        """Recording a meeting or a call's audio."""
+        return self.session is not None and (self.system is not None or bool((self.rec or {}).get("meeting")))
+
+    def in_call(self) -> bool:
+        """On a call now: recording a meeting or a call's audio, or a call app up during a calendar meeting."""
+        return self.recording_call() or self.clock() < self._call_until
 
     def _approved(self) -> list[dict]:
         try:
@@ -821,15 +869,18 @@ class Recorder(Skill):
         return [a for a in got if isinstance(a, dict) and a.get("key")]
 
     def _is_approved(self, title: str) -> bool:
-        have = set(series(title).split())
-        return any(set(a["key"].split()) <= have for a in self._approved())
+        """The same series J said to always record: its exact words ("Weekly HR sync with Dana" isn't "weekly sync")."""
+        have = series(title)
+        return bool(have) and any(a["key"] == have for a in self._approved())
 
     def autopilot(self) -> None:
         """Each tick: offer once to record a call that's on, or stop a meeting's recording once the meeting is over."""
         now = datetime.fromtimestamp(self.clock(), self.svc.tz)
+        self._wins = None
         if self.session is not None:
             self._auto_stop()
             return
+        self._call_until = self._on_call(now)
         if self._live() or self._off_record() or not (self._on("auto_offer") or self._approved()):
             return
         m = self._call_now(now)
@@ -880,8 +931,8 @@ class Recorder(Skill):
         t = self.clock()
         if t < end + float(self.setting("stop_grace_minutes", 5)) * 60:
             return
-        src = "system" if self.system is not None else "mic"  # no call audio: J's own mic going quiet
-        if s.paused or t - self._loud.get(src, rec["started"]) >= float(self.setting("quiet_minutes", 2)) * 60:
+        heard = max(self._loud.get("mic", rec["started"]), self._loud.get("system", rec["started"]))
+        if s.paused or t - heard >= float(self.setting("quiet_minutes", 2)) * 60:  # J and the call both quiet
             out = self.stop_recording(reason="meeting ended")
             if out.get("ok"):
                 line = f"{m['title']} is over, so I stopped recording. Notes are coming."
@@ -949,7 +1000,7 @@ class Recorder(Skill):
                 return {"ok": False, "live": True,
                         "error": "You're live, so I won't record. Say “record on stream” if you mean it."}
             now = self.clock()
-            meeting = self._meeting_now()
+            meeting = self._meeting_now(title)
             want_sys = self._want_system(system_audio, meeting, said)
             stamp = time.strftime("%Y-%m-%d-%H%M%S", time.localtime(now))
             rid, n = stamp, 2
@@ -990,6 +1041,7 @@ class Recorder(Skill):
                 "VALUES (?,?,?,?,?,?,?,?,?)", (rid, title, now, str(folder), "recording", source,
                                               json.dumps(meeting) if meeting else None, int(bool(self.system)), int(bool(on_stream))))
             self.note, self.muted = "", False
+        self._hold_debrief(meeting)
         if first_consent:
             self.notify("Recording the call's audio too. Let the people on the call know they're being recorded.",
                         level="warn", key="recorder:consent")
@@ -997,6 +1049,20 @@ class Recorder(Skill):
         return {"ok": True, "id": rid, "title": title, "meeting": meeting["title"] if meeting else None,
                 "system": bool(self.system), "system_why": self.system_why if want_sys else "", "consent": first_consent,
                 "on_stream": bool(on_stream), "via": self.via}
+
+    def _hold_debrief(self, meeting: dict | None) -> None:
+        """A meeting being recorded isn't asked "Anything to note from…?" at its end: the notes answer that (and the
+        recorder links them to it once they're written)."""
+        if not meeting or self.svc.skills is None or not self.svc.skills.active("debrief"):
+            return
+        try:
+            self.svc.storage.execute(
+                "INSERT OR IGNORE INTO debrief_log(key, title, start, end_at, profile, attendees, state, asked) "
+                "VALUES (?,?,?,?,?,?,?,?)", (meeting["key"], meeting["title"], meeting["start"], meeting["end"],
+                                             meeting.get("profile") or "work", json.dumps(meeting.get("attendees") or []),
+                                             "recording", self.clock()))
+        except Exception:
+            log.debug("recorder: holding the debrief failed", exc_info=True)
 
     def stop_recording(self, reason: str = "said") -> dict:
         with self._lock:
@@ -1104,6 +1170,7 @@ class Recorder(Skill):
         self.jobs[rid] = "Writing notes"
         self.publish()
         folder = Path(row["folder"])
+        self._recover_pending(folder)
         lines = list(rec_mod.read_lines(folder))
         marks = json.loads(row["marks"] or "[]")
         if not row.get("seconds") and lines:
@@ -1114,6 +1181,9 @@ class Recorder(Skill):
         notes, how = build_notes(self.svc.think, lines, marks, title=row["title"], when=when, base=started.date(),
                                  user=user, budget_s=float(self.setting("notes_budget_s", 300)),
                                  progress=lambda p: self._progress(rid, p))
+        if notes is None and how.get("why") == "no model" and lines and self._model_in_game():
+            self._update(rid, state="later")  # written when the game ends (tick), not "transcript only" for good
+            return {"ok": True, "later": True}
         meeting = json.loads(row.get("meeting") or "null")
         title = row["title"]
         if notes and notes.get("title") and not meeting and title.startswith("Recording · "):
@@ -1143,6 +1213,54 @@ class Recorder(Skill):
             self.notify(f"Notes ready: {title}.", level="good", key=f"recorder:notes:{rid}")
         self.publish()
         return {"ok": True, "path": str(path) if path else None}
+
+    def _model_in_game(self) -> bool:
+        """A game holds the model (only the big one is installed): notes wait for it to end."""
+        a = getattr(self.runtime, "assistant", None)
+        try:
+            return bool(a is not None and callable(getattr(a, "low_power", None)) and a.low_power() == "game")
+        except Exception:
+            return False
+
+    def _notes_after_game(self) -> None:
+        """The tick: notes that waited on a game are written now it's over."""
+        if self._model_in_game():
+            return
+        for row in self.svc.storage.query("SELECT id FROM recorder_recordings WHERE state='later'"):
+            if row["id"] not in self.jobs:
+                self.jobs[row["id"]] = "Writing notes"
+                self._run(self._notes_job, row["id"])
+
+    def _recover_pending(self, folder: Path) -> int:
+        """Speech-to-text was behind when Vesper closed: the audio it hadn't reached (``.pending``) goes into the
+        transcript now, at its end (who said it isn't known), so the notes have it; then the files go."""
+        spill = folder / ".pending"
+        files = sorted(spill.glob("*.pcm")) if spill.is_dir() else []
+        if not files:
+            return 0
+        lines = list(rec_mod.read_lines(folder))
+        n = max((int(ln.get("n", -1)) for ln in lines), default=-1) + 1
+        t = max((float(ln.get("end", ln.get("t", 0))) for ln in lines), default=0.0)
+        added = 0
+        with open(folder / "transcript.jsonl", "a", encoding="utf-8") as f:
+            for p in files:
+                try:
+                    audio = np.frombuffer(p.read_bytes(), dtype=np.int16)
+                    text = re.sub(r"\s+", " ", self._transcribe(audio.astype(np.float32) / 32768.0) or "").strip()
+                except Exception:
+                    log.debug("recorder: transcribing leftover audio failed", exc_info=True)
+                    return added  # kept for a Retry; retention deletes it with the audio
+                dur = len(audio) / rec_mod.SAMPLE_RATE
+                if text and rec_mod._norm(text) not in rec_mod.HALLUCINATIONS:
+                    f.write(json.dumps({"n": n, "t": round(t, 2), "end": round(t + dur, 2), "src": "unknown",
+                                        "who": "Unknown", "text": redact(text), "late": True}, ensure_ascii=False) + "\n")
+                    n, added = n + 1, added + 1
+                t += dur
+                with contextlib.suppress(OSError):
+                    p.unlink()
+        with contextlib.suppress(OSError):
+            spill.rmdir()
+        return added
 
     def _send_notes(self, rid: str, title: str, summary: str, tasks: int) -> None:
         """A meeting's notes: to the phone when one is paired (skills/phone.py), else a HUD card. The action items
@@ -1460,10 +1578,12 @@ class Recorder(Skill):
         for row in self.svc.storage.query("SELECT id, folder FROM recorder_recordings WHERE audio_gone=0 AND state NOT IN "
                                           "('recording', 'paused', 'finishing') AND started < ?", (cutoff,)):
             folder = Path(row["folder"])
-            for f in list(folder.glob("*.wav")) + list(folder.glob("*.ogg")):
+            for f in list(folder.glob("*.wav")) + list(folder.glob("*.ogg")) + list(folder.glob(".pending/*.pcm")):
                 with contextlib.suppress(OSError):
                     f.unlink()
                     gone += 1
+            with contextlib.suppress(OSError):
+                (folder / ".pending").rmdir()
             self._update(row["id"], audio_gone=1)
         return gone
 
@@ -1477,6 +1597,10 @@ class Recorder(Skill):
             self.autopilot()
         except Exception:
             log.exception("recorder: the meeting autopilot failed")
+        try:
+            self._notes_after_game()
+        except Exception:
+            log.exception("recorder: notes after the game failed")
         s = self.session
         if s is not None and not s.paused and self.via == "own" and s.last_frame and self.clock() - s.last_frame > 10:
             self.note = "No sound is coming from the microphone."
@@ -1661,7 +1785,7 @@ class Recorder(Skill):
                            "marks": len(json.loads(r["marks"] or "[]")), "notes": bool(r["notes_path"]),
                            "audio": not r["audio_gone"], "error": r["error"], "words": r["words"],
                            "file": (r["source"] or "").startswith("file:"), "system": bool(r["system"]),
-                           "job": self.jobs.get(r["id"], "")})
+                           "job": self.jobs.get(r["id"], "") or ("Notes after the game" if r["state"] == "later" else "")})
         card = self._card()
         if card and live:
             card = {"id": card["id"], "title": card["title"], "items": [], "count": len(card["items"]), "hidden": True}
@@ -1673,7 +1797,8 @@ class Recorder(Skill):
                 "system_mode": str(self.setting("system_audio", "meetings")),
                 "consent_shown": bool(self._meta("consent_shown")), "note": self.note,
                 "voice": self._listener_ok(), "ffmpeg": self._ffmpeg_ok(),
-                "auto_offer": self._on("auto_offer"), "always": [a["title"] for a in self._approved()]}
+                "auto_offer": self._on("auto_offer"), "always": [a["title"] for a in self._approved()],
+                "recording_call": self.recording_call(), "call_until": self._call_until}
 
     def _ffmpeg_ok(self) -> bool:
         if self.ffmpeg is not None:

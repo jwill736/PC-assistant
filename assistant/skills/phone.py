@@ -654,7 +654,9 @@ class Phone(Skill):
         return "Sent to your phone." if tool == "send_to_phone" else None
 
     def start(self, runtime) -> None:
-        self.run_command = lambda text, pending_id=None: runtime.command(text, source="phone", pending_id=pending_id)
+        self.run_command = lambda text, pending_id=None: (
+            runtime.command(text, source="phone", pending_id=pending_id) if pending_id
+            else runtime.command(text, source="phone"))
         self._stop.set()  # turned back on in Setup → Skills: the last loop ends after its poll, a new one takes over
         before, self._stop = self._thread, threading.Event()
         self.pending = runtime.assistant.pending_view

@@ -6,8 +6,8 @@ The active window (or the main screen) is captured in memory, shrunk to 1280 px 
 recognition reads the screen and the model answers from the text; without either, Vesper says it can't see.
 
 Private by design: nothing is saved (the HUD's thumbnail is dropped after 2 minutes); password managers, banking and
-private-browsing windows are never captured (skills.screen.deny_apps / deny_titles add your own); and while you're
-live it only looks when you ask out loud.
+private-browsing windows are never captured (skills.screen.deny_apps / deny_titles add your own; a whole-screen look
+is refused while one is showing anywhere on screen); and while you're live it only looks when you ask out loud.
 """
 
 from __future__ import annotations
@@ -140,6 +140,25 @@ def windows_ocr(jpeg: bytes) -> str | None:
         return None
 
 
+def minimised(handle: int) -> bool:
+    if not IS_WINDOWS or not handle:
+        return False
+    try:  # pragma: no cover - Windows only
+        import ctypes
+        from ctypes import wintypes
+
+        return bool(ctypes.WinDLL("user32").IsIconic(wintypes.HWND(handle)))
+    except Exception:  # pragma: no cover
+        return False
+
+
+def windows_on_screen() -> list:
+    """Every window showing on the desktop now (visible, not minimised): what a whole-screen capture can include."""
+    from ..integrations import desktop
+
+    return [w for w in desktop.list_windows() if not minimised(getattr(w, "handle", 0))]
+
+
 def denied(app: str, title: str, apps: set[str], words: list[str]) -> bool:
     a = (app or "").lower().removesuffix(".exe")
     return a in apps or any(re.search(rf"\b{re.escape(w)}\b", (title or "").lower()) for w in words)
@@ -154,14 +173,14 @@ class Screen(Skill):
     delay_s = 30
 
     def __init__(self, svc, http: httpx.Client | None = None, window=None, capture_fn=capture, ocr=windows_ocr,
-                 clock=time.time):
+                 clock=time.time, windows=windows_on_screen):
         super().__init__(svc)
         if window is None:
             from ..integrations import desktop
 
             window = desktop.active_window
         self.http = http or lazy_client(timeout=120, trust_env=False)  # the model is on this PC or the home network
-        self.window, self.capture, self.ocr, self.clock = window, capture_fn, ocr, clock
+        self.window, self.capture, self.ocr, self.clock, self.windows = window, capture_fn, ocr, clock, windows
         self.brain = None  # the runtime's LocalBrain (set at start)
         self.last: dict | None = None
         self._lock = threading.Lock()
@@ -225,6 +244,10 @@ class Screen(Skill):
                     "error": "That window looks private (passwords, banking or private browsing), so I won't look at it."}
         if "vesper" in title.lower():
             whole_screen = True  # the HUD itself is in front: look at the screen instead
+        if whole_screen and self._private_on_screen(apps, words):
+            return {"ok": False, "private": True,
+                    "error": "A window on the screen looks private (passwords, banking or private browsing), so I won't "
+                             "look at the whole screen. Minimise it, or ask about the window in front."}
         shot = self.capture(win, whole_screen)
         if not shot:
             return {"ok": False, "error": "I can't capture the screen on this PC."}
@@ -253,6 +276,14 @@ class Screen(Skill):
                          "thumb": "data:image/jpeg;base64," + base64.b64encode(shot.get("thumb") or shot["jpeg"]).decode()}
         self.publish()
         return {"ok": True, "answer": answer, "via": via, "app": app, "question": q}
+
+    def _private_on_screen(self, apps: set[str], words: list[str]) -> bool:
+        """The whole screen shows every window on it, not only the one in front: is one of them private?"""
+        try:
+            wins = self.windows() or []
+        except Exception:
+            wins = []
+        return any(denied(getattr(w, "app", "") or "", getattr(w, "title", "") or "", apps, words) for w in wins)
 
     def forget(self) -> dict:
         with self._lock:

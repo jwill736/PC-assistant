@@ -64,7 +64,7 @@ class Focus(Skill):
         """Hold non-urgent nudges while a session runs (skills/nudges.py asks ``focus()``)."""
         nud = self.svc.skills.get("nudges") if self.svc.skills is not None else None
         if nud is not None:
-            nud.focus = self.active
+            self.hook(nud, "focus", self.active)
 
     def active(self) -> bool:
         return self.session is not None

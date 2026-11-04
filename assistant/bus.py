@@ -45,7 +45,16 @@ class EventBus:
 
     def on(self, callback: Callable[[dict], None]) -> None:
         """Register an in-process listener (called on the publishing thread)."""
-        self._listeners.append(callback)
+        with self._lock:
+            self._listeners.append(callback)
+
+    def off(self, callback: Callable[[dict], None]) -> None:
+        """Unregister one (a skill switched off in Setup → Skills, or by the crash guard, stops hearing the bus)."""
+        with self._lock:
+            self._listeners = [cb for cb in self._listeners if cb != callback]
+
+    def listeners(self) -> list[Callable[[dict], None]]:
+        return list(self._listeners)
 
     def publish(self, event_type: str, data: Any = None, *, sticky: bool = False, transient: bool = False) -> None:
         """``transient``: a high-rate, throwaway event (the orb's audio level) that only goes to connected HUDs:

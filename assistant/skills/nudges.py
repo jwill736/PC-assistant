@@ -123,7 +123,7 @@ class Nudges(Skill):
         self.stats = self._load_stats()
         svc.storage.execute("CREATE TABLE IF NOT EXISTS nudges_feedback (key TEXT, source TEXT, text TEXT, "
                             "useful INTEGER, ts REAL)")
-        svc.nudge = self.add
+        self.hook(svc, "nudge", self.add)  # switched off: other skills' nudges are HUD cards (Skill.nudge)
         svc.bus.on(self._on_event)
 
     # ---- the queue ---------------------------------------------------------------------------------------

@@ -226,8 +226,9 @@ class Phone(Skill):
                 self.api("answerCallbackQuery", {"callback_query_id": cq.get("id")})
             except PhoneError:
                 pass
-            if cq.get("data") in ("yes", "no"):
-                self._command(cq["data"])
+            m = re.fullmatch(r"(yes|no)(?::(\w{1,40}))?", str(cq.get("data") or ""))
+            if m:  # the card's own question, never one that replaced it (a card from before ids: out of date)
+                self._command(m.group(1), pending_id=m.group(2) or "(none)")
             return
         msg = u.get("message") or {}
         chat = msg.get("chat") or {}
@@ -312,7 +313,8 @@ class Phone(Skill):
     def _heard(text: str, heard: bool) -> str:
         return f"Heard: “{text}”\n\n" if heard else ""
 
-    def _command(self, text: str, prefix: str = "") -> None:
+    def _command(self, text: str, prefix: str = "", pending_id: str | None = None) -> None:
+        """``pending_id``: a Yes/No button's question (it answers that one only)."""
         if self.run_command is None:
             self.send(prefix + "Vesper is still starting. Try again in a minute.")
             return
@@ -321,7 +323,7 @@ class Phone(Skill):
         except PhoneError:
             pass
         try:
-            out = self.run_command(text) or {}
+            out = (self.run_command(text, pending_id=pending_id) if pending_id else self.run_command(text)) or {}
         except Exception as exc:
             self.send(f"{prefix}That failed ({type(exc).__name__}).")
             return
@@ -331,11 +333,13 @@ class Phone(Skill):
             self.send(prefix + reply)
             return
         reply = re.sub(r"\s*Say yes or (?:cancel|no)\.?\s*$", "", reply).strip()
-        if reply.rstrip("?").lower() == str(waiting["text"]).lower():  # the spoken question: "Launch the rocket?"
+        asked = str(waiting["text"]).lower()
+        if reply.rstrip("?").lower() == asked:  # the spoken question: "Launch the rocket?"
             reply = ""
-        if "confirm" not in reply.lower():
+        if "confirm" not in reply.lower() and not reply.rstrip("?").lower().endswith(asked):
             reply = f"{reply}\n\nConfirm: {waiting['text']}?".strip()
-        self.send(f"{prefix}{reply} Reply yes or no.", buttons=[("Yes", "yes"), ("No", "no")])
+        pid = waiting["id"]  # the buttons answer this question, and only this one
+        self.send(f"{prefix}{reply} Reply yes or no.", buttons=[("Yes", f"yes:{pid}"), ("No", f"no:{pid}")])
 
     # ---- voice messages ------------------------------------------------------------------------------------
     def hear(self, voice: dict) -> tuple[str, str]:
@@ -650,7 +654,7 @@ class Phone(Skill):
         return "Sent to your phone." if tool == "send_to_phone" else None
 
     def start(self, runtime) -> None:
-        self.run_command = lambda text: runtime.command(text, source="phone")
+        self.run_command = lambda text, pending_id=None: runtime.command(text, source="phone", pending_id=pending_id)
         self._stop.set()  # turned back on in Setup → Skills: the last loop ends after its poll, a new one takes over
         before, self._stop = self._thread, threading.Event()
         self.pending = runtime.assistant.pending_view

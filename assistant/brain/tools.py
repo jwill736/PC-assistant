@@ -38,6 +38,8 @@ EMAIL_ON_AIR = ("The user is live on stream: say only how many emails and who fr
                 "the details are on the HUD.")
 WINDOWS_ON_AIR = ("The user is live on stream: name the apps only, never a window's title (it can be an email subject, a "
                   "message or a page); the titles are on the HUD.")
+CALENDAR_ON_AIR = ("The user is live on stream: say only times and how many events, never titles, people or places; "
+                   "the details are on the HUD.")
 LIBRARY_OFF = "The document library is turned off (library: enabled in config.yaml)."
 ON_AIR = ("The user is live on stream and anything you say may be heard by viewers: give the file name and the gist, "
           "and never read out personal details (account numbers, addresses, phone numbers, salaries, passwords).")
@@ -193,7 +195,11 @@ class ToolBox:
             return {"ok": False, "error": f"Unknown tool {name}"}
         tier = tool.tier_for(args)
         ctx = context if context is not None else (self.context() or {})
-        base = {"tool": name, "args": args, "tier": tier, "source": ctx.get("source"), "utterance": ctx.get("utterance"),
+        from .assistant import PRIVATE_TOOLS  # a journal entry's words stay out of the action log, as out of the log
+
+        private = name in PRIVATE_TOOLS
+        base = {"tool": name, "args": {} if private else args, "tier": tier, "source": ctx.get("source"),
+                "utterance": (PRIVATE_TOOLS[name] or "(private)") if private else ctx.get("utterance"),
                 "turn": ctx.get("turn"), "owner": ctx.get("owner")}
         refused = self.guard.check(tier)
         if refused is None and tier >= CONFIRM_FROM and not confirmed_by:
@@ -216,7 +222,7 @@ class ToolBox:
                          outcome="ok" if ok else "failed", error=None if ok else result.get("error"),
                          ms=round((time.perf_counter() - t0) * 1000))
         if ok and after is not None:
-            self._record(tool, label, tier, after, result)
+            self._record(tool, label, tier, after, result, ctx.get("source"))
         return result
 
     def _undo_before(self, tool: Tool, args: dict, tier: int) -> Callable[[dict], Undo | None] | None:
@@ -231,13 +237,13 @@ class ToolBox:
             log.debug("reading %s before it ran failed", tool.name, exc_info=True)
             return _no_undo
 
-    def _record(self, tool: Tool, label: str, tier: int, after: Callable, result: Any) -> None:
+    def _record(self, tool: Tool, label: str, tier: int, after: Callable, result: Any, source: str | None = None) -> None:
         try:
             undo = after(result if isinstance(result, dict) else {})
         except Exception:
             log.debug("working out how to undo %s failed", tool.name, exc_info=True)
             undo = None
-        self.history.add(tool.name, label, tier, undo)
+        self.history.add(tool.name, label, tier, undo, source=source)
 
     # ------------------------------------------------------------------
     def _build(self) -> list[Tool]:
@@ -719,8 +725,12 @@ class ToolBox:
         now = datetime.now(s.tz)
         hours = s.cfg["assistant"]["work_hours"]
         today = [e for e in events if datetime.fromisoformat(e["start"]).date() == now.date()]
-        return {"events": events, "free_today": free_blocks(today, now.date(), s.tz, hours["start"], hours["end"], now=now),
-                "calendars": s.calendars.status()}
+        out = {"events": events, "free_today": free_blocks(today, now.date(), s.tz, hours["start"], hours["end"], now=now),
+               "calendars": s.calendars.status()}
+        if s.live and s.live():  # on air: when and how many, never what or with whom (the HUD has the rest)
+            out = {**out, "live": True, "live_note": CALENDAR_ON_AIR,
+                   "events": [{k: e[k] for k in ("start", "end", "all_day", "profile") if k in e} for e in events]}
+        return out
 
     def _activity(self, day: str | None = None) -> dict:
         summary = self.svc.activity.summary_for_day(day_bounds(self.svc, day), self.svc.tz)

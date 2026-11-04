@@ -337,18 +337,19 @@ def test_risky_commands_from_the_phone_still_need_a_yes_and_strangers_are_ignore
     monkeypatch.setattr(desktop, "power_action", lambda action: done.append(action) or {"ok": True})
     a = Assistant(svc)
     p = tg.p
-    p.run_command = lambda text: a.handle(text, "phone")
+    p.run_command = lambda text, pending_id=None: a.handle(text, "phone", pending_id=pending_id)
     p.pending = a.pending_view
     pair(tg)
     tg.msg("turn off the pc")
     p.poll_once(timeout=0)
     assert done == [] and a.pending_view() is not None
     assert "Reply yes or no" in tg.texts()[-1]
+    pid = a.pending_view()["id"]
     tg.msg("yes", chat=STRANGER)  # a stranger's yes does nothing, and gets no answer
-    tg.button("yes", chat=STRANGER)
+    tg.button(f"yes:{pid}", chat=STRANGER)
     p.poll_once(timeout=0)
     assert done == [] and tg.texts(STRANGER) == []
-    tg.button("yes")
+    tg.button(f"yes:{pid}")
     p.poll_once(timeout=0)
     assert done == ["shutdown"]
 

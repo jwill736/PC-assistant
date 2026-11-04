@@ -71,6 +71,20 @@ CREATE TRIGGER IF NOT EXISTS memory_task AFTER INSERT ON tasks BEGIN
 CREATE TRIGGER IF NOT EXISTS memory_log AFTER INSERT ON log BEGIN
     INSERT INTO memory(kind, ref, ts, text)
     VALUES (CASE new.role WHEN 'user' THEN 'said' ELSE 'replied' END, new.id, new.ts, new.text); END;
+CREATE TRIGGER IF NOT EXISTS memory_note_gone AFTER DELETE ON notes BEGIN
+    DELETE FROM memory WHERE kind = 'note' AND ref = old.id; END;
+CREATE TRIGGER IF NOT EXISTS memory_task_gone AFTER DELETE ON tasks BEGIN
+    DELETE FROM memory WHERE kind = 'task' AND ref = old.id; END;
+CREATE TRIGGER IF NOT EXISTS memory_task_title AFTER UPDATE OF title ON tasks BEGIN
+    UPDATE memory SET text = new.title WHERE kind = 'task' AND ref = old.id; END;
+CREATE TRIGGER IF NOT EXISTS memory_log_gone AFTER DELETE ON log BEGIN
+    DELETE FROM memory WHERE kind IN ('said', 'replied') AND ref = old.id; END;
+"""
+# Before the delete triggers existed, "forget this conversation" and an undone task left their words searchable.
+ORPHANS = """
+DELETE FROM memory WHERE kind = 'note' AND ref NOT IN (SELECT id FROM notes);
+DELETE FROM memory WHERE kind = 'task' AND ref NOT IN (SELECT id FROM tasks);
+DELETE FROM memory WHERE kind IN ('said', 'replied') AND ref NOT IN (SELECT id FROM log);
 """
 STOPWORDS = frozenset("""a about am an and any anything are as at be did do does for from have how i i'd i'm in is it
     its me my note notes of on or our remember said say says tell that the this to told us was we were what when where
@@ -98,7 +112,11 @@ class Storage:
         """FTS5 ships with Python's SQLite on Windows, macOS and Linux; without it, search falls back to LIKE."""
         try:
             fresh = not self._db.execute("SELECT 1 FROM sqlite_master WHERE name='memory'").fetchone()
+            orphans = not fresh and not self._db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='memory_log_gone'").fetchone()
             self._db.executescript(MEMORY_SCHEMA)
+            if orphans:  # once, the first start with the delete triggers: what was deleted before goes from the index
+                self._db.executescript(ORPHANS)
         except sqlite3.OperationalError:
             return False
         if fresh:  # index what an older install already has

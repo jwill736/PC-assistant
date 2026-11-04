@@ -185,7 +185,7 @@ def test_actions_that_need_a_yes_ask_on_the_phone(tg, svc, monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, mod.__name__, mod)
     svc.skills = Skills(svc, ["rocketfake", "nudges"])
     a = Assistant(svc)
-    tg.p.run_command = lambda text: a.handle(text, "phone")
+    tg.p.run_command = lambda text, pending_id=None: a.handle(text, "phone", pending_id=pending_id)
     tg.p.pending = a.pending_view
     rocket = svc.skills["rocket"]
     pair(tg)
@@ -193,9 +193,10 @@ def test_actions_that_need_a_yes_ask_on_the_phone(tg, svc, monkeypatch):
     tg.p.poll_once(timeout=0)
     ask = tg.sent[-1]
     assert ask["text"] == "Confirm: launch the rocket? Reply yes or no."
-    assert [b["callback_data"] for b in ask["reply_markup"]["inline_keyboard"][0]] == ["yes", "no"]
+    pid = a.pending_view()["id"]  # the buttons name the question they answer
+    assert [b["callback_data"] for b in ask["reply_markup"]["inline_keyboard"][0]] == [f"yes:{pid}", f"no:{pid}"]
     assert not getattr(rocket, "launched", 0)
-    tg.button("yes")
+    tg.button(f"yes:{pid}")
     tg.p.poll_once(timeout=0)
     assert rocket.launched == 1 and tg.texts()[-1] == "Rocket away."
     tg.msg("launch the rocket")
@@ -262,7 +263,7 @@ def test_loop_keeps_going_and_start_wires_the_runtime(svc, monkeypatch):
     monkeypatch.delenv(ph.TOKEN_ENV, raising=False)
     p = ph.Phone(svc, http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))), idle=lambda: 0)
     calls = []
-    rt = SimpleNamespace(command=lambda text, source: calls.append((text, source)) or {"reply": "ok"},
+    rt = SimpleNamespace(command=lambda text, source, pending_id=None: calls.append((text, source)) or {"reply": "ok"},
                          assistant=SimpleNamespace(pending_view=lambda: None))
     p.start(rt)
     try:
@@ -422,7 +423,8 @@ def test_voice_yes_and_no_go_through_the_same_confirmation(tg, heard, svc, monke
     tg.p.poll_once(timeout=0)
     ask = tg.sent[-1]
     assert ask["text"] == "Heard: “Launch the rocket.”\n\nConfirm: launch the rocket? Reply yes or no."
-    assert [b["callback_data"] for b in ask["reply_markup"]["inline_keyboard"][0]] == ["yes", "no"]
+    pid = a.pending_view()["id"]
+    assert [b["callback_data"] for b in ask["reply_markup"]["inline_keyboard"][0]] == [f"yes:{pid}", f"no:{pid}"]
     assert not getattr(rocket, "launched", 0)  # a tier-2 action waits for a yes, by voice too
     heard["text"] = "No."
     tg.voice("v2")
